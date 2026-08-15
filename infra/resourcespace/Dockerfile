@@ -30,8 +30,6 @@ RUN sed -i "s|http://ports.ubuntu.com/ubuntu-ports|${UBUNTU_MIRROR}|g" /etc/apt/
     php-zip \
     libapache2-mod-php \
     ffmpeg \
-    libopencv-dev \
-    python3-opencv \
     python3 \
     python3-pip \
  && apt-get clean \
