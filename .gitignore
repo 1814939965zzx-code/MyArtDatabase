@@ -14,7 +14,9 @@
 # Dependencies and build output
 node_modules/
 dist/
-build/
+# Ignore build outputs but keep the hand-written vite plugin source
+build/*
+!build/sites-vite-plugin.ts
 
 # Logs and temporary files
 *.log
