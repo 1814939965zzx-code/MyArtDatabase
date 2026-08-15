@@ -21,3 +21,6 @@ build/
 tmp/
 .cache/
 
+# Local validation runtime and generated fixtures
+infra/resourcespace/runtime/
+validation-results/resourcespace/fixtures/
