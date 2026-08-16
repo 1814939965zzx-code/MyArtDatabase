@@ -9,7 +9,7 @@
 ## 启动（开发模式）
 
 ```bash
-cd apps/server
+cd app
 npm install
 npm run dev
 ```
@@ -22,6 +22,8 @@ npm run dev
 npm run build    # 打包前端到 dist/
 npm start        # 单进程服务 dist/ + 接口
 ```
+
+`npm start` 不会自动构建前端。服务器每次 `git pull` 后必须重新执行 `npm run build`，再重启服务。不要从仓库根目录的旧入口启动；生产入口必须是 `app/server/index.js`。完整操作见仓库根目录的 [`BUILD.md`](../BUILD.md)。
 
 ## 数据与图片
 
