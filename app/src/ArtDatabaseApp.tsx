@@ -433,9 +433,25 @@ export function ArtDatabaseApp() {
         <input ref={fileInputRef} className="visually-hidden" type="file" accept="image/jpeg,image/png,image/webp" onChange={(event) => { acceptUpload(event.target.files?.[0]); event.currentTarget.value = ""; }} />
         {dragActive ? <div className="drop-overlay"><Upload size={28} /><strong>松开即可添加图片</strong><span>上传前会先填写 Metadata 和维度值</span></div> : null}
         <header className="topbar">
-          <button className={`icon-button menu-button ${sidebarCollapsed ? "force-visible" : ""}`} type="button" onClick={() => { setSidebarCollapsed(false); setSidebarOpen(true); }} aria-label="展开项目栏">{sidebarCollapsed ? <PanelLeftOpen size={18} /> : <Menu size={19} />}</button>
-          <div className="search-box"><Search size={17} /><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="搜索名称、文件或标签" aria-label="搜索素材" /></div>
-          <div className="status-pill"><span className="status-dot" /> 图片存储已连接</div>
+          <div className="topbar-leading">
+            <button className={`icon-button menu-button ${sidebarCollapsed ? "force-visible" : ""}`} type="button" onClick={() => { setSidebarCollapsed(false); setSidebarOpen(true); }} aria-label="展开项目栏">{sidebarCollapsed ? <PanelLeftOpen size={18} /> : <Menu size={19} />}</button>
+            {activeArea === "project" && workspace ? (
+              <div className="topbar-project">
+                <div className="topbar-title">
+                  <h1>{workspace.project.name}</h1>
+                  <button className="icon-button" type="button" onClick={() => setEditOpen(true)} aria-label="编辑项目"><Pencil size={14} /></button>
+                </div>
+                <div className="topbar-subtitle">
+                  <span>{workspace.project.description || "还没有项目说明"}</span>
+                  <em className="topbar-count-badge">{workspace.assets.length} 素材</em>
+                </div>
+              </div>
+            ) : null}
+          </div>
+          <div className="topbar-actions">
+            <div className="search-box"><Search size={17} /><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="搜索名称、文件或标签" aria-label="搜索素材" /></div>
+            {activeArea === "project" && workspace ? <button className="upload-button" type="button" onClick={() => fileInputRef.current?.click()}><Upload size={15} />上传图片</button> : null}
+          </div>
         </header>
 
         {activeArea === "library" ? (
@@ -453,27 +469,6 @@ export function ArtDatabaseApp() {
           <div className="loading-state"><LoaderCircle className="spin" size={22} /> 正在整理素材库…</div>
         ) : workspace ? (
           <>
-            <div className="project-header">
-              <div>
-                <div className="title-row"><h1>{workspace.project.name}</h1><button className="icon-button" type="button" onClick={() => setEditOpen(true)} aria-label="编辑项目"><Pencil size={16} /></button></div>
-                <p>{workspace.project.description || "还没有项目说明"}</p>
-              </div>
-              <div className="project-header-actions"><div className="header-stats"><span><strong>{workspace.assets.length}</strong> 素材</span><span><strong>{workspace.dimensions.length}</strong> 维度</span></div><button className="upload-button" type="button" onClick={() => fileInputRef.current?.click()}><Upload size={15} />上传图片</button></div>
-            </div>
-
-            <section className="dimension-strip" aria-label="项目维度">
-              <div className="dimension-strip-title"><SlidersHorizontal size={17} /><span>分类维度</span></div>
-              <div className="dimension-list">
-                {workspace.dimensions.map((dimension) => (
-                  <div className="dimension-chip" key={dimension.id}>
-                    <span>{dimension.leftLabel}</span><i /><span>{dimension.rightLabel}</span>
-                    <button type="button" onClick={() => void deleteDimension(dimension)} aria-label={`删除${dimension.leftLabel}到${dimension.rightLabel}维度`}><X size={13} /></button>
-                  </div>
-                ))}
-                <button className="add-dimension" type="button" onClick={() => setDimensionOpen(true)}><Plus size={15} /> 添加维度</button>
-              </div>
-            </section>
-
             <nav className="surface-tabs" aria-label="项目视图">
               <button type="button" className={surface === "assets" ? "active" : ""} onClick={() => setSurface("assets")}><LayoutGrid size={16} />素材库</button>
               <button type="button" className={surface === "preview" ? "active" : ""} onClick={() => setSurface("preview")}><SlidersHorizontal size={16} />维度预览</button>
@@ -502,7 +497,7 @@ export function ArtDatabaseApp() {
               </div>
             ) : (
               <div className="empty-state"><Grid2X2 size={25} /><h3>{search ? "没有匹配的素材" : "项目还是空的"}</h3><p>{search ? "换一个关键词试试。" : "拖入、粘贴或选择一张图片开始。"}</p><button className="primary-button" type="button" onClick={() => fileInputRef.current?.click()}><Upload size={15} />上传图片</button></div>
-            )}</> : surface === "preview" ? <DimensionPreview key={workspace.project.id} dimensions={workspace.dimensions} assets={workspace.assets} onSelectAsset={setSelectedAssetId} onUpdateAssetDimensions={savePreviewDimensionValues} /> : <BoardView key={workspace.project.id} projectId={workspace.project.id} assets={workspace.assets} onMessage={setMessage} />}
+            )}</> : surface === "preview" ? <DimensionPreview key={workspace.project.id} dimensions={workspace.dimensions} assets={workspace.assets} onSelectAsset={setSelectedAssetId} onUpdateAssetDimensions={savePreviewDimensionValues} onAddDimension={() => setDimensionOpen(true)} onDeleteDimension={(dimension) => { const fullDimension = workspace.dimensions.find((entry) => entry.id === dimension.id); if (fullDimension) void deleteDimension(fullDimension); }} /> : <BoardView key={workspace.project.id} projectId={workspace.project.id} assets={workspace.assets} onMessage={setMessage} />}
           </>
         ) : (
           <div className="empty-state project-empty"><Archive size={28} /><h2>建立第一个项目</h2><p>项目用于保存独立的素材集合与分类维度。</p><button className="primary-button" type="button" onClick={() => setCreateOpen(true)}><Plus size={16} /> 新建项目</button></div>
@@ -511,30 +506,36 @@ export function ArtDatabaseApp() {
 
       {activeArea === "project" && selectedAsset && workspace ? (
         <aside className="asset-drawer" aria-label="素材详情">
-          <div className="drawer-heading"><div><p className="eyebrow">ASSET DETAIL</p><h2>{selectedAsset.name}</h2></div><button className="icon-button" type="button" onClick={() => setSelectedAssetId(null)} aria-label="关闭素材详情"><X size={18} /></button></div>
-          {selectedAsset.thumbnailUrl ? <img className="drawer-image" src={selectedAsset.thumbnailUrl} alt={selectedAsset.name} /> : null}
-          <div className="drawer-file"><small>文件名</small><span>{selectedAsset.fileName}</span></div>
-          {selectedAsset.width || selectedAsset.fileSize ? <div className="drawer-facts"><span>{selectedAsset.width && selectedAsset.height ? `${selectedAsset.width} × ${selectedAsset.height}` : "尺寸未知"}</span><span>{selectedAsset.fileSize ? `${(selectedAsset.fileSize / 1024 / 1024).toFixed(2)} MB` : "演示素材"}</span><span>{selectedAsset.mimeType || "image"}</span></div> : null}
-          {selectedAsset.description ? <p className="drawer-description">{selectedAsset.description}</p> : null}
-          <div className="drawer-tags">{selectedAsset.tags.map((tag) => <span key={tag}>{tag}</span>)}</div>
-          <div className="drawer-section-title"><Settings2 size={16} /><strong>维度位置</strong></div>
-          {workspace.dimensions.length ? workspace.dimensions.map((dimension) => {
-            const value = selectedAsset.dimensionValues[dimension.id] ?? 500;
-            return (
-              <div className="dimension-control" key={dimension.id}>
-                <span><b>{dimension.leftLabel}</b><em>{Math.round(value / 10)}%</em><b>{dimension.rightLabel}</b></span>
-                <input
-                  id={`dimension-${dimension.id}`}
-                  aria-label={`调整${dimension.leftLabel}到${dimension.rightLabel}的位置`}
-                  type="range" min="0" max="1000" step="10" value={value}
-                  onChange={(event) => setLocalDimensionValue(selectedAsset.id, dimension.id, Number(event.target.value))}
-                  onPointerUp={(event) => void saveDimensionValue(selectedAsset.id, dimension.id, Number(event.currentTarget.value))}
-                  onBlur={(event) => void saveDimensionValue(selectedAsset.id, dimension.id, Number(event.currentTarget.value))}
-                />
-              </div>
-            );
-          }) : <p className="drawer-empty">先为项目添加维度，再给素材定位。</p>}
-          <button className="drawer-remove" type="button" onClick={() => void removeAssetFromProject(selectedAsset)}><Trash2 size={14} />从当前项目移除</button>
+          <div className="asset-detail-stage">
+            {selectedAsset.thumbnailUrl ? <img className="drawer-image" src={selectedAsset.thumbnailUrl} alt={selectedAsset.name} /> : <span className="drawer-image-fallback"><ImageIcon size={40} /></span>}
+          </div>
+          <div className="drawer-panel">
+            <div className="drawer-heading"><div><p className="eyebrow">ASSET DETAIL</p><h2>{selectedAsset.name}</h2></div><button className="icon-button" type="button" onClick={() => setSelectedAssetId(null)} aria-label="关闭素材详情"><X size={18} /></button></div>
+            <div className="drawer-scroll">
+              <div className="drawer-file"><small>文件名</small><span>{selectedAsset.fileName}</span></div>
+              {selectedAsset.width || selectedAsset.fileSize ? <div className="drawer-facts"><span>{selectedAsset.width && selectedAsset.height ? `${selectedAsset.width} × ${selectedAsset.height}` : "尺寸未知"}</span><span>{selectedAsset.fileSize ? `${(selectedAsset.fileSize / 1024 / 1024).toFixed(2)} MB` : "演示素材"}</span><span>{selectedAsset.mimeType || "image"}</span></div> : null}
+              {selectedAsset.description ? <p className="drawer-description">{selectedAsset.description}</p> : null}
+              <div className="drawer-tags">{selectedAsset.tags.map((tag) => <span key={tag}>{tag}</span>)}</div>
+              <div className="drawer-section-title"><Settings2 size={16} /><strong>维度位置</strong></div>
+              {workspace.dimensions.length ? workspace.dimensions.map((dimension) => {
+                const value = selectedAsset.dimensionValues[dimension.id] ?? 500;
+                return (
+                  <div className="dimension-control" key={dimension.id}>
+                    <span><b>{dimension.leftLabel}</b><em>{Math.round(value / 10)}%</em><b>{dimension.rightLabel}</b></span>
+                    <input
+                      id={`dimension-${dimension.id}`}
+                      aria-label={`调整${dimension.leftLabel}到${dimension.rightLabel}的位置`}
+                      type="range" min="0" max="1000" step="10" value={value}
+                      onChange={(event) => setLocalDimensionValue(selectedAsset.id, dimension.id, Number(event.target.value))}
+                      onPointerUp={(event) => void saveDimensionValue(selectedAsset.id, dimension.id, Number(event.currentTarget.value))}
+                      onBlur={(event) => void saveDimensionValue(selectedAsset.id, dimension.id, Number(event.currentTarget.value))}
+                    />
+                  </div>
+                );
+              }) : <p className="drawer-empty">先为项目添加维度，再给素材定位。</p>}
+              <button className="drawer-remove" type="button" onClick={() => void removeAssetFromProject(selectedAsset)}><Trash2 size={14} />从当前项目移除</button>
+            </div>
+          </div>
         </aside>
       ) : null}
 

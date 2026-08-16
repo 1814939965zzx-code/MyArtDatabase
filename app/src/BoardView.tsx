@@ -2,7 +2,7 @@
 
 /* eslint-disable react-hooks/exhaustive-deps, react-hooks/set-state-in-effect */
 
-import { ArrowDownToLine, ArrowUpToLine, Check, ImagePlus, LoaderCircle, Minus, Pencil, Plus, RotateCw, Trash2 } from "lucide-react";
+import { ArrowDownToLine, ArrowUpToLine, Check, ImagePlus, LoaderCircle, Pencil, Plus, RotateCw, Trash2 } from "lucide-react";
 import { PointerEvent, useEffect, useRef, useState } from "react";
 
 type Asset = { id: string; name: string; thumbnailUrl: string | null };
@@ -17,6 +17,13 @@ type Interaction = {
   itemId: string; pointerId: number; mode: "move" | "resize";
   startX: number; startY: number; x: number; y: number; width: number; height: number;
 };
+type PanState = { pointerId: number; startX: number; startY: number; originX: number; originY: number };
+
+const CANVAS_WIDTH = 2000;
+const CANVAS_HEIGHT = 1200;
+const INITIAL_ZOOM = .72;
+const MIN_ZOOM = .2;
+const MAX_ZOOM = 4;
 
 async function json<T>(url: string, init?: RequestInit): Promise<T> {
   const response = await fetch(url, { ...init, headers: { "Content-Type": "application/json", ...init?.headers } });
@@ -31,10 +38,13 @@ export function BoardView({ projectId, assets, onMessage }: { projectId: string;
   const [canvas, setCanvas] = useState<CanvasSummary | null>(null);
   const [items, setItems] = useState<CanvasItem[]>([]);
   const [selectedItemId, setSelectedItemId] = useState<string | null>(null);
-  const [zoom, setZoom] = useState(.72);
+  const [view, setView] = useState({ zoom: INITIAL_ZOOM, x: 0, y: 0 });
   const [loading, setLoading] = useState(true);
   const [assetTrayOpen, setAssetTrayOpen] = useState(true);
+  const [panning, setPanning] = useState(false);
   const interaction = useRef<Interaction | null>(null);
+  const panRef = useRef<PanState | null>(null);
+  const viewportRef = useRef<HTMLDivElement>(null);
 
   async function loadCanvases(preferredId?: string) {
     const data = await json<{ canvases: CanvasSummary[] }>(`/api/canvases?projectId=${encodeURIComponent(projectId)}`);
@@ -66,10 +76,46 @@ export function BoardView({ projectId, assets, onMessage }: { projectId: string;
   useEffect(() => {
     if (!canvasId) return;
     const timer = window.setInterval(() => {
-      if (!interaction.current) void loadCanvas(canvasId, true).catch(() => undefined);
+      if (!interaction.current && !panRef.current) void loadCanvas(canvasId, true).catch(() => undefined);
     }, 900);
     return () => window.clearInterval(timer);
   }, [canvasId, canvas?.revision]);
+
+  // Center the canvas in the viewport whenever a canvas is shown.
+  useEffect(() => {
+    const element = viewportRef.current;
+    if (!element) return;
+    setView({
+      zoom: INITIAL_ZOOM,
+      x: (element.clientWidth - CANVAS_WIDTH * INITIAL_ZOOM) / 2,
+      y: (element.clientHeight - CANVAS_HEIGHT * INITIAL_ZOOM) / 2,
+    });
+  }, [canvas?.id]);
+
+  // Wheel zoom, anchored on the cursor. Native listener keeps preventDefault effective.
+  useEffect(() => {
+    const element = viewportRef.current;
+    if (!element) return;
+    const handleWheel = (event: WheelEvent) => {
+      event.preventDefault();
+      const rect = element.getBoundingClientRect();
+      const cursorX = event.clientX - rect.left;
+      const cursorY = event.clientY - rect.top;
+      const delta = event.deltaY || event.deltaX;
+      const factor = Math.exp(-delta * .0015);
+      setView((current) => {
+        const nextZoom = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, current.zoom * factor));
+        const ratio = nextZoom / current.zoom;
+        return {
+          zoom: nextZoom,
+          x: cursorX - (cursorX - current.x) * ratio,
+          y: cursorY - (cursorY - current.y) * ratio,
+        };
+      });
+    };
+    element.addEventListener("wheel", handleWheel, { passive: false });
+    return () => element.removeEventListener("wheel", handleWheel);
+  }, [canvas?.id]);
 
   async function createCanvas() {
     const name = window.prompt("画板名称", `灵感画板 ${canvases.length + 1}`)?.trim();
@@ -117,6 +163,30 @@ export function BoardView({ projectId, assets, onMessage }: { projectId: string;
     } catch (error) { onMessage(error instanceof Error ? error.message : "添加失败"); }
   }
 
+  function startPan(event: PointerEvent<HTMLDivElement>) {
+    if (event.button !== 0) return;
+    setSelectedItemId(null);
+    panRef.current = { pointerId: event.pointerId, startX: event.clientX, startY: event.clientY, originX: view.x, originY: view.y };
+    event.currentTarget.setPointerCapture(event.pointerId);
+    setPanning(true);
+  }
+
+  function movePan(event: PointerEvent<HTMLDivElement>) {
+    const active = panRef.current;
+    if (!active || active.pointerId !== event.pointerId) return;
+    setView((current) => ({
+      ...current,
+      x: active.originX + (event.clientX - active.startX),
+      y: active.originY + (event.clientY - active.startY),
+    }));
+  }
+
+  function endPan(event: PointerEvent<HTMLDivElement>) {
+    if (panRef.current?.pointerId !== event.pointerId) return;
+    panRef.current = null;
+    setPanning(false);
+  }
+
   function startInteraction(event: PointerEvent<HTMLElement>, item: CanvasItem, mode: "move" | "resize") {
     event.stopPropagation();
     event.currentTarget.setPointerCapture(event.pointerId);
@@ -129,11 +199,33 @@ export function BoardView({ projectId, assets, onMessage }: { projectId: string;
   function moveInteraction(event: PointerEvent<HTMLElement>) {
     const active = interaction.current;
     if (!active || active.pointerId !== event.pointerId) return;
-    const dx = (event.clientX - active.startX) / zoom;
-    const dy = (event.clientY - active.startY) / zoom;
-    setItems((current) => current.map((item) => item.id !== active.itemId ? item : active.mode === "move"
-      ? { ...item, x: Math.max(0, Math.min(1920 - item.width, Math.round(active.x + dx))), y: Math.max(0, Math.min(1120 - item.height, Math.round(active.y + dy))) }
-      : { ...item, width: Math.max(80, Math.min(900, Math.round(active.width + dx))), height: Math.max(60, Math.min(900, Math.round(active.height + dy))) }));
+    const dx = (event.clientX - active.startX) / view.zoom;
+    const dy = (event.clientY - active.startY) / view.zoom;
+    setItems((current) => current.map((item) => {
+      if (item.id !== active.itemId) return item;
+      if (active.mode === "move") {
+        return {
+          ...item,
+          x: Math.max(0, Math.min(1920 - item.width, Math.round(active.x + dx))),
+          y: Math.max(0, Math.min(1120 - item.height, Math.round(active.y + dy))),
+        };
+      }
+      if (event.shiftKey) {
+        const startW = active.width;
+        const startH = active.height;
+        const useWidth = Math.abs(dx) >= Math.abs(dy);
+        let scale = useWidth ? (startW + dx) / startW : (startH + dy) / startH;
+        const minScale = Math.max(80 / startW, 60 / startH);
+        const maxScale = Math.min(900 / startW, 900 / startH);
+        scale = Math.max(minScale, Math.min(maxScale, scale));
+        return { ...item, width: Math.round(startW * scale), height: Math.round(startH * scale) };
+      }
+      return {
+        ...item,
+        width: Math.max(80, Math.min(900, Math.round(active.width + dx))),
+        height: Math.max(60, Math.min(900, Math.round(active.height + dy))),
+      };
+    }));
   }
 
   async function endInteraction(event: PointerEvent<HTMLElement>) {
@@ -173,6 +265,8 @@ export function BoardView({ projectId, assets, onMessage }: { projectId: string;
   const selected = items.find((item) => item.id === selectedItemId) ?? null;
   const topZ = Math.max(0, ...items.map((item) => item.zIndex));
   const bottomZ = Math.min(0, ...items.map((item) => item.zIndex));
+  const placedAssetIds = new Set(items.map((item) => item.assetId));
+  const availableAssets = assets.filter((asset) => !placedAssetIds.has(asset.id));
 
   return (
     <section className="board-shell">
@@ -180,14 +274,13 @@ export function BoardView({ projectId, assets, onMessage }: { projectId: string;
         <div className="board-tabs">{canvases.map((entry) => <button type="button" className={entry.id === canvasId ? "active" : ""} key={entry.id} onClick={() => setCanvasId(entry.id)}>{entry.name}<span>{entry.itemCount}</span></button>)}<button className="board-add" type="button" onClick={() => void createCanvas()}><Plus size={14} />新建画板</button></div>
         <div className="board-actions">
           {canvas ? <><span className="sync-state"><Check size={13} />共享同步</span><button type="button" onClick={() => void renameCanvas()} aria-label="重命名画板"><Pencil size={15} /></button><button type="button" onClick={() => void deleteCanvas()} aria-label="删除画板"><Trash2 size={15} /></button></> : null}
-          <div className="preview-zoom"><button type="button" onClick={() => setZoom((value) => Math.max(.35, value - .1))}><Minus size={14} /></button><span>{Math.round(zoom * 100)}%</span><button type="button" onClick={() => setZoom((value) => Math.min(1.2, value + .1))}><Plus size={14} /></button></div>
         </div>
       </div>
       {loading ? <div className="loading-state"><LoaderCircle className="spin" size={20} />载入画板…</div> : canvas ? (
         <div className="board-body">
-          <aside className={`asset-tray ${assetTrayOpen ? "open" : ""}`}><button className="asset-tray-toggle" type="button" onClick={() => setAssetTrayOpen((open) => !open)}><ImagePlus size={15} />项目素材<span>{assets.length}</span></button>{assetTrayOpen ? <div className="asset-tray-list">{assets.map((asset) => <button type="button" key={asset.id} onClick={() => void addAsset(asset)}>{asset.thumbnailUrl ? <img src={asset.thumbnailUrl} alt="" /> : <span /> }<b>{asset.name}</b><Plus size={13} /></button>)}</div> : null}</aside>
-          <div className="board-viewport" onPointerDown={() => setSelectedItemId(null)}>
-            <div className="board-canvas" style={{ transform: `scale(${zoom})` }}>
+          <aside className={`asset-tray ${assetTrayOpen ? "open" : ""}`}><button className="asset-tray-toggle" type="button" onClick={() => setAssetTrayOpen((open) => !open)}><ImagePlus size={15} />项目素材<span>{availableAssets.length}</span></button>{assetTrayOpen ? <div className="asset-tray-list">{availableAssets.map((asset) => <button type="button" key={asset.id} onClick={() => void addAsset(asset)}>{asset.thumbnailUrl ? <img src={asset.thumbnailUrl} alt="" /> : <span /> }<b>{asset.name}</b><Plus size={13} /></button>)}</div> : null}</aside>
+          <div ref={viewportRef} className={`board-viewport ${panning ? "panning" : ""}`} onPointerDown={startPan} onPointerMove={movePan} onPointerUp={endPan} onPointerCancel={endPan}>
+            <div className="board-canvas" style={{ transform: `translate(${view.x}px, ${view.y}px) scale(${view.zoom})` }}>
               <div className="board-grid" />
               {items.map((item) => <article
                 key={item.id}

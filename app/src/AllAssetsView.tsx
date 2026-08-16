@@ -180,16 +180,22 @@ export function AllAssetsView({
 
       {selectedAsset ? (
         <aside className="asset-drawer" aria-label="全局素材详情">
-          <div className="drawer-heading"><div><p className="eyebrow">GLOBAL ASSET</p><h2>{selectedAsset.name}</h2></div><button className="icon-button" type="button" onClick={() => setSelectedAssetId(null)} aria-label="关闭素材详情"><X size={18} /></button></div>
-          {selectedAsset.thumbnailUrl ? <img className="drawer-image" src={selectedAsset.thumbnailUrl} alt={selectedAsset.name} /> : null}
-          <div className="drawer-file"><small>文件名</small><span>{selectedAsset.fileName}</span></div>
-          <div className="drawer-facts"><span>{selectedAsset.width && selectedAsset.height ? `${selectedAsset.width} × ${selectedAsset.height}` : "尺寸未知"}</span><span>{selectedAsset.fileSize ? `${(selectedAsset.fileSize / 1024 / 1024).toFixed(2)} MB` : "大小未知"}</span><span>{selectedAsset.mimeType || "image"}</span></div>
-          {selectedAsset.description ? <p className="drawer-description">{selectedAsset.description}</p> : null}
-          <div className="drawer-tags">{selectedAsset.tags.map((tag) => <span key={tag}>{tag}</span>)}</div>
-          <div className="drawer-section-title"><Images size={16} /><strong>已引用项目</strong><em>{selectedAsset.projects.length}</em></div>
-          {selectedAsset.projects.length ? <div className="reference-projects">{selectedAsset.projects.map((project) => <span key={project.id}><Check size={12} />{project.name}</span>)}</div> : <p className="drawer-empty">当前没有项目引用这项素材。</p>}
-          <button className="drawer-project-add" type="button" onClick={() => openAssign(selectedAsset)}><FolderPlus size={14} />添加到其他项目</button>
-          <button className="drawer-remove drawer-permanent-delete" type="button" disabled={busy} onClick={() => void permanentlyDelete(selectedAsset)}><Trash2 size={14} />永久删除素材</button>
+          <div className="asset-detail-stage">
+            {selectedAsset.thumbnailUrl ? <img className="drawer-image" src={selectedAsset.thumbnailUrl} alt={selectedAsset.name} /> : <span className="drawer-image-fallback"><ImageIcon size={40} /></span>}
+          </div>
+          <div className="drawer-panel">
+            <div className="drawer-heading"><div><p className="eyebrow">GLOBAL ASSET</p><h2>{selectedAsset.name}</h2></div><button className="icon-button" type="button" onClick={() => setSelectedAssetId(null)} aria-label="关闭素材详情"><X size={18} /></button></div>
+            <div className="drawer-scroll">
+              <div className="drawer-file"><small>文件名</small><span>{selectedAsset.fileName}</span></div>
+              <div className="drawer-facts"><span>{selectedAsset.width && selectedAsset.height ? `${selectedAsset.width} × ${selectedAsset.height}` : "尺寸未知"}</span><span>{selectedAsset.fileSize ? `${(selectedAsset.fileSize / 1024 / 1024).toFixed(2)} MB` : "大小未知"}</span><span>{selectedAsset.mimeType || "image"}</span></div>
+              {selectedAsset.description ? <p className="drawer-description">{selectedAsset.description}</p> : null}
+              <div className="drawer-tags">{selectedAsset.tags.map((tag) => <span key={tag}>{tag}</span>)}</div>
+              <div className="drawer-section-title"><Images size={16} /><strong>已引用项目</strong><em>{selectedAsset.projects.length}</em></div>
+              {selectedAsset.projects.length ? <div className="reference-projects">{selectedAsset.projects.map((project) => <span key={project.id}><Check size={12} />{project.name}</span>)}</div> : <p className="drawer-empty">当前没有项目引用这项素材。</p>}
+              <button className="drawer-project-add" type="button" onClick={() => openAssign(selectedAsset)}><FolderPlus size={14} />添加到其他项目</button>
+              <button className="drawer-remove drawer-permanent-delete" type="button" disabled={busy} onClick={() => void permanentlyDelete(selectedAsset)}><Trash2 size={14} />永久删除素材</button>
+            </div>
+          </div>
         </aside>
       ) : null}
 
