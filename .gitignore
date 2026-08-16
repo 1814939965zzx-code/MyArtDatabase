@@ -23,6 +23,11 @@ build/*
 tmp/
 .cache/
 
+# App runtime data (SQLite database and uploaded images)
+data/
+.npm-cache/
+.wrangler/
+
 # Local validation runtime and generated fixtures
 infra/resourcespace/runtime/
 validation-results/resourcespace/fixtures/

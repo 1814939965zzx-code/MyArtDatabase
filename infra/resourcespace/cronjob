@@ -1,2 +1,0 @@
-#!/bin/sh
-su -s /bin/sh -c 'nice -n 19 ionice -c2 -n7 php /var/www/html/batch/cron.php' www-data
