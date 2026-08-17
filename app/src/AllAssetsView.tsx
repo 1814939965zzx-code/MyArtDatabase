@@ -60,8 +60,6 @@ export function AllAssetsView({
   onViewChange,
   onRefresh,
   onMessage,
-  pendingDeleteTag,
-  onDeleteTag,
 }: {
   assets: LibraryAsset[];
   projects: LibraryProject[];
@@ -71,13 +69,11 @@ export function AllAssetsView({
   onViewChange: (view: "grid" | "list") => void;
   onRefresh: () => Promise<void>;
   onMessage: (message: string) => void;
-  pendingDeleteTag: { assetId: string; tag: string } | null;
-  onDeleteTag: (asset: LibraryAsset, tag: string) => void;
 }) {
   const [selectedAssetId, setSelectedAssetId] = useState<string | null>(null);
   const [assignAssetId, setAssignAssetId] = useState<string | null>(null);
   const [selectedProjectIds, setSelectedProjectIds] = useState<string[]>([]);
-  const [selectedTag, setSelectedTag] = useState("");
+  const [selectedTags, setSelectedTags] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const metadataEditorRef = useRef<AssetMetadataEditorHandle>(null);
@@ -88,18 +84,21 @@ export function AllAssetsView({
   );
 
   useEffect(() => {
-    if (selectedTag && !globalTags.includes(selectedTag)) setSelectedTag("");
-  }, [globalTags, selectedTag]);
+    setSelectedTags((current) => {
+      const next = current.filter((tag) => globalTags.includes(tag));
+      return next.length === current.length ? current : next;
+    });
+  }, [globalTags]);
 
   const filteredAssets = useMemo(() => {
     const keyword = search.trim().toLowerCase();
     return assets.filter((asset) => {
-      const matchesTag = !selectedTag || asset.tags.includes(selectedTag);
+      const matchesTag = selectedTags.length === 0 || selectedTags.some((tag) => asset.tags.includes(tag));
       const matchesKeyword = !keyword || [asset.name, asset.fileName, ...asset.tags, ...asset.projects.map((project) => project.name)]
         .some((text) => text.toLowerCase().includes(keyword));
       return matchesTag && matchesKeyword;
     });
-  }, [assets, search, selectedTag]);
+  }, [assets, search, selectedTags]);
 
   const selectedAsset = assets.find((asset) => asset.id === selectedAssetId) ?? null;
   const assignAsset = assets.find((asset) => asset.id === assignAssetId) ?? null;
@@ -199,14 +198,14 @@ export function AllAssetsView({
         <div className="global-tag-filter" aria-label="按全局标签筛选">
           <strong>全局标签</strong>
           {globalTags.map((tag) => (
-            <button type="button" className={selectedTag === tag ? "active" : ""} key={tag} onClick={() => setSelectedTag((current) => current === tag ? "" : tag)}>
+            <button type="button" className={selectedTags.includes(tag) ? "active" : ""} key={tag} onClick={() => setSelectedTags((current) => current.includes(tag) ? current.filter((item) => item !== tag) : [...current, tag])}>
               {tag}
             </button>
           ))}
           {!globalTags.length ? <span>暂无标签</span> : null}
         </div>
         <div className="library-filter-actions">
-          {(search || selectedTag) ? <span>找到 {filteredAssets.length} 项</span> : null}
+          {(search || selectedTags.length) ? <span>找到 {filteredAssets.length} 项</span> : null}
           <div className="view-toggle" aria-label="显示方式">
             <button type="button" className={view === "grid" ? "active" : ""} onClick={() => onViewChange("grid")} aria-label="网格显示"><LayoutGrid size={16} /></button>
             <button type="button" className={view === "list" ? "active" : ""} onClick={() => onViewChange("list")} aria-label="列表显示"><List size={17} /></button>
@@ -223,12 +222,12 @@ export function AllAssetsView({
                 <span className="asset-index">{String(index + 1).padStart(2, "0")}</span>
                 <span className="project-count-badge">{asset.projects.length} 个项目</span>
               </span>
-              <span className="asset-meta"><strong>{asset.name}</strong><span className="tag-row">{asset.tags.slice(0, 3).map((tag) => <i key={tag}>{tag}</i>)}</span></span>
+              <span className="asset-meta"><strong>{asset.name}</strong><span className="tag-row">{asset.tags.map((tag) => <i key={tag}>{tag}</i>)}</span></span>
             </button>
           ))}
         </div>
       ) : (
-        <div className="empty-state"><Images size={28} /><h3>{search || selectedTag ? "没有匹配的素材" : "数据库里还没有素材"}</h3><p>{search || selectedTag ? "换一个名称、文件、标签或项目关键词试试。" : "请先进入一个项目上传图片。"}</p></div>
+        <div className="empty-state"><Images size={28} /><h3>{search || selectedTags.length ? "没有匹配的素材" : "数据库里还没有素材"}</h3><p>{search || selectedTags.length ? "换一个名称、文件、标签或项目关键词试试。" : "请先进入一个项目上传图片。"}</p></div>
       )}
 
       {selectedAsset ? (
@@ -247,9 +246,7 @@ export function AllAssetsView({
                 asset={selectedAsset}
                 busy={busy}
                 availableTags={globalTags}
-                pendingDeleteTag={pendingDeleteTag?.assetId === selectedAsset.id ? pendingDeleteTag.tag : null}
                 onSave={(update) => saveAssetMetadata(selectedAsset, update)}
-                onDeleteTag={(tag) => onDeleteTag(selectedAsset, tag)}
               />
               <div className="drawer-section-title"><Images size={16} /><strong>已引用项目</strong><em>{selectedAsset.projects.length}</em></div>
               {selectedAsset.projects.length ? <div className="reference-projects">{selectedAsset.projects.map((project) => <span key={project.id}><Check size={12} />{project.name}</span>)}</div> : <p className="drawer-empty">当前没有项目引用这项素材。</p>}

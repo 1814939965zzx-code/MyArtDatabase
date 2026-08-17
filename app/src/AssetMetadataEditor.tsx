@@ -1,6 +1,6 @@
 "use client";
 
-import { Plus, X } from "lucide-react";
+import { Plus, RotateCcw, X } from "lucide-react";
 import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState } from "react";
 
 export type EditableAssetMetadata = {
@@ -22,16 +22,12 @@ export const AssetMetadataEditor = forwardRef<AssetMetadataEditorHandle, {
   asset: EditableAssetMetadata;
   busy: boolean;
   availableTags?: string[];
-  pendingDeleteTag?: string | null;
   onSave: (update: AssetMetadataUpdate) => Promise<void>;
-  onDeleteTag?: (tag: string) => void;
 }>(function AssetMetadataEditor({
   asset,
   busy,
   availableTags = [],
-  pendingDeleteTag,
   onSave,
-  onDeleteTag,
 }, ref) {
   const formRef = useRef<HTMLFormElement>(null);
   const composingRef = useRef(false);
@@ -41,6 +37,8 @@ export const AssetMetadataEditor = forwardRef<AssetMetadataEditorHandle, {
   const [description, setDescription] = useState(asset.description);
   const [notes, setNotes] = useState(asset.notes);
   const [sourceUrl, setSourceUrl] = useState(asset.sourceUrl);
+  const [pendingDeleteTags, setPendingDeleteTags] = useState<string[]>([]);
+  const [highlightIndex, setHighlightIndex] = useState(-1);
 
   useEffect(() => {
     setName(asset.name);
@@ -49,10 +47,15 @@ export const AssetMetadataEditor = forwardRef<AssetMetadataEditorHandle, {
     setDescription(asset.description);
     setNotes(asset.notes);
     setSourceUrl(asset.sourceUrl);
+    setPendingDeleteTags([]);
   }, [asset.id, asset.name, asset.tags, asset.description, asset.notes, asset.sourceUrl]);
 
   function metadataUpdate(): AssetMetadataUpdate {
-    const normalizedTags = [...new Set([...tags, tagQuery].map((tag) => tag.trim()).filter(Boolean))].slice(0, 20);
+    const normalizedTags = [...new Set([...tags, tagQuery]
+      .map((tag) => tag.trim())
+      .filter(Boolean)
+      .filter((tag) => !pendingDeleteTags.includes(tag)))]
+      .slice(0, 20);
     return {
       name: name.trim(),
       tags: normalizedTags,
@@ -74,7 +77,7 @@ export const AssetMetadataEditor = forwardRef<AssetMetadataEditorHandle, {
   async function save() {
     if (!formRef.current?.reportValidity()) return false;
     const update = metadataUpdate();
-    if (!hasChanges(update)) return true;
+    if (!hasChanges(update) && !pendingDeleteTags.length) return true;
     try {
       await onSave(update);
       return true;
@@ -86,18 +89,27 @@ export const AssetMetadataEditor = forwardRef<AssetMetadataEditorHandle, {
   useImperativeHandle(ref, () => ({ save }));
 
   function removeTag(tag: string) {
-    if (tag && asset.tags.includes(tag) && onDeleteTag) {
-      onDeleteTag(tag);
-      return;
-    }
-    setTags((current) => current.filter((item) => item !== tag));
+    if (!tag || !tags.includes(tag)) return;
+    setPendingDeleteTags((current) => current.includes(tag) ? current : [...current, tag]);
+  }
+
+  function undoTagDeletion(tag: string) {
+    setPendingDeleteTags((current) => current.filter((item) => item !== tag));
   }
 
   function addTag(candidate = tagQuery) {
     const tag = candidate.trim();
-    if (!tag || tags.includes(tag) || tags.length >= 20) return;
+    if (!tag) return;
+    if (pendingDeleteTags.includes(tag)) {
+      undoTagDeletion(tag);
+      setTagQuery("");
+      setHighlightIndex(-1);
+      return;
+    }
+    if (tags.includes(tag) || tags.length >= 20) return;
     setTags((current) => [...current, tag]);
     setTagQuery("");
+    setHighlightIndex(-1);
   }
 
   const suggestions = useMemo(() => {
@@ -141,19 +153,21 @@ export const AssetMetadataEditor = forwardRef<AssetMetadataEditorHandle, {
       <fieldset className="asset-tag-editor">
         <legend>全局标签</legend>
         {tags.length ? <div className="asset-tag-badges">
-          {tags.map((tag) => (
-            <span className={`asset-tag-badge ${pendingDeleteTag === tag ? "pending-delete" : ""}`} key={tag}>
-              <button
-                type="button"
-                aria-label={`解除标签 ${tag}`}
-                disabled={Boolean(pendingDeleteTag)}
-                onClick={() => removeTag(tag)}
-              >
-                <X size={11} />
-              </button>
-              <span>{tag}</span>
-            </span>
-          ))}
+          {tags.map((tag) => {
+            const pendingDelete = pendingDeleteTags.includes(tag);
+            return (
+              <span className={`asset-tag-badge ${pendingDelete ? "pending-delete" : ""}`} key={tag}>
+                <button
+                  type="button"
+                  aria-label={pendingDelete ? `撤销删除标签 ${tag}` : `删除标签 ${tag}`}
+                  onClick={() => pendingDelete ? undoTagDeletion(tag) : removeTag(tag)}
+                >
+                  {pendingDelete ? <RotateCcw size={11} /> : <X size={11} />}
+                </button>
+                <span>{tag}</span>
+              </span>
+            );
+          })}
         </div> : null}
         <div className="asset-tag-combobox">
           <div className="asset-tag-input">
@@ -165,12 +179,36 @@ export const AssetMetadataEditor = forwardRef<AssetMetadataEditorHandle, {
               disabled={tags.length >= 20}
               onCompositionStart={() => { composingRef.current = true; }}
               onCompositionEnd={() => { composingRef.current = false; }}
-              onChange={(event) => setTagQuery(event.target.value)}
+              onChange={(event) => { setTagQuery(event.target.value); setHighlightIndex(-1); }}
               onKeyDown={(event) => {
                 if (composingRef.current || event.nativeEvent.isComposing) return;
-                if (event.key === "Enter" || event.key === ",") {
+                if (event.key === "ArrowDown") {
+                  if (!suggestions.length) return;
                   event.preventDefault();
-                  addTag(suggestions[0]?.tag ?? tagQuery);
+                  setHighlightIndex((current) => current < suggestions.length - 1 ? current + 1 : 0);
+                  return;
+                }
+                if (event.key === "ArrowUp") {
+                  if (!suggestions.length) return;
+                  event.preventDefault();
+                  setHighlightIndex((current) => current > 0 ? current - 1 : suggestions.length - 1);
+                  return;
+                }
+                const active = highlightIndex >= 0 ? suggestions[highlightIndex] : undefined;
+                if (event.key === "Enter") {
+                  event.preventDefault();
+                  addTag(active ? active.tag : tagQuery);
+                  return;
+                }
+                if (event.key === " ") {
+                  if (!active) return;
+                  event.preventDefault();
+                  addTag(active.tag);
+                  return;
+                }
+                if (event.key === ",") {
+                  event.preventDefault();
+                  addTag(active ? active.tag : (suggestions[0]?.tag ?? tagQuery));
                 }
               }}
             />
@@ -179,8 +217,8 @@ export const AssetMetadataEditor = forwardRef<AssetMetadataEditorHandle, {
             </button>
           </div>
           {suggestions.length ? <div className="asset-tag-suggestions" role="listbox" aria-label="匹配的已有标签">
-            {suggestions.map(({ tag }) => (
-              <button type="button" role="option" aria-selected="false" key={tag} onMouseDown={(event) => event.preventDefault()} onClick={() => addTag(tag)}>{tag}</button>
+            {suggestions.map(({ tag }, index) => (
+              <button type="button" role="option" aria-selected={index === highlightIndex} className={index === highlightIndex ? "highlighted" : ""} key={tag} onMouseDown={(event) => event.preventDefault()} onMouseEnter={() => setHighlightIndex(index)} onClick={() => addTag(tag)}>{tag}</button>
             ))}
           </div> : null}
         </div>

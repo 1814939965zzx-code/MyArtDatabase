@@ -72,7 +72,6 @@ type Workspace = {
 };
 
 type PendingDeletion =
-  | { token: string; kind: "tag"; assetId: string; tag: string; seconds: number }
   | { token: string; kind: "dimension"; projectId: string; dimension: Dimension; seconds: number };
 
 async function api<T>(url: string, init?: RequestInit): Promise<T> {
@@ -129,7 +128,8 @@ export function ArtDatabaseApp() {
   const [selectedAssetId, setSelectedAssetId] = useState<string | null>(null);
   const [search, setSearch] = useState("");
   const [view, setView] = useState<"grid" | "list">("grid");
-  const [surface, setSurface] = useState<"assets" | "preview" | "board">("assets");
+  const [surface, setSurface] = useState<"assets" | "preview" | "board">("preview");
+  const [projectTagFilter, setProjectTagFilter] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
   const [libraryLoading, setLibraryLoading] = useState(true);
   const [busy, setBusy] = useState(false);
@@ -148,6 +148,10 @@ export function ArtDatabaseApp() {
   const availableTags = useMemo(
     () => [...new Set(libraryAssets.flatMap((asset) => asset.tags))].sort((a, b) => a.localeCompare(b, "zh-CN")),
     [libraryAssets],
+  );
+  const projectTags = useMemo(
+    () => [...new Set((workspace?.assets ?? []).flatMap((asset) => asset.tags))].sort((a, b) => a.localeCompare(b, "zh-CN")),
+    [workspace],
   );
 
   async function loadProjects(preferredId?: string) {
@@ -242,8 +246,7 @@ export function ArtDatabaseApp() {
     }, 1000);
     const timer = window.setTimeout(() => {
       setPendingDeletion((current) => current?.token === pending.token ? null : current);
-      if (pending.kind === "tag") void commitTagDeletion(pending.assetId, pending.tag);
-      else void commitDimensionDeletion(pending.projectId, pending.dimension);
+      void commitDimensionDeletion(pending.projectId, pending.dimension);
     }, 5000);
     return () => {
       window.clearInterval(interval);
@@ -262,11 +265,19 @@ export function ArtDatabaseApp() {
 
   const filteredAssets = useMemo(() => {
     const keyword = search.trim().toLowerCase();
-    if (!keyword) return workspace?.assets ?? [];
-    return (workspace?.assets ?? []).filter((asset) =>
-      [asset.name, asset.fileName, ...asset.tags].some((text) => text.toLowerCase().includes(keyword)),
-    );
-  }, [search, workspace]);
+    return (workspace?.assets ?? []).filter((asset) => {
+      const matchesTags = projectTagFilter.length === 0 || projectTagFilter.some((tag) => asset.tags.includes(tag));
+      const matchesKeyword = !keyword || [asset.name, asset.fileName, ...asset.tags].some((text) => text.toLowerCase().includes(keyword));
+      return matchesTags && matchesKeyword;
+    });
+  }, [search, workspace, projectTagFilter]);
+
+  useEffect(() => {
+    setProjectTagFilter((current) => {
+      const next = current.filter((tag) => projectTags.includes(tag));
+      return next.length === current.length ? current : next;
+    });
+  }, [projectTags]);
 
   const selectedAsset = workspace?.assets.find((asset) => asset.id === selectedAssetId) ?? null;
 
@@ -507,35 +518,6 @@ export function ArtDatabaseApp() {
     }
   }
 
-  function scheduleTagDeletion(asset: { id: string }, tag: string) {
-    if (pendingDeletion) {
-      setMessage("请先撤销或等待当前删除完成");
-      return;
-    }
-    setMessage(null);
-    setPendingDeletion({ token: `${asset.id}-${tag}-${Date.now()}`, kind: "tag", assetId: asset.id, tag, seconds: 5 });
-  }
-
-  async function commitTagDeletion(assetId: string, tag: string) {
-    setBusy(true);
-    try {
-      await api("/api/assets", {
-        method: "PATCH",
-        body: JSON.stringify({ id: assetId, deleteTag: tag }),
-      });
-      setWorkspace((current) => current ? {
-        ...current,
-        assets: current.assets.map((asset) => asset.id === assetId ? { ...asset, tags: asset.tags.filter((item) => item !== tag) } : asset),
-      } : current);
-      setLibraryAssets((current) => current.map((asset) => asset.id === assetId ? { ...asset, tags: asset.tags.filter((item) => item !== tag) } : asset));
-      setMessage(`标签“${tag}”已删除`);
-    } catch (error) {
-      setMessage(error instanceof Error ? error.message : "标签删除失败");
-    } finally {
-      setBusy(false);
-    }
-  }
-
   return (
     <main className={`app-shell ${sidebarCollapsed ? "sidebar-hidden" : ""}`}>
       <aside className={`sidebar ${sidebarOpen ? "sidebar-open" : ""}`}>
@@ -621,24 +603,32 @@ export function ArtDatabaseApp() {
             onViewChange={setView}
             onRefresh={async () => { await Promise.all([loadLibrary(), loadProjects()]); }}
             onMessage={setMessage}
-            pendingDeleteTag={pendingDeletion?.kind === "tag" ? { assetId: pendingDeletion.assetId, tag: pendingDeletion.tag } : null}
-            onDeleteTag={scheduleTagDeletion}
           />
         ) : loading && !workspace ? (
           <div className="loading-state"><LoaderCircle className="spin" size={22} /> 正在整理素材库…</div>
         ) : workspace ? (
           <>
             <nav className="surface-tabs" aria-label="项目视图">
-              <button type="button" className={surface === "assets" ? "active" : ""} onClick={() => setSurface("assets")}><LayoutGrid size={16} />素材库</button>
               <button type="button" className={surface === "preview" ? "active" : ""} onClick={() => setSurface("preview")}><SlidersHorizontal size={16} />维度预览</button>
               <button type="button" className={surface === "board" ? "active" : ""} onClick={() => setSurface("board")}><ImagePlus size={16} />自由画板</button>
+              <button type="button" className={surface === "assets" ? "active" : ""} onClick={() => setSurface("assets")}><LayoutGrid size={16} />素材库</button>
             </nav>
 
             {surface === "assets" ? <><div className="content-toolbar">
-              <div><h2>项目素材</h2><p>{search ? `找到 ${filteredAssets.length} 项` : "按维度整理与比较你的视觉参考"}</p></div>
+              <div><h2>项目素材</h2><p>{search || projectTagFilter.length ? `找到 ${filteredAssets.length} 项` : "按维度整理与比较你的视觉参考"}</p></div>
               <div className="view-toggle" aria-label="显示方式">
                 <button type="button" className={view === "grid" ? "active" : ""} onClick={() => setView("grid")} aria-label="网格显示"><LayoutGrid size={16} /></button>
                 <button type="button" className={view === "list" ? "active" : ""} onClick={() => setView("list")} aria-label="列表显示"><List size={17} /></button>
+              </div>
+            </div>
+
+            <div className="library-filter-bar project-tag-filter">
+              <div className="global-tag-filter" aria-label="按标签筛选">
+                <strong>标签</strong>
+                {projectTags.map((tag) => (
+                  <button type="button" className={projectTagFilter.includes(tag) ? "active" : ""} key={tag} onClick={() => setProjectTagFilter((current) => current.includes(tag) ? current.filter((item) => item !== tag) : [...current, tag])}>{tag}</button>
+                ))}
+                {!projectTags.length ? <span>暂无标签</span> : null}
               </div>
             </div>
 
@@ -650,12 +640,12 @@ export function ArtDatabaseApp() {
                       {asset.thumbnailUrl ? <img src={asset.thumbnailUrl} alt="" loading={index > 3 ? "lazy" : "eager"} /> : <span className="asset-fallback"><ImageIcon /></span>}
                       <span className="asset-index">{String(index + 1).padStart(2, "0")}</span>
                     </span>
-                    <span className="asset-meta"><strong>{asset.name}</strong><span className="tag-row">{asset.tags.slice(0, 3).map((tag) => <i key={tag}>{tag}</i>)}</span></span>
+                    <span className="asset-meta"><strong>{asset.name}</strong><span className="tag-row">{asset.tags.map((tag) => <i key={tag}>{tag}</i>)}</span></span>
                   </button>
                 ))}
               </div>
             ) : (
-              <div className="empty-state"><Grid2X2 size={25} /><h3>{search ? "没有匹配的素材" : "项目还是空的"}</h3><p>{search ? "换一个关键词试试。" : "拖入、粘贴或选择一张图片开始。"}</p><button className="primary-button" type="button" onClick={() => fileInputRef.current?.click()}><Upload size={15} />上传图片</button></div>
+              <div className="empty-state"><Grid2X2 size={25} /><h3>{search || projectTagFilter.length ? "没有匹配的素材" : "项目还是空的"}</h3><p>{search || projectTagFilter.length ? "换一个关键词或标签试试。" : "拖入、粘贴或选择一张图片开始。"}</p><button className="primary-button" type="button" onClick={() => fileInputRef.current?.click()}><Upload size={15} />上传图片</button></div>
             )}</> : surface === "preview" ? <DimensionPreview key={workspace.project.id} dimensions={workspace.dimensions} assets={workspace.assets} onSelectAsset={setSelectedAssetId} onUpdateAssetDimensions={savePreviewDimensionValues} onAddDimension={() => setDimensionOpen(true)} onDeleteDimension={(dimension) => { const fullDimension = workspace.dimensions.find((entry) => entry.id === dimension.id); if (fullDimension) scheduleDimensionDeletion(fullDimension); }} /> : <BoardView key={workspace.project.id} projectId={workspace.project.id} assets={workspace.assets} onMessage={setMessage} />}
           </>
         ) : (
@@ -678,9 +668,7 @@ export function ArtDatabaseApp() {
                 asset={selectedAsset}
                 busy={busy}
                 availableTags={availableTags}
-                pendingDeleteTag={pendingDeletion?.kind === "tag" && pendingDeletion.assetId === selectedAsset.id ? pendingDeletion.tag : null}
                 onSave={(update) => saveAssetMetadata(selectedAsset, update)}
-                onDeleteTag={(tag) => scheduleTagDeletion(selectedAsset, tag)}
               />
               <div className="drawer-section-title"><Settings2 size={16} /><strong>维度位置</strong></div>
               {workspace.dimensions.length ? <DimensionControlsEditor
@@ -710,9 +698,7 @@ export function ArtDatabaseApp() {
       {message ? <div className="toast" role="status">{message}</div> : null}
       {pendingDeletion ? (
         <DeletionToast
-          label={pendingDeletion.kind === "tag"
-            ? `标签“${pendingDeletion.tag}”`
-            : `维度“${pendingDeletion.dimension.leftLabel} — ${pendingDeletion.dimension.rightLabel}”`}
+          label={`维度“${pendingDeletion.dimension.leftLabel} — ${pendingDeletion.dimension.rightLabel}”`}
           seconds={pendingDeletion.seconds}
           onUndo={() => { setPendingDeletion(null); setMessage("已撤销删除"); }}
         />

@@ -38,6 +38,17 @@ const aspectRatioFor = (asset: Asset) => {
   return "1 / 1";
 };
 
+function AxisFaces() {
+  return (
+    <>
+      <i className="axis-face face-front" />
+      <i className="axis-face face-back" />
+      <i className="axis-face face-top" />
+      <i className="axis-face face-bottom" />
+    </>
+  );
+}
+
 export function DimensionPreview({
   dimensions,
   assets,
@@ -68,6 +79,7 @@ export function DimensionPreview({
   const [hiddenAssetIds, setHiddenAssetIds] = useState<string[]>([]);
   const [spaceHeld, setSpaceHeld] = useState(false);
   const [overrides, setOverrides] = useState<Record<string, Record<string, number>>>({});
+  const [sceneSize, setSceneSize] = useState(0);
   const scenePlaneRef = useRef<HTMLDivElement>(null);
   const sceneViewportRef = useRef<HTMLDivElement>(null);
   const cameraDrag = useRef<CameraDrag | null>(null);
@@ -94,13 +106,83 @@ export function DimensionPreview({
         z: isolatedOctant.z * 250 * DEPTH_SCALE,
       }
     : { x: 0, y: 0, z: 0 };
-  const isolatedOctantLabel = isolatedOctant && mode === 3
-    ? [
-        isolatedOctant.x === 1 ? selected[0].rightLabel : selected[0].leftLabel,
-        isolatedOctant.y === 1 ? selected[1].rightLabel : selected[1].leftLabel,
-        isolatedOctant.z === 1 ? selected[2].rightLabel : selected[2].leftLabel,
-      ].join("、")
-    : null;
+  function octantName(octant: Octant) {
+    return [
+      octant.x === 1 ? selected[0].rightLabel : selected[0].leftLabel,
+      octant.y === 1 ? selected[1].rightLabel : selected[1].leftLabel,
+      octant.z === 1 ? selected[2].rightLabel : selected[2].leftLabel,
+    ].join("、");
+  }
+
+  function computeNearestOctant(): Octant {
+    const size = sceneSize;
+    const pitch = rotateX * Math.PI / 180;
+    const yaw = rotateZ * Math.PI / 180;
+    const signs: AxisSign[] = [-1, 1];
+    let nearest: Octant = { x: 1, y: 1, z: 1 };
+    let nearestDepth = Number.NEGATIVE_INFINITY;
+    for (const x of signs) {
+      for (const y of signs) {
+        for (const z of signs) {
+          const localX = x * size / 4;
+          const localY = -y * size / 4;
+          const localZ = z * 250 * DEPTH_SCALE;
+          const alongY = Math.sin(yaw) * localX + Math.cos(yaw) * localY;
+          const depth = Math.sin(pitch) * alongY + Math.cos(pitch) * localZ;
+          if (depth > nearestDepth) {
+            nearestDepth = depth;
+            nearest = { x, y, z };
+          }
+        }
+      }
+    }
+    return nearest;
+  }
+
+  const isolatedOctantLabel = isolatedOctant && mode === 3 ? octantName(isolatedOctant) : null;
+  const nearestOctantLabel = mode === 3 && !isolatedOctant ? octantName(computeNearestOctant()) : null;
+  const cornerLabels = useMemo(() => {
+    if (mode < 2 || !selected.length) return [];
+    const signs: AxisSign[] = [-1, 1];
+    const corners: Array<{ key: string; x: number; y: number; z: number; label: string }> = [];
+    const pick = (ends: string[], sign: number) => ends[sign === 1 ? 1 : 0];
+    const xEnds = [selected[0].leftLabel, selected[0].rightLabel];
+    const yEnds = [selected[1].leftLabel, selected[1].rightLabel];
+
+    if (mode === 2) {
+      for (const x of signs) {
+        for (const y of signs) {
+          corners.push({ key: `xy-${x}${y}`, x, y, z: 0, label: `${pick(xEnds, x)}、${pick(yEnds, y)}` });
+        }
+      }
+      return corners;
+    }
+
+    const zEnds = [selected[2].leftLabel, selected[2].rightLabel];
+    for (const x of signs) {
+      for (const y of signs) {
+        corners.push({ key: `xy-${x}${y}`, x, y, z: 0, label: `${pick(xEnds, x)}、${pick(yEnds, y)}` });
+      }
+    }
+    for (const x of signs) {
+      for (const z of signs) {
+        corners.push({ key: `xz-${x}${z}`, x, y: 0, z, label: `${pick(xEnds, x)}、${pick(zEnds, z)}` });
+      }
+    }
+    for (const y of signs) {
+      for (const z of signs) {
+        corners.push({ key: `yz-${y}${z}`, x: 0, y, z, label: `${pick(yEnds, y)}、${pick(zEnds, z)}` });
+      }
+    }
+    for (const x of signs) {
+      for (const y of signs) {
+        for (const z of signs) {
+          corners.push({ key: `xyz-${x}${y}${z}`, x, y, z, label: `${pick(xEnds, x)}、${pick(yEnds, y)}、${pick(zEnds, z)}` });
+        }
+      }
+    }
+    return corners;
+  }, [mode, selected]);
   const [modeTransitioning, setModeTransitioning] = useState(false);
   const [prevMode, setPrevMode] = useState(mode);
   if (prevMode !== mode) {
@@ -112,6 +194,18 @@ export function DimensionPreview({
     document.body.classList.toggle("preview-focus-active", focusMode);
     return () => document.body.classList.remove("preview-focus-active");
   }, [focusMode]);
+
+  useEffect(() => {
+    const plane = scenePlaneRef.current;
+    if (!plane) return;
+    const measure = () => setSceneSize(plane.offsetWidth);
+    measure();
+    if (typeof ResizeObserver !== "undefined") {
+      const observer = new ResizeObserver(measure);
+      observer.observe(plane);
+      return () => observer.disconnect();
+    }
+  }, []);
 
   useEffect(() => {
     const isEditableTarget = (target: EventTarget | null) => target instanceof HTMLElement
@@ -197,29 +291,7 @@ export function DimensionPreview({
       setIsolatedOctant(null);
       return;
     }
-
-    const size = scenePlaneRef.current?.offsetWidth ?? 0;
-    const pitch = rotateX * Math.PI / 180;
-    const yaw = rotateZ * Math.PI / 180;
-    const signs: AxisSign[] = [-1, 1];
-    let nearest: Octant = { x: 1, y: 1, z: 1 };
-    let nearestDepth = Number.NEGATIVE_INFINITY;
-    for (const x of signs) {
-      for (const y of signs) {
-        for (const z of signs) {
-          const localX = x * size / 4;
-          const localY = -y * size / 4;
-          const localZ = z * 250 * DEPTH_SCALE;
-          const alongY = Math.sin(yaw) * localX + Math.cos(yaw) * localY;
-          const depth = Math.sin(pitch) * alongY + Math.cos(pitch) * localZ;
-          if (depth > nearestDepth) {
-            nearestDepth = depth;
-            nearest = { x, y, z };
-          }
-        }
-      }
-    }
-    setIsolatedOctant(nearest);
+    setIsolatedOctant(computeNearestOctant());
   }
 
   function assetBelongsToIsolatedOctant(values: Record<string, number>) {
@@ -604,17 +676,48 @@ export function DimensionPreview({
                 {mode >= 2 ? <div className="xy-grid-plane" aria-hidden="true">
                   {gridTicks.map((tick) => <span className="grid-line grid-line-x" style={{ left: `${tick * 10}%` }} key={`grid-x-${tick}`} />)}
                   {gridTicks.map((tick) => <span className="grid-line grid-line-y" style={{ top: `${tick * 10}%` }} key={`grid-y-${tick}`} />)}
-                  {gridTicks.map((tick) => <span className="grid-number grid-number-x" style={{ left: `${tick * 10}%` }} key={`grid-number-x-${tick}`}>{tick * 20 - 100}</span>)}
-                  {gridTicks.map((tick) => <span className="grid-number grid-number-y" style={{ top: `${(10 - tick) * 10}%` }} key={`grid-number-y-${tick}`}>{tick * 20 - 100}</span>)}
                 </div> : null}
-                <div className="coordinate-axis coordinate-axis-x" />
-                {mode >= 2 ? <div className="coordinate-axis coordinate-axis-y" /> : null}
-                {mode === 3 ? <div className="coordinate-axis coordinate-axis-z" /> : null}
+                <div className="axis-bar axis-bar-x" aria-hidden="true">
+                  <div className={`axis-half axis-half-x-pos ${isolatedOctant && isolatedOctant.x !== 1 ? "octant-hidden" : ""}`}><AxisFaces /></div>
+                  <div className={`axis-half axis-half-x-neg ${isolatedOctant && isolatedOctant.x !== -1 ? "octant-hidden" : ""}`}><AxisFaces /></div>
+                </div>
+                {mode >= 2 ? <div className="axis-bar axis-bar-y" aria-hidden="true">
+                  <div className={`axis-half axis-half-y-pos ${isolatedOctant && isolatedOctant.y !== 1 ? "octant-hidden" : ""}`}><AxisFaces /></div>
+                  <div className={`axis-half axis-half-y-neg ${isolatedOctant && isolatedOctant.y !== -1 ? "octant-hidden" : ""}`}><AxisFaces /></div>
+                </div> : null}
+                {mode === 3 ? <div className="axis-bar axis-bar-z" aria-hidden="true">
+                  <div className={`axis-half axis-half-z-pos ${isolatedOctant && isolatedOctant.z !== 1 ? "octant-hidden" : ""}`}><AxisFaces /></div>
+                  <div className={`axis-half axis-half-z-neg ${isolatedOctant && isolatedOctant.z !== -1 ? "octant-hidden" : ""}`}><AxisFaces /></div>
+                </div> : null}
                 <span className="axis-origin" />
-                <span className="axis-label axis-label-x-start"><i style={{ "--billboard-rx": `${mode === 3 ? -sceneRotateX : 0}deg`, "--billboard-rz": `${mode === 3 ? -sceneRotateZ : 0}deg` } as CSSProperties}>{selected[0].leftLabel}</i></span>
-                <span className="axis-label axis-label-x-end"><i style={{ "--billboard-rx": `${mode === 3 ? -sceneRotateX : 0}deg`, "--billboard-rz": `${mode === 3 ? -sceneRotateZ : 0}deg` } as CSSProperties}>{selected[0].rightLabel}</i></span>
-                {mode >= 2 ? <><span className="axis-label axis-label-y-start"><i style={{ "--billboard-rx": `${mode === 3 ? -sceneRotateX : 0}deg`, "--billboard-rz": `${mode === 3 ? -sceneRotateZ : 0}deg` } as CSSProperties}>{selected[1].rightLabel}</i></span><span className="axis-label axis-label-y-end"><i style={{ "--billboard-rx": `${mode === 3 ? -sceneRotateX : 0}deg`, "--billboard-rz": `${mode === 3 ? -sceneRotateZ : 0}deg` } as CSSProperties}>{selected[1].leftLabel}</i></span></> : null}
-                {mode === 3 ? <><span className="axis-label axis-label-z-start"><i style={{ "--billboard-rx": `${-sceneRotateX}deg`, "--billboard-rz": `${-sceneRotateZ}deg` } as CSSProperties}>{selected[2].leftLabel}</i></span><span className="axis-label axis-label-z-end"><i style={{ "--billboard-rx": `${-sceneRotateX}deg`, "--billboard-rz": `${-sceneRotateZ}deg` } as CSSProperties}>{selected[2].rightLabel}</i></span></> : null}
+                <span className={`axis-label axis-label-x-start ${isolatedOctant && isolatedOctant.x === 1 ? "octant-hidden" : ""}`}><i style={{ "--billboard-rx": `${mode === 3 ? -sceneRotateX : 0}deg`, "--billboard-rz": `${mode === 3 ? -sceneRotateZ : 0}deg` } as CSSProperties}>{selected[0].leftLabel}</i></span>
+                <span className={`axis-label axis-label-x-end ${isolatedOctant && isolatedOctant.x === -1 ? "octant-hidden" : ""}`}><i style={{ "--billboard-rx": `${mode === 3 ? -sceneRotateX : 0}deg`, "--billboard-rz": `${mode === 3 ? -sceneRotateZ : 0}deg` } as CSSProperties}>{selected[0].rightLabel}</i></span>
+                {mode >= 2 ? <><span className={`axis-label axis-label-y-start ${isolatedOctant && isolatedOctant.y === -1 ? "octant-hidden" : ""}`}><i style={{ "--billboard-rx": `${mode === 3 ? -sceneRotateX : 0}deg`, "--billboard-rz": `${mode === 3 ? -sceneRotateZ : 0}deg` } as CSSProperties}>{selected[1].rightLabel}</i></span><span className={`axis-label axis-label-y-end ${isolatedOctant && isolatedOctant.y === 1 ? "octant-hidden" : ""}`}><i style={{ "--billboard-rx": `${mode === 3 ? -sceneRotateX : 0}deg`, "--billboard-rz": `${mode === 3 ? -sceneRotateZ : 0}deg` } as CSSProperties}>{selected[1].leftLabel}</i></span></> : null}
+                {mode === 3 ? <><span className={`axis-label axis-label-z-start ${isolatedOctant && isolatedOctant.z === 1 ? "octant-hidden" : ""}`}><i style={{ "--billboard-rx": `${-sceneRotateX}deg`, "--billboard-rz": `${-sceneRotateZ}deg` } as CSSProperties}>{selected[2].leftLabel}</i></span><span className={`axis-label axis-label-z-end ${isolatedOctant && isolatedOctant.z === -1 ? "octant-hidden" : ""}`}><i style={{ "--billboard-rx": `${-sceneRotateX}deg`, "--billboard-rz": `${-sceneRotateZ}deg` } as CSSProperties}>{selected[2].rightLabel}</i></span></> : null}
+                {cornerLabels.map((corner) => {
+                  const octantHidden = isolatedOctant && !(
+                    (corner.x === 0 || corner.x === isolatedOctant.x) &&
+                    (corner.y === 0 || corner.y === isolatedOctant.y) &&
+                    (corner.z === 0 || corner.z === isolatedOctant.z)
+                  );
+                  return (
+                    <span
+                      className={`corner-label ${octantHidden ? "octant-hidden" : ""}`}
+                      key={corner.key}
+                      style={{
+                        left: corner.x === 1 ? "100%" : corner.x === -1 ? "0" : "50%",
+                        top: corner.y === 1 ? "0" : corner.y === -1 ? "100%" : "50%",
+                        "--corner-tz": `calc(var(--scene-size) / 2 * ${corner.z})`,
+                        "--corner-dx": corner.x === 0 ? "0px" : corner.x === 1 ? "-12px" : "12px",
+                        "--corner-dy": corner.y === 0 ? "0px" : corner.y === 1 ? "12px" : "-12px",
+                        "--billboard-rx": `${mode === 3 ? -sceneRotateX : 0}deg`,
+                        "--billboard-rz": `${mode === 3 ? -sceneRotateZ : 0}deg`,
+                      } as CSSProperties}
+                    >
+                      <i>{corner.label}</i>
+                    </span>
+                  );
+                })}
                 {assets.map((asset) => {
                   const values = { ...asset.dimensionValues, ...overrides[asset.id] };
                   const octantHidden = !assetBelongsToIsolatedOctant(values);
@@ -664,7 +767,7 @@ export function DimensionPreview({
             </div>
             {mode === 3 ? <div className="octant-isolation-controls">
               <button className={`octant-isolation-button ${isolatedOctant ? "active" : ""}`} type="button" onClick={toggleOctantIsolation}>{isolatedOctant ? "退出象限隔离" : "隔离当前象限"}</button>
-              {isolatedOctantLabel ? <span className="octant-isolation-label" aria-label={`当前隔离象限：${isolatedOctantLabel}`}>{isolatedOctantLabel}</span> : null}
+              {isolatedOctantLabel ? <span className="octant-isolation-label" aria-label={`当前隔离象限：${isolatedOctantLabel}`}>{isolatedOctantLabel}</span> : nearestOctantLabel ? <span className="octant-isolation-label" aria-label={`即将隔离象限：${nearestOctantLabel}`}>{nearestOctantLabel}</span> : null}
             </div> : null}
           </div>
         ) : <div className="preview-empty"><Box size={28} /><h3>选择预览维度</h3><p>项目可以拥有任意数量的维度，每次预览最多选择 3 个。</p></div>}
