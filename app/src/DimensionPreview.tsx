@@ -22,6 +22,8 @@ type AssetDrag = {
 
 const clampValue = (value: number) => Math.max(0, Math.min(1000, Math.round(value)));
 const wrapRotation = (value: number) => ((value % 360) + 360) % 360;
+const SCENE_PERSPECTIVE = 2200;
+const DEPTH_SCALE = .68;
 const aspectRatioFor = (asset: Asset) => {
   const width = asset.width ?? 0;
   const height = asset.height ?? 0;
@@ -171,7 +173,7 @@ export function DimensionPreview({
     const cosPitch = Math.cos(pitch);
     const sinYaw = Math.sin(yaw);
     const cosYaw = Math.cos(yaw);
-    const perspective = 1100;
+    const perspective = SCENE_PERSPECTIVE;
     const denominator = zoom * (perspective * cosPitch + screenY * sinPitch);
     if (Math.abs(denominator) < 1) return null;
     const localAlongY = (
@@ -194,7 +196,7 @@ export function DimensionPreview({
     const alongY = Math.sin(yaw) * x + Math.cos(yaw) * y;
     const worldY = Math.cos(pitch) * alongY - Math.sin(pitch) * z;
     const worldZ = Math.sin(pitch) * alongY + Math.cos(pitch) * z;
-    const perspective = 1100;
+    const perspective = SCENE_PERSPECTIVE;
     const factor = perspective / (perspective - zoom * worldZ);
     return { x: zoom * alongX * factor, y: zoom * worldY * factor };
   }
@@ -228,7 +230,7 @@ export function DimensionPreview({
     const plane = scenePlaneRef.current;
     if (!plane) return null;
     const candidates = Array.from(plane.querySelectorAll<HTMLElement>(".preview-asset"))
-      .map((asset) => {
+      .map((asset, order) => {
         if (hiddenAssetIdsRef.current.has(asset.dataset.assetId ?? "")) return null;
         const face = asset.querySelector<HTMLElement>(".preview-asset-face");
         const rect = face?.getBoundingClientRect();
@@ -236,10 +238,11 @@ export function DimensionPreview({
         return {
           id: asset.dataset.assetId ?? null,
           depth: Number(asset.dataset.screenDepth ?? 0),
+          order,
         };
       })
-      .filter((candidate): candidate is { id: string; depth: number } => Boolean(candidate?.id))
-      .sort((a, b) => b.depth - a.depth);
+      .filter((candidate): candidate is { id: string; depth: number; order: number } => Boolean(candidate?.id))
+      .sort((a, b) => b.depth - a.depth || b.order - a.order);
     return candidates[0]?.id ?? null;
   }
 
@@ -249,8 +252,9 @@ export function DimensionPreview({
     let hiddenIds: string[] = [];
     const plane = scenePlaneRef.current;
     if (assetId && plane) {
-      const target = Array.from(plane.querySelectorAll<HTMLElement>(".preview-asset"))
-        .find((asset) => asset.dataset.assetId === assetId);
+      const candidates = Array.from(plane.querySelectorAll<HTMLElement>(".preview-asset"));
+      const target = candidates.find((asset) => asset.dataset.assetId === assetId);
+      const targetOrder = target ? candidates.indexOf(target) : -1;
       const targetFace = target?.querySelector<HTMLElement>(".preview-asset-face");
       const targetRect = targetFace?.getBoundingClientRect();
       const targetDepth = Number(target?.dataset.screenDepth ?? 0);
@@ -266,9 +270,12 @@ export function DimensionPreview({
           top: centerY - expandedHeight / 2,
           bottom: centerY + expandedHeight / 2,
         };
-        hiddenIds = Array.from(plane.querySelectorAll<HTMLElement>(".preview-asset"))
-          .filter((candidate) => {
-            if (candidate === target || Number(candidate.dataset.screenDepth ?? 0) <= targetDepth) return false;
+        hiddenIds = candidates
+          .filter((candidate, candidateOrder) => {
+            const candidateDepth = Number(candidate.dataset.screenDepth ?? 0);
+            const isInFront = candidateDepth > targetDepth
+              || (mode === 1 && Math.abs(candidateDepth - targetDepth) < .001 && candidateOrder > targetOrder);
+            if (candidate === target || !isInFront) return false;
             const face = candidate.querySelector<HTMLElement>(".preview-asset-face");
             const rect = face?.getBoundingClientRect();
             return Boolean(rect && expanded.left < rect.right && expanded.right > rect.left && expanded.top < rect.bottom && expanded.bottom > rect.top);
@@ -349,7 +356,7 @@ export function DimensionPreview({
     const startLocalY = mode >= 2
       ? (.5 - (currentValues[selected[1].id] ?? 500) / 1000) * plane.offsetHeight
       : 0;
-    const startLocalZ = mode === 3 ? ((currentValues[selected[2].id] ?? 500) - 500) * .34 : 0;
+    const startLocalZ = mode === 3 ? ((currentValues[selected[2].id] ?? 500) - 500) * DEPTH_SCALE : 0;
     const pointerOnPlane = unprojectPointerToPlane(event.clientX, event.clientY, startLocalZ);
     assetDrag.current = {
       pointerId: event.pointerId,
@@ -389,7 +396,7 @@ export function DimensionPreview({
       const depthDelta = axisLengthSquared > 9
         ? (dx * axisX + dy * axisY) / axisLengthSquared * 100
         : -dy * 1.5 / zoom;
-      next[selected[2].id] = clampValue(500 + (active.startLocalZ + depthDelta) / .34);
+      next[selected[2].id] = clampValue(500 + (active.startLocalZ + depthDelta) / DEPTH_SCALE);
     } else {
       const pointerOnPlane = unprojectPointerToPlane(event.clientX, event.clientY, active.startLocalZ);
       if (pointerOnPlane) {
@@ -519,10 +526,10 @@ export function DimensionPreview({
                   const yaw = (mode === 3 ? rotateZ : 0) * Math.PI / 180;
                   const localX = (x / 1000 - 0.5) * planeSize;
                   const localY = (y / 1000 - 0.5) * planeSize;
-                  const localZ = z * 0.34;
+                  const localZ = z * DEPTH_SCALE;
                   const alongY = Math.sin(yaw) * localX + Math.cos(yaw) * localY;
                   const worldZ = Math.sin(pitch) * alongY + Math.cos(pitch) * localZ;
-                  const persp = 1 - worldZ / 1100;
+                  const persp = 1 - worldZ / SCENE_PERSPECTIVE;
                   return (
                     <button
                       type="button"
@@ -534,7 +541,7 @@ export function DimensionPreview({
                       style={{
                         left: `${x / 10}%`,
                         top: `${y / 10}%`,
-                        "--asset-z": `${z * .34}px`,
+                        "--asset-z": `${z * DEPTH_SCALE}px`,
                         "--asset-ratio": aspectRatioFor(asset),
                         "--persp": persp,
                         "--billboard-rx": `${mode === 3 ? -sceneRotateX : 0}deg`,

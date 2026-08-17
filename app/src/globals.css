@@ -312,16 +312,16 @@ button:focus-visible, input:focus-visible, textarea:focus-visible {
 .preview-zoom span { min-width: 42px; text-align: center; color: var(--muted); font-size: 10px; }
 .fullscreen-button { width: 31px; height: 29px; padding: 0; border: 1px solid var(--line); background: white; color: var(--muted); display: grid; place-items: center; cursor: pointer; }
 .fullscreen-button:hover { color: var(--ink); }
-.dimension-scene { flex: 1; min-height: 0; padding: 38px; overflow: auto; background: #efeee8; }
-.scene-viewport { width: 100%; min-width: 620px; min-height: 520px; height: 100%; display: grid; place-items: center; container-type: size; perspective: 1100px; overflow: hidden; touch-action: none; overscroll-behavior: contain; }
+.dimension-scene { --preview-hover-duration: .18s; flex: 1; min-height: 0; padding: 38px; overflow: auto; background: #efeee8; }
+.scene-viewport { width: 100%; min-width: 620px; min-height: 520px; height: 100%; display: grid; place-items: center; container-type: size; perspective: 2200px; overflow: hidden; touch-action: none; overscroll-behavior: contain; }
 .preview-layout.focus-mode .scene-viewport { min-width: 0; min-height: 0; }
 .scene-scale { transform: scale(var(--scene-scale)); transform-style: preserve-3d; }
-.scene-plane { --scene-size: min(76cqw, 70cqh); width: var(--scene-size); height: var(--scene-size); position: relative; transform-origin: center center; background: transparent; pointer-events: none; transform-style: preserve-3d; transform: rotateX(var(--scene-rx)) rotateZ(var(--scene-rz)); transition: none; }
+.scene-plane { --scene-size: min(152cqw, 140cqh); width: var(--scene-size); height: var(--scene-size); position: relative; transform-origin: center center; background: transparent; pointer-events: none; transform: rotateX(var(--scene-rx)) rotateZ(var(--scene-rz)); transition: none; }
 .mode-transitioning .scene-plane { transition: transform 1s ease-in-out; }
-.mode-transitioning .preview-asset-face { transition: transform 1s ease-in-out; }
+.mode-transitioning .preview-asset-face { transition: transform 1s ease-in-out, box-shadow var(--preview-hover-duration) ease, opacity var(--preview-hover-duration) ease, visibility 0s linear; }
 .mode-transitioning .axis-label i { transition: transform 1s ease-in-out; }
 .camera-moving .scene-plane { transition: none; }
-.camera-moving .preview-asset-face { transition: none; }
+.camera-moving .preview-asset-face { transition: transform 0s, box-shadow var(--preview-hover-duration) ease, opacity var(--preview-hover-duration) ease, visibility 0s linear; }
 .camera-moving .axis-label i { transition: none; }
 .camera-moving .scene-viewport { cursor: grabbing; }
 .dimension-scene.space-held .scene-viewport { cursor: grab; }
@@ -339,7 +339,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible {
 .coordinate-axis::before { left: -1px; transform: rotate(-135deg); }
 .coordinate-axis::after { right: -1px; transform: rotate(45deg); }
 .coordinate-axis-y { transform: rotateZ(90deg); }
-.coordinate-axis-z { width: 420px; left: 50%; margin-left: -210px; transform: rotateY(90deg); }
+.coordinate-axis-z { width: 840px; left: 50%; margin-left: -420px; transform: rotateY(90deg); }
 .axis-origin { width: 7px; height: 7px; position: absolute; left: 50%; top: 50%; z-index: 3; border: 2px solid #f7f6f1; border-radius: 50%; background: var(--accent); transform: translate(-50%, -50%); pointer-events: none; }
 .axis-label { position: absolute; z-index: 4; transform-style: preserve-3d; pointer-events: none; }
 .axis-label i { display: block; padding: 3px 5px; background: rgba(239, 238, 232, .9); color: #565c55; font-size: 10px; font-style: normal; white-space: nowrap; transform: rotateZ(var(--billboard-rz)) rotateX(var(--billboard-rx)); transition: none; }
@@ -348,13 +348,13 @@ button:focus-visible, input:focus-visible, textarea:focus-visible {
 .axis-label-y-start { left: 50%; top: -7px; transform: translate(-50%, -100%); }
 .axis-label-y-end { left: 50%; bottom: -7px; transform: translate(-50%, 100%); }
 .axis-label-z-start, .axis-label-z-end { left: 50%; top: 50%; }
-.axis-label-z-start { transform: translate(-50%, -50%) translateZ(-220px); }
-.axis-label-z-end { transform: translate(-50%, -50%) translateZ(220px); }
+.axis-label-z-start { transform: translate(-50%, -50%) translateZ(-440px); }
+.axis-label-z-end { transform: translate(-50%, -50%) translateZ(440px); }
 .preview-asset { width: var(--asset-size, 82px); height: auto; aspect-ratio: var(--asset-ratio, 1 / 1); padding: 0; position: absolute; border: 0; background: transparent; cursor: grab; pointer-events: none; transform: translate(-50%, -50%) translateZ(var(--asset-z)); transform-style: preserve-3d; touch-action: none; user-select: none; transition: left 1s ease-in-out, top 1s ease-in-out, transform 1s ease-in-out; }
-.preview-asset.hover-occluder { visibility: hidden; }
 .preview-asset:active, .preview-asset.dragging { cursor: grabbing; z-index: 1001; }
 .preview-asset.dragging { transition: none; }
-.preview-asset-face { position: absolute; inset: 0; display: grid; place-items: center; background: #deded8; box-shadow: 0 5px 14px rgba(25, 29, 25, .22); transform: scale3d(var(--persp, 1), var(--persp, 1), var(--persp, 1)) rotateZ(var(--billboard-rz)) rotateX(var(--billboard-rx)) scale3d(var(--hover-scale, 1), var(--hover-scale, 1), var(--hover-scale, 1)); transform-style: preserve-3d; transition: transform .18s ease, box-shadow .18s ease; }
+.preview-asset-face { position: absolute; inset: 0; display: grid; place-items: center; visibility: visible; opacity: 1; background: #deded8; box-shadow: 0 5px 14px rgba(25, 29, 25, .22); transform: scale3d(var(--persp, 1), var(--persp, 1), var(--persp, 1)) rotateZ(var(--billboard-rz)) rotateX(var(--billboard-rx)) scale3d(var(--hover-scale, 1), var(--hover-scale, 1), var(--hover-scale, 1)); transform-style: preserve-3d; transition: transform var(--preview-hover-duration) ease, box-shadow var(--preview-hover-duration) ease, opacity var(--preview-hover-duration) ease, visibility 0s linear; }
+.preview-asset.hover-occluder .preview-asset-face { visibility: hidden; opacity: 0; transition: transform var(--preview-hover-duration) ease, box-shadow var(--preview-hover-duration) ease, opacity var(--preview-hover-duration) ease, visibility 0s linear var(--preview-hover-duration); }
 .preview-asset.hovered .preview-asset-face { --hover-scale: 1.65; box-shadow: 0 12px 30px rgba(25, 29, 25, .34); }
 .preview-asset.dragging .preview-asset-face { box-shadow: 0 8px 22px rgba(29, 34, 29, .3); }
 .preview-asset-face img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; object-position: center; display: block; pointer-events: none; }
