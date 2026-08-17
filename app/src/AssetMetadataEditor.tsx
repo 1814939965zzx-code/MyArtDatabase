@@ -1,7 +1,7 @@
 "use client";
 
 import { Plus, Save, X } from "lucide-react";
-import { FormEvent, useEffect, useState } from "react";
+import { FormEvent, forwardRef, useEffect, useImperativeHandle, useRef, useState } from "react";
 
 export type EditableAssetMetadata = {
   id: string;
@@ -14,19 +14,24 @@ export type EditableAssetMetadata = {
 
 export type AssetMetadataUpdate = Omit<EditableAssetMetadata, "id">;
 
-export function AssetMetadataEditor({
-  asset,
-  busy,
-  pendingDeleteTag,
-  onSave,
-  onDeleteTag,
-}: {
+export type AssetMetadataEditorHandle = {
+  save: () => Promise<boolean>;
+};
+
+export const AssetMetadataEditor = forwardRef<AssetMetadataEditorHandle, {
   asset: EditableAssetMetadata;
   busy: boolean;
   pendingDeleteTag?: string | null;
   onSave: (update: AssetMetadataUpdate) => Promise<void>;
   onDeleteTag?: (tag: string) => void;
-}) {
+}>(function AssetMetadataEditor({
+  asset,
+  busy,
+  pendingDeleteTag,
+  onSave,
+  onDeleteTag,
+}, ref) {
+  const formRef = useRef<HTMLFormElement>(null);
   const [name, setName] = useState(asset.name);
   const [tags, setTags] = useState(asset.tags.length ? asset.tags : [""]);
   const [description, setDescription] = useState(asset.description);
@@ -41,16 +46,43 @@ export function AssetMetadataEditor({
     setSourceUrl(asset.sourceUrl);
   }, [asset.id, asset.name, asset.tags, asset.description, asset.notes, asset.sourceUrl]);
 
-  async function submit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
+  function metadataUpdate(): AssetMetadataUpdate {
     const normalizedTags = [...new Set(tags.map((tag) => tag.trim()).filter(Boolean))].slice(0, 20);
-    await onSave({
+    return {
       name: name.trim(),
       tags: normalizedTags,
       description: description.trim(),
       notes: notes.trim(),
       sourceUrl: sourceUrl.trim(),
-    });
+    };
+  }
+
+  function hasChanges(update: AssetMetadataUpdate) {
+    const originalTags = [...new Set(asset.tags.map((tag) => tag.trim()).filter(Boolean))].slice(0, 20);
+    return update.name !== asset.name
+      || update.description !== asset.description
+      || update.notes !== asset.notes
+      || update.sourceUrl !== asset.sourceUrl
+      || update.tags.join("\u0000") !== originalTags.join("\u0000");
+  }
+
+  async function save() {
+    if (!formRef.current?.reportValidity()) return false;
+    const update = metadataUpdate();
+    if (!hasChanges(update)) return true;
+    try {
+      await onSave(update);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  useImperativeHandle(ref, () => ({ save }));
+
+  async function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    await save();
   }
 
   function removeTag(index: number) {
@@ -63,7 +95,7 @@ export function AssetMetadataEditor({
   }
 
   return (
-    <form className="asset-metadata-form" onSubmit={(event) => void submit(event)}>
+    <form ref={formRef} className="asset-metadata-form" onSubmit={(event) => void submit(event)}>
       <label>
         素材名称
         <input
@@ -120,4 +152,4 @@ export function AssetMetadataEditor({
       </button>
     </form>
   );
-}
+});

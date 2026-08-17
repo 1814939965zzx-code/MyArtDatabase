@@ -24,7 +24,7 @@ import {
 } from "lucide-react";
 import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { AllAssetsView, type LibraryAsset } from "./AllAssetsView";
-import { AssetMetadataEditor, type AssetMetadataUpdate } from "./AssetMetadataEditor";
+import { AssetMetadataEditor, type AssetMetadataEditorHandle, type AssetMetadataUpdate } from "./AssetMetadataEditor";
 import { BoardView } from "./BoardView";
 import { DeletionToast } from "./DeletionToast";
 import { DimensionPreview } from "./DimensionPreview";
@@ -142,6 +142,7 @@ export function ArtDatabaseApp() {
   const [uploadFile, setUploadFile] = useState<File | null>(null);
   const [dragActive, setDragActive] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const metadataEditorRef = useRef<AssetMetadataEditorHandle>(null);
 
   async function loadProjects(preferredId?: string) {
     const data = await api<{ projects: Project[] }>("/api/projects");
@@ -209,7 +210,7 @@ export function ArtDatabaseApp() {
     if (!selectedAssetId) return;
     const previousOverflow = document.body.style.overflow;
     const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setSelectedAssetId(null);
+      if (event.key === "Escape") void closeAssetDetail();
     };
     document.body.style.overflow = "hidden";
     window.addEventListener("keydown", closeOnEscape);
@@ -218,6 +219,11 @@ export function ArtDatabaseApp() {
       window.removeEventListener("keydown", closeOnEscape);
     };
   }, [selectedAssetId]);
+
+  async function closeAssetDetail() {
+    const saved = await metadataEditorRef.current?.save();
+    if (saved !== false) setSelectedAssetId(null);
+  }
 
   useEffect(() => {
     if (!pendingDeletion) return;
@@ -463,6 +469,7 @@ export function ArtDatabaseApp() {
       setMessage("素材信息已保存");
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "保存失败");
+      throw error;
     } finally {
       setBusy(false);
     }
@@ -626,15 +633,16 @@ export function ArtDatabaseApp() {
 
       {activeArea === "project" && selectedAsset && workspace ? (
         <aside className="asset-drawer" aria-label="素材详情">
-          <div className="asset-detail-stage" role="button" tabIndex={0} aria-label="关闭素材详情" onClick={() => setSelectedAssetId(null)} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") setSelectedAssetId(null); }}>
+          <div className="asset-detail-stage" role="button" tabIndex={0} aria-label="关闭素材详情" onClick={() => void closeAssetDetail()} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); void closeAssetDetail(); } }}>
             {selectedAsset.originalUrl ? <span className="drawer-image-frame"><img className="drawer-image" src={selectedAsset.originalUrl} alt={selectedAsset.name} onClick={(event) => event.stopPropagation()} /></span> : <span className="drawer-image-fallback" onClick={(event) => event.stopPropagation()}><ImageIcon size={40} /></span>}
           </div>
           <div className="drawer-panel">
-            <div className="drawer-heading"><div><p className="eyebrow">ASSET DETAIL</p><h2>素材详情</h2></div><button className="icon-button" type="button" onClick={() => setSelectedAssetId(null)} aria-label="关闭素材详情"><X size={18} /></button></div>
+            <div className="drawer-heading"><div><p className="eyebrow">ASSET DETAIL</p><h2>素材详情</h2></div><button className="icon-button" type="button" onClick={() => void closeAssetDetail()} aria-label="关闭素材详情"><X size={18} /></button></div>
             <div className="drawer-scroll">
               <div className="drawer-file"><small>文件名</small><span>{selectedAsset.fileName}</span></div>
               {selectedAsset.width || selectedAsset.fileSize ? <div className="drawer-facts"><span>{selectedAsset.width && selectedAsset.height ? `${selectedAsset.width} × ${selectedAsset.height}` : "尺寸未知"}</span><span>{selectedAsset.fileSize ? `${(selectedAsset.fileSize / 1024 / 1024).toFixed(2)} MB` : "演示素材"}</span><span>{selectedAsset.mimeType || "image"}</span></div> : null}
               <AssetMetadataEditor
+                ref={metadataEditorRef}
                 asset={selectedAsset}
                 busy={busy}
                 pendingDeleteTag={pendingDeletion?.kind === "tag" && pendingDeletion.assetId === selectedAsset.id ? pendingDeletion.tag : null}

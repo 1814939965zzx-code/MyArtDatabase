@@ -12,8 +12,8 @@ import {
   Trash2,
   X,
 } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
-import { AssetMetadataEditor, type AssetMetadataUpdate } from "./AssetMetadataEditor";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { AssetMetadataEditor, type AssetMetadataEditorHandle, type AssetMetadataUpdate } from "./AssetMetadataEditor";
 
 export type LibraryProject = {
   id: string;
@@ -80,6 +80,7 @@ export function AllAssetsView({
   const [selectedTag, setSelectedTag] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const metadataEditorRef = useRef<AssetMetadataEditorHandle>(null);
 
   const globalTags = useMemo(
     () => [...new Set(assets.flatMap((asset) => asset.tags))].sort((a, b) => a.localeCompare(b, "zh-CN")),
@@ -108,7 +109,7 @@ export function AllAssetsView({
     if (!selectedAssetId) return;
     const previousOverflow = document.body.style.overflow;
     const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setSelectedAssetId(null);
+      if (event.key === "Escape") void closeAssetDetail();
     };
     document.body.style.overflow = "hidden";
     window.addEventListener("keydown", closeOnEscape);
@@ -117,6 +118,11 @@ export function AllAssetsView({
       window.removeEventListener("keydown", closeOnEscape);
     };
   }, [selectedAssetId]);
+
+  async function closeAssetDetail() {
+    const saved = await metadataEditorRef.current?.save();
+    if (saved !== false) setSelectedAssetId(null);
+  }
 
   function openAssign(asset: LibraryAsset) {
     setAssignAssetId(asset.id);
@@ -177,6 +183,7 @@ export function AllAssetsView({
       const message = reason instanceof Error ? reason.message : "保存失败";
       setError(message);
       onMessage(message);
+      throw reason;
     } finally {
       setBusy(false);
     }
@@ -226,16 +233,17 @@ export function AllAssetsView({
 
       {selectedAsset ? (
         <aside className="asset-drawer" aria-label="全局素材详情">
-          <div className="asset-detail-stage" role="button" tabIndex={0} aria-label="关闭素材详情" onClick={() => setSelectedAssetId(null)} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") setSelectedAssetId(null); }}>
+          <div className="asset-detail-stage" role="button" tabIndex={0} aria-label="关闭素材详情" onClick={() => void closeAssetDetail()} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); void closeAssetDetail(); } }}>
             {selectedAsset.originalUrl ? <span className="drawer-image-frame"><img className="drawer-image" src={selectedAsset.originalUrl} alt={selectedAsset.name} onClick={(event) => event.stopPropagation()} /></span> : <span className="drawer-image-fallback" onClick={(event) => event.stopPropagation()}><ImageIcon size={40} /></span>}
           </div>
           <div className="drawer-panel">
-            <div className="drawer-heading"><div><p className="eyebrow">GLOBAL ASSET</p><h2>素材详情</h2></div><button className="icon-button" type="button" onClick={() => setSelectedAssetId(null)} aria-label="关闭素材详情"><X size={18} /></button></div>
+            <div className="drawer-heading"><div><p className="eyebrow">GLOBAL ASSET</p><h2>素材详情</h2></div><button className="icon-button" type="button" onClick={() => void closeAssetDetail()} aria-label="关闭素材详情"><X size={18} /></button></div>
             <div className="drawer-scroll">
               <div className="drawer-file"><small>文件名</small><span>{selectedAsset.fileName}</span></div>
               <div className="drawer-facts"><span>{selectedAsset.width && selectedAsset.height ? `${selectedAsset.width} × ${selectedAsset.height}` : "尺寸未知"}</span><span>{selectedAsset.fileSize ? `${(selectedAsset.fileSize / 1024 / 1024).toFixed(2)} MB` : "大小未知"}</span><span>{selectedAsset.mimeType || "image"}</span></div>
               {error ? <div className="form-error"><AlertTriangle size={15} />{error}</div> : null}
               <AssetMetadataEditor
+                ref={metadataEditorRef}
                 asset={selectedAsset}
                 busy={busy}
                 pendingDeleteTag={pendingDeleteTag?.assetId === selectedAsset.id ? pendingDeleteTag.tag : null}
