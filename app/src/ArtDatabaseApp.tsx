@@ -145,6 +145,10 @@ export function ArtDatabaseApp() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const metadataEditorRef = useRef<AssetMetadataEditorHandle>(null);
   const dimensionEditorRef = useRef<DimensionControlsEditorHandle>(null);
+  const availableTags = useMemo(
+    () => [...new Set(libraryAssets.flatMap((asset) => asset.tags))].sort((a, b) => a.localeCompare(b, "zh-CN")),
+    [libraryAssets],
+  );
 
   async function loadProjects(preferredId?: string) {
     const data = await api<{ projects: Project[] }>("/api/projects");
@@ -223,8 +227,7 @@ export function ArtDatabaseApp() {
   }, [selectedAssetId]);
 
   async function closeAssetDetail() {
-    const dimensionsSaved = await dimensionEditorRef.current?.save();
-    if (dimensionsSaved === false) return;
+    if (dimensionEditorRef.current?.dismissEditor()) return;
     const saved = await metadataEditorRef.current?.save();
     if (saved !== false) setSelectedAssetId(null);
   }
@@ -411,13 +414,13 @@ export function ArtDatabaseApp() {
       });
       setMessage("维度位置已保存");
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : "保存失败");
+      setMessage(error instanceof Error ? error.message : "维度位置保存失败");
       await loadWorkspace(workspace.project.id);
     }
   }
 
-  async function saveDimensionLabels(updates: Array<{ id: string; leftLabel: string; rightLabel: string }>) {
-    if (!workspace) return;
+  async function applyDimensionLabels(updates: Array<{ id: string; leftLabel: string; rightLabel: string }>) {
+    if (!workspace || !updates.length) return;
     setBusy(true);
     try {
       await api("/api/dimensions", {
@@ -434,8 +437,7 @@ export function ArtDatabaseApp() {
       } : current);
       setMessage("维度名称已在当前项目全局更新");
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : "维度名称保存失败");
-      await loadWorkspace(workspace.project.id);
+      setMessage(error instanceof Error ? error.message : "维度名称修改失败");
       throw error;
     } finally {
       setBusy(false);
@@ -573,7 +575,7 @@ export function ArtDatabaseApp() {
       </aside>
 
       <section
-        className={`workspace ${activeArea === "project" && surface === "preview" ? "preview-active" : ""}`}
+        className={`workspace ${activeArea === "project" && surface === "preview" ? "preview-active" : activeArea === "project" && surface === "board" ? "board-active" : ""}`}
         onDragOver={(event) => { if (activeArea === "project") { event.preventDefault(); setDragActive(true); } }}
         onDragLeave={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node)) setDragActive(false); }}
         onDrop={(event) => { event.preventDefault(); setDragActive(false); acceptUpload(event.dataTransfer.files[0]); }}
@@ -675,6 +677,7 @@ export function ArtDatabaseApp() {
                 ref={metadataEditorRef}
                 asset={selectedAsset}
                 busy={busy}
+                availableTags={availableTags}
                 pendingDeleteTag={pendingDeletion?.kind === "tag" && pendingDeletion.assetId === selectedAsset.id ? pendingDeletion.tag : null}
                 onSave={(update) => saveAssetMetadata(selectedAsset, update)}
                 onDeleteTag={(tag) => scheduleTagDeletion(selectedAsset, tag)}
@@ -688,7 +691,7 @@ export function ArtDatabaseApp() {
                 busy={busy}
                 onChangeValue={setLocalDimensionValue}
                 onSaveValue={saveDimensionValue}
-                onSaveLabels={saveDimensionLabels}
+                onApplyLabels={applyDimensionLabels}
               /> : <p className="drawer-empty">先为项目添加维度，再给素材定位。</p>}
               <button className="drawer-remove" type="button" onClick={() => void removeAssetFromProject(selectedAsset)}><Trash2 size={14} />从当前项目移除</button>
             </div>

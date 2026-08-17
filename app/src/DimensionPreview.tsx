@@ -7,6 +7,9 @@ import { displayDimensionValue } from "./dimensionScale";
 type Dimension = { id: string; leftLabel: string; rightLabel: string };
 type Asset = { id: string; name: string; thumbnailUrl: string | null; dimensionValues: Record<string, number>; width?: number; height?: number };
 type CameraDrag = { pointerId: number; startX: number; startY: number; rotateX: number; rotateZ: number };
+type ViewPan = { pointerId: number; startX: number; startY: number; panX: number; panY: number };
+type AxisSign = -1 | 1;
+type Octant = { x: AxisSign; y: AxisSign; z: AxisSign };
 type AssetDrag = {
   pointerId: number;
   assetId: string;
@@ -55,6 +58,10 @@ export function DimensionPreview({
   const [rotateX, setRotateX] = useState(52);
   const [rotateZ, setRotateZ] = useState(352);
   const [cameraMoving, setCameraMoving] = useState(false);
+  const [viewPanning, setViewPanning] = useState(false);
+  const [viewPan, setViewPan] = useState({ x: 0, y: 0 });
+  const [isolatedOctant, setIsolatedOctant] = useState<Octant | null>(null);
+  const [octantTransitioning, setOctantTransitioning] = useState(false);
   const [focusMode, setFocusMode] = useState(false);
   const [draggingAssetId, setDraggingAssetId] = useState<string | null>(null);
   const [hoveredAssetId, setHoveredAssetId] = useState<string | null>(null);
@@ -64,6 +71,7 @@ export function DimensionPreview({
   const scenePlaneRef = useRef<HTMLDivElement>(null);
   const sceneViewportRef = useRef<HTMLDivElement>(null);
   const cameraDrag = useRef<CameraDrag | null>(null);
+  const viewPanDrag = useRef<ViewPan | null>(null);
   const assetDrag = useRef<AssetDrag | null>(null);
   const dragValues = useRef<Record<string, number>>({});
   const spaceHeldRef = useRef(false);
@@ -78,6 +86,14 @@ export function DimensionPreview({
   const gridTicks = useMemo(() => Array.from({ length: 11 }, (_, index) => index), []);
   const sceneRotateX = ((rotateX + 180) % 360 + 360) % 360 - 180;
   const sceneRotateZ = ((rotateZ + 180) % 360 + 360) % 360 - 180;
+  const planeSize = scenePlaneRef.current?.offsetWidth ?? 0;
+  const scenePivot = isolatedOctant
+    ? {
+        x: isolatedOctant.x * planeSize / 4,
+        y: -isolatedOctant.y * planeSize / 4,
+        z: isolatedOctant.z * 250 * DEPTH_SCALE,
+      }
+    : { x: 0, y: 0, z: 0 };
   const [modeTransitioning, setModeTransitioning] = useState(false);
   const [prevMode, setPrevMode] = useState(mode);
   if (prevMode !== mode) {
@@ -91,28 +107,20 @@ export function DimensionPreview({
   }, [focusMode]);
 
   useEffect(() => {
-    const releaseActiveControl = () => {
-      const active = document.activeElement;
-      if (active instanceof HTMLElement && active !== document.body && typeof active.blur === "function") {
-        const tag = active.tagName;
-        if (tag === "BUTTON" || tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || active.isContentEditable) {
-          active.blur();
-        }
-      }
-    };
+    const isEditableTarget = (target: EventTarget | null) => target instanceof HTMLElement
+      && (target.matches("input, textarea, select") || target.isContentEditable);
     const onKeyDown = (event: KeyboardEvent) => {
-      if (mode !== 3 || event.code !== "Space") return;
-      releaseActiveControl();
+      if (!mode || event.code !== "Space" || event.isComposing || isEditableTarget(event.target)) return;
       spaceHeldRef.current = true;
       setSpaceHeld(true);
       event.preventDefault();
       event.stopPropagation();
     };
     const onKeyUp = (event: KeyboardEvent) => {
-      if (event.code !== "Space") return;
+      if (event.code !== "Space" || !spaceHeldRef.current) return;
       spaceHeldRef.current = false;
       setSpaceHeld(false);
-      if (mode === 3) {
+      if (mode) {
         event.preventDefault();
         event.stopPropagation();
       }
@@ -143,6 +151,18 @@ export function DimensionPreview({
     return () => window.clearTimeout(timer);
   }, [modeTransitioning, mode]);
 
+  useEffect(() => {
+    if (mode === 3 || !isolatedOctant) return;
+    setAssetHover(null);
+    setIsolatedOctant(null);
+  }, [mode, isolatedOctant]);
+
+  useEffect(() => {
+    if (!octantTransitioning) return;
+    const timer = window.setTimeout(() => setOctantTransitioning(false), 480);
+    return () => window.clearTimeout(timer);
+  }, [octantTransitioning, isolatedOctant]);
+
   function toggleDimension(id: string) {
     setSelectedIds((current) => {
       if (current.includes(id)) return current.filter((value) => value !== id);
@@ -162,12 +182,53 @@ export function DimensionPreview({
     setZoom((current) => Math.max(.35, Math.min(2.8, current * factor)));
   }
 
+  function toggleOctantIsolation() {
+    if (mode !== 3) return;
+    setAssetHover(null);
+    setOctantTransitioning(true);
+    if (isolatedOctant) {
+      setIsolatedOctant(null);
+      return;
+    }
+
+    const size = scenePlaneRef.current?.offsetWidth ?? 0;
+    const pitch = rotateX * Math.PI / 180;
+    const yaw = rotateZ * Math.PI / 180;
+    const signs: AxisSign[] = [-1, 1];
+    let nearest: Octant = { x: 1, y: 1, z: 1 };
+    let nearestDepth = Number.NEGATIVE_INFINITY;
+    for (const x of signs) {
+      for (const y of signs) {
+        for (const z of signs) {
+          const localX = x * size / 4;
+          const localY = -y * size / 4;
+          const localZ = z * 250 * DEPTH_SCALE;
+          const alongY = Math.sin(yaw) * localX + Math.cos(yaw) * localY;
+          const depth = Math.sin(pitch) * alongY + Math.cos(pitch) * localZ;
+          if (depth > nearestDepth) {
+            nearestDepth = depth;
+            nearest = { x, y, z };
+          }
+        }
+      }
+    }
+    setIsolatedOctant(nearest);
+  }
+
+  function assetBelongsToIsolatedOctant(values: Record<string, number>) {
+    if (!isolatedOctant || mode !== 3) return true;
+    const matchesSide = (value: number, side: AxisSign) => value === 500 || (side === 1 ? value > 500 : value < 500);
+    return matchesSide(values[selected[0].id] ?? 500, isolatedOctant.x)
+      && matchesSide(values[selected[1].id] ?? 500, isolatedOctant.y)
+      && matchesSide(values[selected[2].id] ?? 500, isolatedOctant.z);
+  }
+
   function unprojectPointerToPlane(clientX: number, clientY: number, localZ: number) {
     const viewport = sceneViewportRef.current;
     if (!viewport) return null;
     const rect = viewport.getBoundingClientRect();
-    const screenX = clientX - (rect.left + rect.width / 2);
-    const screenY = clientY - (rect.top + rect.height / 2);
+    const screenX = clientX - (rect.left + rect.width / 2) - viewPan.x;
+    const screenY = clientY - (rect.top + rect.height / 2) - viewPan.y;
     const pitch = (mode === 3 ? rotateX : 0) * Math.PI / 180;
     const yaw = (mode === 3 ? rotateZ : 0) * Math.PI / 180;
     const sinPitch = Math.sin(pitch);
@@ -175,28 +236,32 @@ export function DimensionPreview({
     const sinYaw = Math.sin(yaw);
     const cosYaw = Math.cos(yaw);
     const perspective = SCENE_PERSPECTIVE;
+    const centeredZ = localZ - scenePivot.z;
     const denominator = zoom * (perspective * cosPitch + screenY * sinPitch);
     if (Math.abs(denominator) < 1) return null;
     const localAlongY = (
       screenY * perspective
-      - screenY * zoom * cosPitch * localZ
-      + zoom * perspective * sinPitch * localZ
+      - screenY * zoom * cosPitch * centeredZ
+      + zoom * perspective * sinPitch * centeredZ
     ) / denominator;
-    const perspectiveDenominator = perspective - zoom * (sinPitch * localAlongY + cosPitch * localZ);
+    const perspectiveDenominator = perspective - zoom * (sinPitch * localAlongY + cosPitch * centeredZ);
     const localAlongX = screenX * perspectiveDenominator / (zoom * perspective);
     return {
-      x: cosYaw * localAlongX + sinYaw * localAlongY,
-      y: -sinYaw * localAlongX + cosYaw * localAlongY,
+      x: cosYaw * localAlongX + sinYaw * localAlongY + scenePivot.x,
+      y: -sinYaw * localAlongX + cosYaw * localAlongY + scenePivot.y,
     };
   }
 
   function projectLocalPoint(x: number, y: number, z: number) {
     const pitch = (mode === 3 ? rotateX : 0) * Math.PI / 180;
     const yaw = (mode === 3 ? rotateZ : 0) * Math.PI / 180;
-    const alongX = Math.cos(yaw) * x - Math.sin(yaw) * y;
-    const alongY = Math.sin(yaw) * x + Math.cos(yaw) * y;
-    const worldY = Math.cos(pitch) * alongY - Math.sin(pitch) * z;
-    const worldZ = Math.sin(pitch) * alongY + Math.cos(pitch) * z;
+    const centeredX = x - scenePivot.x;
+    const centeredY = y - scenePivot.y;
+    const centeredZ = z - scenePivot.z;
+    const alongX = Math.cos(yaw) * centeredX - Math.sin(yaw) * centeredY;
+    const alongY = Math.sin(yaw) * centeredX + Math.cos(yaw) * centeredY;
+    const worldY = Math.cos(pitch) * alongY - Math.sin(pitch) * centeredZ;
+    const worldZ = Math.sin(pitch) * alongY + Math.cos(pitch) * centeredZ;
     const perspective = SCENE_PERSPECTIVE;
     const factor = perspective / (perspective - zoom * worldZ);
     return { x: zoom * alongX * factor, y: zoom * worldY * factor };
@@ -217,6 +282,31 @@ export function DimensionPreview({
     setCameraMoving(true);
   }
 
+  function startViewPan(event: PointerEvent<HTMLDivElement>) {
+    if (event.button !== 0) return;
+    setAssetHover(null);
+    event.preventDefault();
+    event.currentTarget.setPointerCapture(event.pointerId);
+    viewPanDrag.current = {
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startY: event.clientY,
+      panX: viewPan.x,
+      panY: viewPan.y,
+    };
+    setViewPanning(true);
+  }
+
+  function moveViewPan(event: PointerEvent<HTMLDivElement>) {
+    const active = viewPanDrag.current;
+    if (!active || active.pointerId !== event.pointerId) return;
+    event.preventDefault();
+    setViewPan({
+      x: active.panX + event.clientX - active.startX,
+      y: active.panY + event.clientY - active.startY,
+    });
+  }
+
   function moveCamera(event: PointerEvent<HTMLDivElement>) {
     const active = cameraDrag.current;
     if (!active || active.pointerId !== event.pointerId) return;
@@ -230,7 +320,7 @@ export function DimensionPreview({
   function assetAtPoint(clientX: number, clientY: number) {
     const plane = scenePlaneRef.current;
     if (!plane) return null;
-    const candidates = Array.from(plane.querySelectorAll<HTMLElement>(".preview-asset"))
+    const candidates = Array.from(plane.querySelectorAll<HTMLElement>(".preview-asset:not(.octant-hidden)"))
       .map((asset, order) => {
         if (hiddenAssetIdsRef.current.has(asset.dataset.assetId ?? "")) return null;
         const face = asset.querySelector<HTMLElement>(".preview-asset-face");
@@ -253,7 +343,7 @@ export function DimensionPreview({
     let hiddenIds: string[] = [];
     const plane = scenePlaneRef.current;
     if (assetId && plane) {
-      const candidates = Array.from(plane.querySelectorAll<HTMLElement>(".preview-asset"));
+      const candidates = Array.from(plane.querySelectorAll<HTMLElement>(".preview-asset:not(.octant-hidden)"));
       const target = candidates.find((asset) => asset.dataset.assetId === assetId);
       const targetOrder = target ? candidates.indexOf(target) : -1;
       const targetFace = target?.querySelector<HTMLElement>(".preview-asset-face");
@@ -291,7 +381,7 @@ export function DimensionPreview({
   }
 
   function updateAssetHover(event: PointerEvent<HTMLDivElement>) {
-    if (assetDrag.current || cameraDrag.current) {
+    if (assetDrag.current || cameraDrag.current || viewPanDrag.current) {
       setAssetHover(null);
       return;
     }
@@ -301,9 +391,13 @@ export function DimensionPreview({
 
   function startSceneMove(event: PointerEvent<HTMLDivElement>) {
     if (event.button !== 0) return;
+    if (spaceHeldRef.current) {
+      startViewPan(event);
+      return;
+    }
     const assetId = assetAtPoint(event.clientX, event.clientY);
     const asset = assetId ? assets.find((candidate) => candidate.id === assetId) : null;
-    if (asset && !(mode === 3 && spaceHeldRef.current)) {
+    if (asset) {
       startAssetMove(event, asset);
       return;
     }
@@ -311,6 +405,10 @@ export function DimensionPreview({
   }
 
   function moveInScene(event: PointerEvent<HTMLDivElement>) {
+    if (viewPanDrag.current) {
+      moveViewPan(event);
+      return;
+    }
     if (assetDrag.current) {
       moveAsset(event);
       return;
@@ -320,6 +418,11 @@ export function DimensionPreview({
   }
 
   function endSceneMove(event: PointerEvent<HTMLDivElement>) {
+    if (viewPanDrag.current?.pointerId === event.pointerId) {
+      viewPanDrag.current = null;
+      setViewPanning(false);
+      return;
+    }
     if (assetDrag.current?.pointerId === event.pointerId) {
       void endAssetMove(event);
       return;
@@ -335,12 +438,15 @@ export function DimensionPreview({
 
   function resetView() {
     cameraDrag.current = null;
+    viewPanDrag.current = null;
     assetDrag.current = null;
     setCameraMoving(false);
+    setViewPanning(false);
     setDraggingAssetId(null);
     setAssetHover(null);
     setRotateX(52);
     setRotateZ(352);
+    setViewPan({ x: 0, y: 0 });
     setZoom(1);
   }
 
@@ -474,7 +580,7 @@ export function DimensionPreview({
         <div className="preview-toolbar">
           <span>{mode ? `${mode}D 预览` : "未选择维度"} · {mode === 1 ? "左右拖动图片改变维度值" : mode === 2 ? "在平面中拖动图片改变两项维度" : mode === 3 ? "左键拖动改变前两项；Shift + 拖动改变深度" : "选择 1～3 个维度开始预览"}</span>
           <div className="preview-tools">
-            {mode === 3 ? <span className="camera-hint"><MousePointer2 size={13} />空格 + 左键拖动视角</span> : null}
+            <span className="camera-hint"><MousePointer2 size={13} />空格 + 左键平移视图</span>
             {mode === 3 ? <><label><Rotate3D size={14} />俯仰<input aria-label="三维预览俯仰角" type="range" min="0" max="180" value={rotateX} onChange={(event) => setRotateX(Number(event.target.value))} /></label><label>旋转<input aria-label="三维预览水平旋转" type="range" min="0" max="360" value={rotateZ} onChange={(event) => setRotateZ(Number(event.target.value))} /></label></> : null}
             <div className="preview-zoom"><button type="button" onClick={() => setZoom((value) => Math.max(.35, value - .1))} aria-label="缩小"><Minus size={14} /></button><span>{Math.round(zoom * 100)}%</span><button type="button" onClick={() => setZoom((value) => Math.min(2.8, value + .1))} aria-label="放大"><Plus size={14} /></button></div>
             <button className="fullscreen-button" type="button" onClick={resetView} aria-label="重置视角" title="重置视角"><RotateCcw size={15} /></button>
@@ -482,7 +588,7 @@ export function DimensionPreview({
           </div>
         </div>
         {mode ? (
-          <div className={`dimension-scene mode-${mode} ${cameraMoving ? "camera-moving" : ""} ${draggingAssetId ? "asset-dragging" : ""} ${hoveredAssetId ? "asset-hovered" : ""} ${modeTransitioning ? "mode-transitioning" : ""} ${spaceHeld ? "space-held" : ""}`}>
+          <div className={`dimension-scene mode-${mode} ${cameraMoving ? "camera-moving" : ""} ${viewPanning ? "view-panning" : ""} ${draggingAssetId ? "asset-dragging" : ""} ${hoveredAssetId ? "asset-hovered" : ""} ${modeTransitioning ? "mode-transitioning" : ""} ${octantTransitioning ? "octant-transitioning" : ""} ${isolatedOctant ? "octant-isolated" : ""} ${spaceHeld ? "space-held" : ""}`}>
             <div
               ref={sceneViewportRef}
               className="scene-viewport"
@@ -494,13 +600,16 @@ export function DimensionPreview({
               onAuxClick={(event) => event.preventDefault()}
               onWheel={zoomWithWheel}
             >
-              <div className="scene-scale" style={{ "--scene-scale": zoom, "--asset-size": `${82 / zoom}px` } as CSSProperties}>
+              <div className="scene-scale" style={{ left: `calc(50% + ${viewPan.x}px)`, top: `calc(50% + ${viewPan.y}px)`, "--scene-scale": zoom, "--asset-size": `${82 / zoom}px` } as CSSProperties}>
                 <div
                   ref={scenePlaneRef}
                   className="scene-plane"
                   style={{
                     "--scene-rx": `${mode === 3 ? sceneRotateX : 0}deg`,
                     "--scene-rz": `${mode === 3 ? sceneRotateZ : 0}deg`,
+                    "--scene-pivot-x": `${-scenePivot.x}px`,
+                    "--scene-pivot-y": `${-scenePivot.y}px`,
+                    "--scene-pivot-z": `${-scenePivot.z}px`,
                   } as CSSProperties}
                 >
                 {mode >= 2 ? <div className="xy-grid-plane" aria-hidden="true">
@@ -519,6 +628,7 @@ export function DimensionPreview({
                 {mode === 3 ? <><span className="axis-label axis-label-z-start"><i style={{ "--billboard-rx": `${-sceneRotateX}deg`, "--billboard-rz": `${-sceneRotateZ}deg` } as CSSProperties}>{selected[2].leftLabel}</i></span><span className="axis-label axis-label-z-end"><i style={{ "--billboard-rx": `${-sceneRotateX}deg`, "--billboard-rz": `${-sceneRotateZ}deg` } as CSSProperties}>{selected[2].rightLabel}</i></span></> : null}
                 {assets.map((asset) => {
                   const values = { ...asset.dimensionValues, ...overrides[asset.id] };
+                  const octantHidden = !assetBelongsToIsolatedOctant(values);
                   const x = values[selected[0].id] ?? 500;
                   const y = mode >= 2 ? 1000 - (values[selected[1].id] ?? 500) : 500;
                   const z = mode === 3 ? (values[selected[2].id] ?? 500) - 500 : 0;
@@ -528,17 +638,20 @@ export function DimensionPreview({
                   const localX = (x / 1000 - 0.5) * planeSize;
                   const localY = (y / 1000 - 0.5) * planeSize;
                   const localZ = z * DEPTH_SCALE;
-                  const alongY = Math.sin(yaw) * localX + Math.cos(yaw) * localY;
-                  const worldZ = Math.sin(pitch) * alongY + Math.cos(pitch) * localZ;
+                  const centeredX = localX - scenePivot.x;
+                  const centeredY = localY - scenePivot.y;
+                  const centeredZ = localZ - scenePivot.z;
+                  const alongY = Math.sin(yaw) * centeredX + Math.cos(yaw) * centeredY;
+                  const worldZ = Math.sin(pitch) * alongY + Math.cos(pitch) * centeredZ;
                   const persp = 1 - worldZ / SCENE_PERSPECTIVE;
                   return (
                     <button
                       type="button"
-                      className={`preview-asset ${draggingAssetId === asset.id ? "dragging" : ""} ${hoveredAssetId === asset.id ? "hovered" : ""} ${hiddenAssetIds.includes(asset.id) ? "hover-occluder" : ""}`}
+                      className={`preview-asset ${draggingAssetId === asset.id ? "dragging" : ""} ${hoveredAssetId === asset.id ? "hovered" : ""} ${hiddenAssetIds.includes(asset.id) ? "hover-occluder" : ""} ${octantHidden ? "octant-hidden" : ""}`}
                       key={asset.id}
                       data-asset-id={asset.id}
                       data-screen-depth={worldZ}
-                      aria-hidden={hiddenAssetIds.includes(asset.id)}
+                      aria-hidden={octantHidden || hiddenAssetIds.includes(asset.id)}
                       style={{
                         left: `${x / 10}%`,
                         top: `${y / 10}%`,
@@ -560,6 +673,7 @@ export function DimensionPreview({
                 </div>
               </div>
             </div>
+            {mode === 3 ? <button className={`octant-isolation-button ${isolatedOctant ? "active" : ""}`} type="button" onClick={toggleOctantIsolation}>{isolatedOctant ? "退出象限隔离" : "隔离当前象限"}</button> : null}
           </div>
         ) : <div className="preview-empty"><Box size={28} /><h3>选择预览维度</h3><p>项目可以拥有任意数量的维度，每次预览最多选择 3 个。</p></div>}
       </div>

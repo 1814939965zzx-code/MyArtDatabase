@@ -1,7 +1,7 @@
 "use client";
 
-import { Plus, Save, X } from "lucide-react";
-import { FormEvent, forwardRef, useEffect, useImperativeHandle, useRef, useState } from "react";
+import { Plus, X } from "lucide-react";
+import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState } from "react";
 
 export type EditableAssetMetadata = {
   id: string;
@@ -21,33 +21,38 @@ export type AssetMetadataEditorHandle = {
 export const AssetMetadataEditor = forwardRef<AssetMetadataEditorHandle, {
   asset: EditableAssetMetadata;
   busy: boolean;
+  availableTags?: string[];
   pendingDeleteTag?: string | null;
   onSave: (update: AssetMetadataUpdate) => Promise<void>;
   onDeleteTag?: (tag: string) => void;
 }>(function AssetMetadataEditor({
   asset,
   busy,
+  availableTags = [],
   pendingDeleteTag,
   onSave,
   onDeleteTag,
 }, ref) {
   const formRef = useRef<HTMLFormElement>(null);
+  const composingRef = useRef(false);
   const [name, setName] = useState(asset.name);
-  const [tags, setTags] = useState(asset.tags.length ? asset.tags : [""]);
+  const [tags, setTags] = useState(asset.tags);
+  const [tagQuery, setTagQuery] = useState("");
   const [description, setDescription] = useState(asset.description);
   const [notes, setNotes] = useState(asset.notes);
   const [sourceUrl, setSourceUrl] = useState(asset.sourceUrl);
 
   useEffect(() => {
     setName(asset.name);
-    setTags(asset.tags.length ? asset.tags : [""]);
+    setTags(asset.tags);
+    setTagQuery("");
     setDescription(asset.description);
     setNotes(asset.notes);
     setSourceUrl(asset.sourceUrl);
   }, [asset.id, asset.name, asset.tags, asset.description, asset.notes, asset.sourceUrl]);
 
   function metadataUpdate(): AssetMetadataUpdate {
-    const normalizedTags = [...new Set(tags.map((tag) => tag.trim()).filter(Boolean))].slice(0, 20);
+    const normalizedTags = [...new Set([...tags, tagQuery].map((tag) => tag.trim()).filter(Boolean))].slice(0, 20);
     return {
       name: name.trim(),
       tags: normalizedTags,
@@ -80,22 +85,49 @@ export const AssetMetadataEditor = forwardRef<AssetMetadataEditorHandle, {
 
   useImperativeHandle(ref, () => ({ save }));
 
-  async function submit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    await save();
-  }
-
-  function removeTag(index: number) {
-    const tag = tags[index].trim();
+  function removeTag(tag: string) {
     if (tag && asset.tags.includes(tag) && onDeleteTag) {
       onDeleteTag(tag);
       return;
     }
-    setTags((current) => current.length === 1 ? [""] : current.filter((_, itemIndex) => itemIndex !== index));
+    setTags((current) => current.filter((item) => item !== tag));
   }
 
+  function addTag(candidate = tagQuery) {
+    const tag = candidate.trim();
+    if (!tag || tags.includes(tag) || tags.length >= 20) return;
+    setTags((current) => [...current, tag]);
+    setTagQuery("");
+  }
+
+  const suggestions = useMemo(() => {
+    const query = tagQuery.trim().toLocaleLowerCase("zh-CN");
+    if (!query) return [];
+    const subsequenceScore = (candidate: string) => {
+      let queryIndex = 0;
+      for (const character of candidate) {
+        if (character === query[queryIndex]) queryIndex += 1;
+      }
+      return queryIndex === query.length ? 3 : 0;
+    };
+    return [...new Set(availableTags)]
+      .filter((tag) => !tags.includes(tag))
+      .map((tag) => {
+        const normalized = tag.toLocaleLowerCase("zh-CN");
+        const score = normalized === query ? 100
+          : normalized.startsWith(query) ? 80
+            : normalized.includes(query) ? 60
+              : query.includes(normalized) ? 40
+                : subsequenceScore(normalized);
+        return { tag, score };
+      })
+      .filter((entry) => entry.score > 0)
+      .sort((a, b) => b.score - a.score || a.tag.localeCompare(b.tag, "zh-CN"))
+      .slice(0, 6);
+  }, [availableTags, tagQuery, tags]);
+
   return (
-    <form ref={formRef} className="asset-metadata-form" onSubmit={(event) => void submit(event)}>
+    <form ref={formRef} className="asset-metadata-form" aria-busy={busy} onSubmit={(event) => event.preventDefault()}>
       <label>
         素材名称
         <input
@@ -108,30 +140,50 @@ export const AssetMetadataEditor = forwardRef<AssetMetadataEditorHandle, {
 
       <fieldset className="asset-tag-editor">
         <legend>全局标签</legend>
-        <div className="asset-tag-inputs">
-          {tags.map((tag, index) => (
-            <div className={`asset-tag-input ${pendingDeleteTag === tag.trim() ? "pending-delete" : ""}`} key={`${index}-${tags.length}`}>
-              <input
-                aria-label={`全局标签 ${index + 1}`}
-                value={tag}
-                maxLength={40}
-                placeholder={index === 0 ? "输入标签" : "新标签"}
-                onChange={(event) => setTags((current) => current.map((item, itemIndex) => itemIndex === index ? event.target.value : item))}
-              />
+        {tags.length ? <div className="asset-tag-badges">
+          {tags.map((tag) => (
+            <span className={`asset-tag-badge ${pendingDeleteTag === tag ? "pending-delete" : ""}`} key={tag}>
               <button
                 type="button"
-                aria-label={`删除标签 ${tag || index + 1}`}
+                aria-label={`解除标签 ${tag}`}
                 disabled={Boolean(pendingDeleteTag)}
-                onClick={() => removeTag(index)}
+                onClick={() => removeTag(tag)}
               >
-                <X size={13} />
+                <X size={11} />
               </button>
-            </div>
+              <span>{tag}</span>
+            </span>
           ))}
+        </div> : null}
+        <div className="asset-tag-combobox">
+          <div className="asset-tag-input">
+            <input
+              aria-label="添加全局标签"
+              value={tagQuery}
+              maxLength={40}
+              placeholder={tags.length >= 20 ? "最多添加 20 个标签" : "输入标签，可匹配已有标签"}
+              disabled={tags.length >= 20}
+              onCompositionStart={() => { composingRef.current = true; }}
+              onCompositionEnd={() => { composingRef.current = false; }}
+              onChange={(event) => setTagQuery(event.target.value)}
+              onKeyDown={(event) => {
+                if (composingRef.current || event.nativeEvent.isComposing) return;
+                if (event.key === "Enter" || event.key === ",") {
+                  event.preventDefault();
+                  addTag(suggestions[0]?.tag ?? tagQuery);
+                }
+              }}
+            />
+            <button type="button" aria-label="添加标签" disabled={!tagQuery.trim() || tags.length >= 20} onClick={() => addTag()}>
+              <Plus size={13} />
+            </button>
+          </div>
+          {suggestions.length ? <div className="asset-tag-suggestions" role="listbox" aria-label="匹配的已有标签">
+            {suggestions.map(({ tag }) => (
+              <button type="button" role="option" aria-selected="false" key={tag} onMouseDown={(event) => event.preventDefault()} onClick={() => addTag(tag)}>{tag}</button>
+            ))}
+          </div> : null}
         </div>
-        <button className="asset-tag-add" type="button" disabled={tags.length >= 20} onClick={() => setTags((current) => [...current, ""])}>
-          <Plus size={13} />添加标签
-        </button>
       </fieldset>
 
       <label>
@@ -146,10 +198,6 @@ export const AssetMetadataEditor = forwardRef<AssetMetadataEditorHandle, {
         备注
         <textarea value={notes} onChange={(event) => setNotes(event.target.value)} rows={2} maxLength={2000} placeholder="团队内部备注" />
       </label>
-
-      <button className="asset-save-button" type="submit" disabled={busy || !name.trim()}>
-        <Save size={14} />{busy ? "保存中…" : "保存素材信息"}
-      </button>
     </form>
   );
 });

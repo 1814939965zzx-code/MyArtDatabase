@@ -246,6 +246,7 @@ export function AllAssetsView({
                 ref={metadataEditorRef}
                 asset={selectedAsset}
                 busy={busy}
+                availableTags={globalTags}
                 pendingDeleteTag={pendingDeleteTag?.assetId === selectedAsset.id ? pendingDeleteTag.tag : null}
                 onSave={(update) => saveAssetMetadata(selectedAsset, update)}
                 onDeleteTag={(tag) => onDeleteTag(selectedAsset, tag)}
