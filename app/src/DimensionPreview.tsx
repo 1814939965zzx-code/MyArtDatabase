@@ -274,7 +274,7 @@ export function DimensionPreview({
           .filter((candidate, candidateOrder) => {
             const candidateDepth = Number(candidate.dataset.screenDepth ?? 0);
             const isInFront = candidateDepth > targetDepth
-              || (mode === 1 && Math.abs(candidateDepth - targetDepth) < .001 && candidateOrder > targetOrder);
+              || (Math.abs(candidateDepth - targetDepth) < .001 && candidateOrder > targetOrder);
             if (candidate === target || !isInFront) return false;
             const face = candidate.querySelector<HTMLElement>(".preview-asset-face");
             const rect = face?.getBoundingClientRect();
