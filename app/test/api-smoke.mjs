@@ -58,6 +58,11 @@ assert.ok(check.duplicates.length >= 1, "重复检测应命中");
 const patch = await fetch(`${base}/api/assets`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ id: asset.id, name: "冒烟测试图-改", tags: "测试,改", description: "x", notes: "", sourceUrl: "" }) });
 assert.equal(patch.status, 200);
 
+const deleteTag = await fetch(`${base}/api/assets`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ id: asset.id, deleteTag: "改" }) });
+assert.equal(deleteTag.status, 200);
+const wsAfterTagDelete = await json(await fetch(`${base}/api/workspace?projectId=project-visual-direction`));
+assert.deepEqual(wsAfterTagDelete.assets.find((item) => item.id === asset.id).tags, ["测试"]);
+
 // 8) 画板 + 元素
 const canvas = await json(await post(`${base}/api/canvases`, { projectId: "project-visual-direction", name: "测试画板" }));
 assert.ok(canvas.canvas.id);

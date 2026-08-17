@@ -147,6 +147,8 @@ function workspace(request, { db }) {
   const assets = db.prepare(`SELECT a.id, a.name, a.file_name AS fileName,
     CASE WHEN a.thumbnail_key IS NOT NULL OR a.storage_key IS NOT NULL
       THEN '/api/media?id=' || a.id || '&variant=thumbnail' ELSE a.thumbnail_url END AS thumbnailUrl,
+    CASE WHEN a.storage_key IS NOT NULL
+      THEN '/api/media?id=' || a.id || '&variant=original' ELSE a.thumbnail_url END AS originalUrl,
     a.tags, a.description, a.notes, a.source_url AS sourceUrl,
     a.file_size AS fileSize, a.width, a.height, a.mime_type AS mimeType,
     a.created_at AS createdAt
@@ -283,7 +285,16 @@ async function updateAsset(request, { db }) {
   const payload = await request.json();
   const id = cleanText(payload.id, 80);
   if (!id) return Response.json({ error: "缺少素材 ID" }, { status: 400 });
+  const existing = db.prepare("SELECT tags FROM assets WHERE id = ? AND deleted_at IS NULL").get(id);
+  if (!existing) return Response.json({ error: "素材不存在" }, { status: 404 });
+  const deleteTag = cleanText(payload.deleteTag, 800);
+  if (deleteTag) {
+    const tags = existing.tags.split(",").map((tag) => tag.trim()).filter((tag) => tag && tag !== deleteTag).join(",");
+    db.prepare("UPDATE assets SET tags = ? WHERE id = ? AND deleted_at IS NULL").run(tags, id);
+    return Response.json({ ok: true, deletedTag: deleteTag });
+  }
   const name = cleanText(payload.name, 120);
+  if (!name) return Response.json({ error: "素材名称不能为空" }, { status: 400 });
   const tags = cleanText(payload.tags, 800).split(",").map((t) => t.trim()).filter(Boolean).slice(0, 20).join(",");
   const description = cleanText(payload.description, 2000);
   const notes = cleanText(payload.notes, 2000);
@@ -333,6 +344,8 @@ function library({ db }) {
   const assets = db.prepare(`SELECT a.id, a.name, a.file_name AS fileName,
     CASE WHEN a.thumbnail_key IS NOT NULL OR a.storage_key IS NOT NULL
       THEN '/api/media?id=' || a.id || '&variant=thumbnail' ELSE a.thumbnail_url END AS thumbnailUrl,
+    CASE WHEN a.storage_key IS NOT NULL
+      THEN '/api/media?id=' || a.id || '&variant=original' ELSE a.thumbnail_url END AS originalUrl,
     a.tags, a.description, a.notes, a.source_url AS sourceUrl,
     a.file_size AS fileSize, a.width, a.height, a.mime_type AS mimeType,
     a.created_at AS createdAt
