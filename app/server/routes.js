@@ -103,6 +103,37 @@ async function createDimension(request, { db }) {
   return Response.json({ dimension: { id, projectId, leftLabel, rightLabel, sortOrder } }, { status: 201 });
 }
 
+async function updateDimensions(request, { db }) {
+  const payload = await request.json();
+  const projectId = cleanId(payload.projectId);
+  const rawUpdates = Array.isArray(payload.dimensions) ? payload.dimensions : [];
+  if (!projectId || !rawUpdates.length) return Response.json({ error: "维度参数不完整" }, { status: 400 });
+  const updates = rawUpdates.map((entry) => ({
+    id: cleanId(entry?.id),
+    leftLabel: cleanText(entry?.leftLabel, 24),
+    rightLabel: cleanText(entry?.rightLabel, 24),
+  }));
+  if (updates.some((entry) => !entry.id || !entry.leftLabel || !entry.rightLabel)) {
+    return Response.json({ error: "请填写维度两端的名称" }, { status: 400 });
+  }
+  if (updates.some((entry) => entry.leftLabel === entry.rightLabel)) {
+    return Response.json({ error: "维度两端不能相同" }, { status: 400 });
+  }
+  if (new Set(updates.map((entry) => entry.id)).size !== updates.length) {
+    return Response.json({ error: "维度不能重复提交" }, { status: 400 });
+  }
+  const findDimension = db.prepare("SELECT id FROM project_dimensions WHERE id = ? AND project_id = ?");
+  if (updates.some((entry) => !findDimension.get(entry.id, projectId))) {
+    return Response.json({ error: "部分维度不存在" }, { status: 404 });
+  }
+  transaction(db, () => {
+    const update = db.prepare("UPDATE project_dimensions SET left_label = ?, right_label = ? WHERE id = ? AND project_id = ?");
+    for (const entry of updates) update.run(entry.leftLabel, entry.rightLabel, entry.id, projectId);
+    db.prepare("UPDATE projects SET updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(projectId);
+  });
+  return Response.json({ dimensions: updates });
+}
+
 function deleteDimension(request, { db }) {
   const url = new URL(request.url);
   const id = cleanId(url.searchParams.get("id"));
@@ -147,6 +178,8 @@ function workspace(request, { db }) {
   const assets = db.prepare(`SELECT a.id, a.name, a.file_name AS fileName,
     CASE WHEN a.thumbnail_key IS NOT NULL OR a.storage_key IS NOT NULL
       THEN '/api/media?id=' || a.id || '&variant=thumbnail' ELSE a.thumbnail_url END AS thumbnailUrl,
+    CASE WHEN a.storage_key IS NOT NULL
+      THEN '/api/media?id=' || a.id || '&variant=original' ELSE a.thumbnail_url END AS originalUrl,
     a.tags, a.description, a.notes, a.source_url AS sourceUrl,
     a.file_size AS fileSize, a.width, a.height, a.mime_type AS mimeType,
     a.created_at AS createdAt
@@ -283,7 +316,16 @@ async function updateAsset(request, { db }) {
   const payload = await request.json();
   const id = cleanText(payload.id, 80);
   if (!id) return Response.json({ error: "缺少素材 ID" }, { status: 400 });
+  const existing = db.prepare("SELECT tags FROM assets WHERE id = ? AND deleted_at IS NULL").get(id);
+  if (!existing) return Response.json({ error: "素材不存在" }, { status: 404 });
+  const deleteTag = cleanText(payload.deleteTag, 800);
+  if (deleteTag) {
+    const tags = existing.tags.split(",").map((tag) => tag.trim()).filter((tag) => tag && tag !== deleteTag).join(",");
+    db.prepare("UPDATE assets SET tags = ? WHERE id = ? AND deleted_at IS NULL").run(tags, id);
+    return Response.json({ ok: true, deletedTag: deleteTag });
+  }
   const name = cleanText(payload.name, 120);
+  if (!name) return Response.json({ error: "素材名称不能为空" }, { status: 400 });
   const tags = cleanText(payload.tags, 800).split(",").map((t) => t.trim()).filter(Boolean).slice(0, 20).join(",");
   const description = cleanText(payload.description, 2000);
   const notes = cleanText(payload.notes, 2000);
@@ -333,6 +375,8 @@ function library({ db }) {
   const assets = db.prepare(`SELECT a.id, a.name, a.file_name AS fileName,
     CASE WHEN a.thumbnail_key IS NOT NULL OR a.storage_key IS NOT NULL
       THEN '/api/media?id=' || a.id || '&variant=thumbnail' ELSE a.thumbnail_url END AS thumbnailUrl,
+    CASE WHEN a.storage_key IS NOT NULL
+      THEN '/api/media?id=' || a.id || '&variant=original' ELSE a.thumbnail_url END AS originalUrl,
     a.tags, a.description, a.notes, a.source_url AS sourceUrl,
     a.file_size AS fileSize, a.width, a.height, a.mime_type AS mimeType,
     a.created_at AS createdAt
@@ -532,6 +576,7 @@ export async function handleApi(request, ctx) {
     if (pathname === "/api/projects" && method === "DELETE") return deleteProject(request, ctx);
 
     if (pathname === "/api/dimensions" && method === "POST") return await createDimension(request, ctx);
+    if (pathname === "/api/dimensions" && method === "PATCH") return await updateDimensions(request, ctx);
     if (pathname === "/api/dimensions" && method === "DELETE") return deleteDimension(request, ctx);
 
     if (pathname === "/api/asset-values" && method === "PATCH") return await updateDimensionValue(request, ctx);

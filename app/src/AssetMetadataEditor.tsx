@@ -1,0 +1,203 @@
+"use client";
+
+import { Plus, X } from "lucide-react";
+import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState } from "react";
+
+export type EditableAssetMetadata = {
+  id: string;
+  name: string;
+  tags: string[];
+  description: string;
+  notes: string;
+  sourceUrl: string;
+};
+
+export type AssetMetadataUpdate = Omit<EditableAssetMetadata, "id">;
+
+export type AssetMetadataEditorHandle = {
+  save: () => Promise<boolean>;
+};
+
+export const AssetMetadataEditor = forwardRef<AssetMetadataEditorHandle, {
+  asset: EditableAssetMetadata;
+  busy: boolean;
+  availableTags?: string[];
+  pendingDeleteTag?: string | null;
+  onSave: (update: AssetMetadataUpdate) => Promise<void>;
+  onDeleteTag?: (tag: string) => void;
+}>(function AssetMetadataEditor({
+  asset,
+  busy,
+  availableTags = [],
+  pendingDeleteTag,
+  onSave,
+  onDeleteTag,
+}, ref) {
+  const formRef = useRef<HTMLFormElement>(null);
+  const composingRef = useRef(false);
+  const [name, setName] = useState(asset.name);
+  const [tags, setTags] = useState(asset.tags);
+  const [tagQuery, setTagQuery] = useState("");
+  const [description, setDescription] = useState(asset.description);
+  const [notes, setNotes] = useState(asset.notes);
+  const [sourceUrl, setSourceUrl] = useState(asset.sourceUrl);
+
+  useEffect(() => {
+    setName(asset.name);
+    setTags(asset.tags);
+    setTagQuery("");
+    setDescription(asset.description);
+    setNotes(asset.notes);
+    setSourceUrl(asset.sourceUrl);
+  }, [asset.id, asset.name, asset.tags, asset.description, asset.notes, asset.sourceUrl]);
+
+  function metadataUpdate(): AssetMetadataUpdate {
+    const normalizedTags = [...new Set([...tags, tagQuery].map((tag) => tag.trim()).filter(Boolean))].slice(0, 20);
+    return {
+      name: name.trim(),
+      tags: normalizedTags,
+      description: description.trim(),
+      notes: notes.trim(),
+      sourceUrl: sourceUrl.trim(),
+    };
+  }
+
+  function hasChanges(update: AssetMetadataUpdate) {
+    const originalTags = [...new Set(asset.tags.map((tag) => tag.trim()).filter(Boolean))].slice(0, 20);
+    return update.name !== asset.name
+      || update.description !== asset.description
+      || update.notes !== asset.notes
+      || update.sourceUrl !== asset.sourceUrl
+      || update.tags.join("\u0000") !== originalTags.join("\u0000");
+  }
+
+  async function save() {
+    if (!formRef.current?.reportValidity()) return false;
+    const update = metadataUpdate();
+    if (!hasChanges(update)) return true;
+    try {
+      await onSave(update);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  useImperativeHandle(ref, () => ({ save }));
+
+  function removeTag(tag: string) {
+    if (tag && asset.tags.includes(tag) && onDeleteTag) {
+      onDeleteTag(tag);
+      return;
+    }
+    setTags((current) => current.filter((item) => item !== tag));
+  }
+
+  function addTag(candidate = tagQuery) {
+    const tag = candidate.trim();
+    if (!tag || tags.includes(tag) || tags.length >= 20) return;
+    setTags((current) => [...current, tag]);
+    setTagQuery("");
+  }
+
+  const suggestions = useMemo(() => {
+    const query = tagQuery.trim().toLocaleLowerCase("zh-CN");
+    if (!query) return [];
+    const subsequenceScore = (candidate: string) => {
+      let queryIndex = 0;
+      for (const character of candidate) {
+        if (character === query[queryIndex]) queryIndex += 1;
+      }
+      return queryIndex === query.length ? 3 : 0;
+    };
+    return [...new Set(availableTags)]
+      .filter((tag) => !tags.includes(tag))
+      .map((tag) => {
+        const normalized = tag.toLocaleLowerCase("zh-CN");
+        const score = normalized === query ? 100
+          : normalized.startsWith(query) ? 80
+            : normalized.includes(query) ? 60
+              : query.includes(normalized) ? 40
+                : subsequenceScore(normalized);
+        return { tag, score };
+      })
+      .filter((entry) => entry.score > 0)
+      .sort((a, b) => b.score - a.score || a.tag.localeCompare(b.tag, "zh-CN"))
+      .slice(0, 6);
+  }, [availableTags, tagQuery, tags]);
+
+  return (
+    <form ref={formRef} className="asset-metadata-form" aria-busy={busy} onSubmit={(event) => event.preventDefault()}>
+      <label>
+        素材名称
+        <input
+          value={name}
+          onChange={(event) => setName(event.target.value)}
+          maxLength={120}
+          required
+        />
+      </label>
+
+      <fieldset className="asset-tag-editor">
+        <legend>全局标签</legend>
+        {tags.length ? <div className="asset-tag-badges">
+          {tags.map((tag) => (
+            <span className={`asset-tag-badge ${pendingDeleteTag === tag ? "pending-delete" : ""}`} key={tag}>
+              <button
+                type="button"
+                aria-label={`解除标签 ${tag}`}
+                disabled={Boolean(pendingDeleteTag)}
+                onClick={() => removeTag(tag)}
+              >
+                <X size={11} />
+              </button>
+              <span>{tag}</span>
+            </span>
+          ))}
+        </div> : null}
+        <div className="asset-tag-combobox">
+          <div className="asset-tag-input">
+            <input
+              aria-label="添加全局标签"
+              value={tagQuery}
+              maxLength={40}
+              placeholder={tags.length >= 20 ? "最多添加 20 个标签" : "输入标签，可匹配已有标签"}
+              disabled={tags.length >= 20}
+              onCompositionStart={() => { composingRef.current = true; }}
+              onCompositionEnd={() => { composingRef.current = false; }}
+              onChange={(event) => setTagQuery(event.target.value)}
+              onKeyDown={(event) => {
+                if (composingRef.current || event.nativeEvent.isComposing) return;
+                if (event.key === "Enter" || event.key === ",") {
+                  event.preventDefault();
+                  addTag(suggestions[0]?.tag ?? tagQuery);
+                }
+              }}
+            />
+            <button type="button" aria-label="添加标签" disabled={!tagQuery.trim() || tags.length >= 20} onClick={() => addTag()}>
+              <Plus size={13} />
+            </button>
+          </div>
+          {suggestions.length ? <div className="asset-tag-suggestions" role="listbox" aria-label="匹配的已有标签">
+            {suggestions.map(({ tag }) => (
+              <button type="button" role="option" aria-selected="false" key={tag} onMouseDown={(event) => event.preventDefault()} onClick={() => addTag(tag)}>{tag}</button>
+            ))}
+          </div> : null}
+        </div>
+      </fieldset>
+
+      <label>
+        描述
+        <textarea value={description} onChange={(event) => setDescription(event.target.value)} rows={3} maxLength={2000} placeholder="描述图片内容或使用方向" />
+      </label>
+      <label>
+        来源链接
+        <input value={sourceUrl} onChange={(event) => setSourceUrl(event.target.value)} type="url" maxLength={1000} placeholder="https://" />
+      </label>
+      <label>
+        备注
+        <textarea value={notes} onChange={(event) => setNotes(event.target.value)} rows={2} maxLength={2000} placeholder="团队内部备注" />
+      </label>
+    </form>
+  );
+});

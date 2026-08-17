@@ -1,88 +1,110 @@
-# 构建与服务器部署指南
+# 构建与部署
 
-本项目的前端源码位于 `app/src/`，生产网页由 Vite 构建到 `app/dist/`。`app/dist/` 不提交到 GitHub，因此服务器每次拉取新代码后都必须重新构建前端。
+生产入口是 `app/server/index.js`，生产页面来自未提交 Git 的 `app/dist/`。每次更新源码都必须重新构建前端再重启服务。
 
-## 本地推送前检查
-
-在仓库根目录执行：
+## 交付前验证
 
 ```bash
 cd app
-npm install
+npm ci
 npm run typecheck
 npm test
 npm run build
 ```
 
-全部通过后再检查、提交和推送源码：
+不要提交 `node_modules/`、`app/dist/`、数据库、上传图片或日志。
 
-```bash
-cd ..
-git status
-git diff
-git add <本次修改的文件>
-git commit -m "描述本次修改"
-git push origin main
-```
+## 自动部署
 
-不要提交 `node_modules/`、`app/dist/`、数据库或上传图片。
+[`scripts/deploy.sh`](./scripts/deploy.sh) 会检查服务器工作区、以 fast-forward 对齐远端分支、执行 `npm ci` 和前端构建、重启服务，并比对实际页面与本次构建的资源哈希。
 
-## 云服务器每次拉取后的必要操作
-
-服务器项目目录为 `/home/admin/MyArtDatabase` 时，执行：
+推荐只使用 systemd 管理生产服务：
 
 ```bash
 cd /home/admin/MyArtDatabase
-git pull --ff-only origin main
-
-cd /home/admin/MyArtDatabase/app
-npm install
-npm run build
+SERVICE_NAME=artdatabase ./scripts/deploy.sh
 ```
 
-构建成功后必须重启服务。为避免启动仓库根目录残留的旧程序，使用新版入口的绝对路径：
+同时验证公网 Nginx/CDN：
 
 ```bash
-sudo fuser -k 3000/tcp
-
-nohup env \
-DB_PATH=/home/admin/MyArtDatabase/data/app.db \
-STORE_ROOT=/home/admin/MyArtDatabase/data/media \
-PORT=3000 \
-node /home/admin/MyArtDatabase/app/server/index.js \
-> /home/admin/MyArtDatabase/app.log 2>&1 &
+SERVICE_NAME=artdatabase \
+PUBLIC_URL=https://your-domain.example \
+./scripts/deploy.sh
 ```
 
-这里继续使用仓库根目录下原有的 `data/`，以保留已经上传的图片和数据库。如果服务器已经把数据迁移到 `app/data/`，应移除 `DB_PATH` 和 `STORE_ROOT`，或者将它们改成实际数据目录。
+不传 `SERVICE_NAME` 时脚本使用 `nohup`，只适合作为临时方式。不要混用 systemd、PM2、Docker 和 `nohup` 管理同一端口。
 
-## 部署后验证
+## 首次配置 systemd
 
-```bash
-sleep 3
-curl -s http://localhost:3000 | grep -o 'assets/index-[^"]*'
-tail -20 /home/admin/MyArtDatabase/app.log
+示例 `/etc/systemd/system/artdatabase.service`：
+
+```ini
+[Unit]
+Description=MyArtDatabase
+After=network.target
+
+[Service]
+Type=simple
+User=admin
+WorkingDirectory=/home/admin/MyArtDatabase/app
+Environment=NODE_ENV=production
+Environment=PORT=3000
+Environment=DB_PATH=/home/admin/MyArtDatabase/data/app.db
+Environment=STORE_ROOT=/home/admin/MyArtDatabase/data/media
+ExecStartPre=/usr/bin/test -s /home/admin/MyArtDatabase/app/dist/index.html
+ExecStart=/usr/bin/node /home/admin/MyArtDatabase/app/server/index.js
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
 ```
 
-`curl` 输出的 JS/CSS 文件名应与下面命令显示的一致：
+先用 `command -v node` 确认 `ExecStart` 中的 Node 绝对路径，再启用服务：
 
 ```bash
+sudo systemctl daemon-reload
+sudo systemctl enable --now artdatabase
+```
+
+启用前确认 3000 端口没有被其他 systemd 服务、PM2 或 Docker 管理。
+
+## 配置项
+
+| 变量 | 默认值 | 用途 |
+| --- | --- | --- |
+| `REPO_DIR` | 脚本上一级目录 | 仓库路径 |
+| `BRANCH` | `main` | 部署分支 |
+| `PORT` | `3000` | 服务与健康检查端口 |
+| `SERVICE_NAME` | 空 | systemd 服务名；为空时使用 `nohup` |
+| `PUBLIC_URL` | 空 | 可选公网验证地址 |
+| `DB_PATH` | `<repo>/data/app.db` | `nohup` 模式数据库位置 |
+| `STORE_ROOT` | `<repo>/data/media` | `nohup` 模式图片位置 |
+| `LOG_FILE` | `<repo>/app.log` | `nohup` 模式日志位置 |
+
+使用 systemd 时，数据路径必须写在 unit 的 `Environment=` 中；命令行传入的 `DB_PATH` 和 `STORE_ROOT` 不会覆盖 systemd unit。
+
+## 部署失败排查
+
+```bash
+sudo systemctl status artdatabase --no-pager
+sudo systemctl show artdatabase --property MainPID,ExecStart,WorkingDirectory
+sudo ss -ltnp | grep ':3000'
+
+curl -fsS http://localhost:3000 | grep -o 'assets/index-[^"]*'
 grep -o 'assets/index-[^"]*' /home/admin/MyArtDatabase/app/dist/index.html
 ```
 
-如果两边不一致，说明 3000 端口仍由旧目录中的进程提供服务。检查当前进程：
+页面和 `dist/index.html` 的 JS/CSS 哈希必须一致。本机一致而公网不一致时，检查 Nginx、CDN 和浏览器缓存。
 
-```bash
-sudo ss -ltnp | grep ':3000'
-```
+## 部署完成标准
 
-## 给服务器 Agent 的固定指令
+以下条件全部满足才算完成：
 
-以后可以把下面这段话直接交给负责服务器部署的 Agent：
-
-> 拉取 GitHub `main` 的最新代码后，必须进入 `/home/admin/MyArtDatabase/app` 执行 `npm install` 和 `npm run build`。构建成功后，保留现有数据库与图片目录，停止占用 3000 端口的旧进程，并从绝对路径 `/home/admin/MyArtDatabase/app/server/index.js` 启动服务。不要启动 `/home/admin/MyArtDatabase/server/index.js`。最后用 `curl` 对比线上 HTML 引用的 JS/CSS 文件名与 `app/dist/index.html`，确认一致后才算部署完成。
-
-## 运行环境
-
-- Node.js 要求：`>= 23.4.0`，建议使用 Node.js 24。
-- `npm start` 只启动服务，不会自动执行 `npm run build`。
-- 生产服务读取的是 `app/dist/`，不是仓库根目录下可能残留的 `dist/`。
+- 本地 commit 与远端目标分支一致。
+- `app/dist/` 已由当前源码重新构建。
+- 运行进程入口是当前仓库的 `app/server/index.js`。
+- 首页和 `/api/projects` 健康检查通过。
+- 服务返回的资源哈希与本次构建一致。
+- 设置 `PUBLIC_URL` 时，公网返回的资源哈希也一致。

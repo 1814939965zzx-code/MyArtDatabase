@@ -3,7 +3,6 @@
 import {
   AlertTriangle,
   Check,
-  Database,
   FolderPlus,
   ImageIcon,
   Images,
@@ -13,7 +12,8 @@ import {
   Trash2,
   X,
 } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { AssetMetadataEditor, type AssetMetadataEditorHandle, type AssetMetadataUpdate } from "./AssetMetadataEditor";
 
 export type LibraryProject = {
   id: string;
@@ -28,6 +28,7 @@ export type LibraryAsset = {
   name: string;
   fileName: string;
   thumbnailUrl: string | null;
+  originalUrl: string | null;
   tags: string[];
   description: string;
   notes: string;
@@ -59,6 +60,8 @@ export function AllAssetsView({
   onViewChange,
   onRefresh,
   onMessage,
+  pendingDeleteTag,
+  onDeleteTag,
 }: {
   assets: LibraryAsset[];
   projects: LibraryProject[];
@@ -68,26 +71,58 @@ export function AllAssetsView({
   onViewChange: (view: "grid" | "list") => void;
   onRefresh: () => Promise<void>;
   onMessage: (message: string) => void;
+  pendingDeleteTag: { assetId: string; tag: string } | null;
+  onDeleteTag: (asset: LibraryAsset, tag: string) => void;
 }) {
   const [selectedAssetId, setSelectedAssetId] = useState<string | null>(null);
   const [assignAssetId, setAssignAssetId] = useState<string | null>(null);
   const [selectedProjectIds, setSelectedProjectIds] = useState<string[]>([]);
+  const [selectedTag, setSelectedTag] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const metadataEditorRef = useRef<AssetMetadataEditorHandle>(null);
+
+  const globalTags = useMemo(
+    () => [...new Set(assets.flatMap((asset) => asset.tags))].sort((a, b) => a.localeCompare(b, "zh-CN")),
+    [assets],
+  );
+
+  useEffect(() => {
+    if (selectedTag && !globalTags.includes(selectedTag)) setSelectedTag("");
+  }, [globalTags, selectedTag]);
 
   const filteredAssets = useMemo(() => {
     const keyword = search.trim().toLowerCase();
-    if (!keyword) return assets;
-    return assets.filter((asset) =>
-      [asset.name, asset.fileName, ...asset.tags, ...asset.projects.map((project) => project.name)]
-        .some((text) => text.toLowerCase().includes(keyword)),
-    );
-  }, [assets, search]);
+    return assets.filter((asset) => {
+      const matchesTag = !selectedTag || asset.tags.includes(selectedTag);
+      const matchesKeyword = !keyword || [asset.name, asset.fileName, ...asset.tags, ...asset.projects.map((project) => project.name)]
+        .some((text) => text.toLowerCase().includes(keyword));
+      return matchesTag && matchesKeyword;
+    });
+  }, [assets, search, selectedTag]);
 
   const selectedAsset = assets.find((asset) => asset.id === selectedAssetId) ?? null;
   const assignAsset = assets.find((asset) => asset.id === assignAssetId) ?? null;
   const assignedIds = new Set(assignAsset?.projects.map((project) => project.id) ?? []);
-  const unassignedCount = assets.filter((asset) => !asset.projects.length).length;
+
+  useEffect(() => {
+    if (!selectedAssetId) return;
+    const previousOverflow = document.body.style.overflow;
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") void closeAssetDetail();
+    };
+    document.body.style.overflow = "hidden";
+    window.addEventListener("keydown", closeOnEscape);
+    return () => {
+      document.body.style.overflow = previousOverflow;
+      window.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [selectedAssetId]);
+
+  async function closeAssetDetail() {
+    const saved = await metadataEditorRef.current?.save();
+    if (saved !== false) setSelectedAssetId(null);
+  }
 
   function openAssign(asset: LibraryAsset) {
     setAssignAssetId(asset.id);
@@ -134,30 +169,48 @@ export function AllAssetsView({
     }
   }
 
+  async function saveAssetMetadata(asset: LibraryAsset, update: AssetMetadataUpdate) {
+    setBusy(true);
+    setError("");
+    try {
+      await request("/api/assets", {
+        method: "PATCH",
+        body: JSON.stringify({ ...update, id: asset.id, tags: update.tags.join(",") }),
+      });
+      await onRefresh();
+      onMessage("素材信息已保存");
+    } catch (reason) {
+      const message = reason instanceof Error ? reason.message : "保存失败";
+      setError(message);
+      onMessage(message);
+      throw reason;
+    } finally {
+      setBusy(false);
+    }
+  }
+
   if (loading) {
     return <div className="loading-state"><LoaderCircle className="spin" size={22} /> 正在载入全部素材…</div>;
   }
 
   return (
     <>
-      <div className="project-header library-header">
-        <div>
-          <div className="title-row"><h1>全部素材</h1></div>
-          <p>统一管理素材库中的原始素材，不受项目边界限制。</p>
+      <div className="library-filter-bar">
+        <div className="global-tag-filter" aria-label="按全局标签筛选">
+          <strong>全局标签</strong>
+          {globalTags.map((tag) => (
+            <button type="button" className={selectedTag === tag ? "active" : ""} key={tag} onClick={() => setSelectedTag((current) => current === tag ? "" : tag)}>
+              {tag}
+            </button>
+          ))}
+          {!globalTags.length ? <span>暂无标签</span> : null}
         </div>
-        <div className="header-stats">
-          <span><strong>{assets.length}</strong> 素材</span>
-          <span><strong>{unassignedCount}</strong> 未归档</span>
-        </div>
-      </div>
-
-      <div className="library-callout"><Database size={16} /><span>这里的永久删除会移除原文件、数据库记录及全部项目引用。</span></div>
-
-      <div className="content-toolbar">
-        <div><h2>全局素材预览</h2><p>{search ? `找到 ${filteredAssets.length} 项` : "点击素材可查看引用项目与管理操作"}</p></div>
-        <div className="view-toggle" aria-label="显示方式">
-          <button type="button" className={view === "grid" ? "active" : ""} onClick={() => onViewChange("grid")} aria-label="网格显示"><LayoutGrid size={16} /></button>
-          <button type="button" className={view === "list" ? "active" : ""} onClick={() => onViewChange("list")} aria-label="列表显示"><List size={17} /></button>
+        <div className="library-filter-actions">
+          {(search || selectedTag) ? <span>找到 {filteredAssets.length} 项</span> : null}
+          <div className="view-toggle" aria-label="显示方式">
+            <button type="button" className={view === "grid" ? "active" : ""} onClick={() => onViewChange("grid")} aria-label="网格显示"><LayoutGrid size={16} /></button>
+            <button type="button" className={view === "list" ? "active" : ""} onClick={() => onViewChange("list")} aria-label="列表显示"><List size={17} /></button>
+          </div>
         </div>
       </div>
 
@@ -170,26 +223,34 @@ export function AllAssetsView({
                 <span className="asset-index">{String(index + 1).padStart(2, "0")}</span>
                 <span className="project-count-badge">{asset.projects.length} 个项目</span>
               </span>
-              <span className="asset-meta"><strong>{asset.name}</strong><small>{asset.fileName}</small><span className="tag-row">{asset.tags.slice(0, 3).map((tag) => <i key={tag}>{tag}</i>)}</span></span>
+              <span className="asset-meta"><strong>{asset.name}</strong><span className="tag-row">{asset.tags.slice(0, 3).map((tag) => <i key={tag}>{tag}</i>)}</span></span>
             </button>
           ))}
         </div>
       ) : (
-        <div className="empty-state"><Images size={28} /><h3>{search ? "没有匹配的素材" : "数据库里还没有素材"}</h3><p>{search ? "换一个名称、文件、标签或项目关键词试试。" : "请先进入一个项目上传图片。"}</p></div>
+        <div className="empty-state"><Images size={28} /><h3>{search || selectedTag ? "没有匹配的素材" : "数据库里还没有素材"}</h3><p>{search || selectedTag ? "换一个名称、文件、标签或项目关键词试试。" : "请先进入一个项目上传图片。"}</p></div>
       )}
 
       {selectedAsset ? (
         <aside className="asset-drawer" aria-label="全局素材详情">
-          <div className="asset-detail-stage">
-            {selectedAsset.thumbnailUrl ? <img className="drawer-image" src={selectedAsset.thumbnailUrl} alt={selectedAsset.name} /> : <span className="drawer-image-fallback"><ImageIcon size={40} /></span>}
+          <div className="asset-detail-stage" role="button" tabIndex={0} aria-label="关闭素材详情" onClick={() => void closeAssetDetail()} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); void closeAssetDetail(); } }}>
+            {selectedAsset.originalUrl ? <span className="drawer-image-frame"><img className="drawer-image" src={selectedAsset.originalUrl} alt={selectedAsset.name} onClick={(event) => event.stopPropagation()} /></span> : <span className="drawer-image-fallback" onClick={(event) => event.stopPropagation()}><ImageIcon size={40} /></span>}
           </div>
           <div className="drawer-panel">
-            <div className="drawer-heading"><div><p className="eyebrow">GLOBAL ASSET</p><h2>{selectedAsset.name}</h2></div><button className="icon-button" type="button" onClick={() => setSelectedAssetId(null)} aria-label="关闭素材详情"><X size={18} /></button></div>
+            <div className="drawer-heading"><div><p className="eyebrow">GLOBAL ASSET</p><h2>素材详情</h2></div><button className="icon-button" type="button" onClick={() => void closeAssetDetail()} aria-label="关闭素材详情"><X size={18} /></button></div>
             <div className="drawer-scroll">
               <div className="drawer-file"><small>文件名</small><span>{selectedAsset.fileName}</span></div>
               <div className="drawer-facts"><span>{selectedAsset.width && selectedAsset.height ? `${selectedAsset.width} × ${selectedAsset.height}` : "尺寸未知"}</span><span>{selectedAsset.fileSize ? `${(selectedAsset.fileSize / 1024 / 1024).toFixed(2)} MB` : "大小未知"}</span><span>{selectedAsset.mimeType || "image"}</span></div>
-              {selectedAsset.description ? <p className="drawer-description">{selectedAsset.description}</p> : null}
-              <div className="drawer-tags">{selectedAsset.tags.map((tag) => <span key={tag}>{tag}</span>)}</div>
+              {error ? <div className="form-error"><AlertTriangle size={15} />{error}</div> : null}
+              <AssetMetadataEditor
+                ref={metadataEditorRef}
+                asset={selectedAsset}
+                busy={busy}
+                availableTags={globalTags}
+                pendingDeleteTag={pendingDeleteTag?.assetId === selectedAsset.id ? pendingDeleteTag.tag : null}
+                onSave={(update) => saveAssetMetadata(selectedAsset, update)}
+                onDeleteTag={(tag) => onDeleteTag(selectedAsset, tag)}
+              />
               <div className="drawer-section-title"><Images size={16} /><strong>已引用项目</strong><em>{selectedAsset.projects.length}</em></div>
               {selectedAsset.projects.length ? <div className="reference-projects">{selectedAsset.projects.map((project) => <span key={project.id}><Check size={12} />{project.name}</span>)}</div> : <p className="drawer-empty">当前没有项目引用这项素材。</p>}
               <button className="drawer-project-add" type="button" onClick={() => openAssign(selectedAsset)}><FolderPlus size={14} />添加到其他项目</button>
