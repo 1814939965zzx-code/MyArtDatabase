@@ -54,6 +54,8 @@ export function DimensionPreview({
   const [cameraMoving, setCameraMoving] = useState(false);
   const [focusMode, setFocusMode] = useState(false);
   const [draggingAssetId, setDraggingAssetId] = useState<string | null>(null);
+  const [hoveredAssetId, setHoveredAssetId] = useState<string | null>(null);
+  const [hiddenAssetIds, setHiddenAssetIds] = useState<string[]>([]);
   const [spaceHeld, setSpaceHeld] = useState(false);
   const [overrides, setOverrides] = useState<Record<string, Record<string, number>>>({});
   const scenePlaneRef = useRef<HTMLDivElement>(null);
@@ -62,6 +64,8 @@ export function DimensionPreview({
   const assetDrag = useRef<AssetDrag | null>(null);
   const dragValues = useRef<Record<string, number>>({});
   const spaceHeldRef = useRef(false);
+  const hoveredAssetIdRef = useRef<string | null>(null);
+  const hiddenAssetIdsRef = useRef(new Set<string>());
 
   const selected = useMemo(
     () => selectedIds.map((id) => dimensions.find((dimension) => dimension.id === id)).filter(Boolean) as Dimension[],
@@ -150,6 +154,7 @@ export function DimensionPreview({
 
   function zoomWithWheel(event: WheelEvent<HTMLDivElement>) {
     event.preventDefault();
+    setAssetHover(null);
     const factor = Math.exp(-event.deltaY * .0014);
     setZoom((current) => Math.max(.35, Math.min(2.8, current * factor)));
   }
@@ -196,6 +201,7 @@ export function DimensionPreview({
 
   function startCameraMove(event: PointerEvent<HTMLDivElement>) {
     if (mode !== 3 || event.button !== 0) return;
+    setAssetHover(null);
     event.preventDefault();
     event.currentTarget.setPointerCapture(event.pointerId);
     cameraDrag.current = {
@@ -218,6 +224,101 @@ export function DimensionPreview({
     setRotateX(Math.max(0, Math.min(180, active.rotateX - dy * .24)));
   }
 
+  function assetAtPoint(clientX: number, clientY: number) {
+    const plane = scenePlaneRef.current;
+    if (!plane) return null;
+    const candidates = Array.from(plane.querySelectorAll<HTMLElement>(".preview-asset"))
+      .map((asset) => {
+        if (hiddenAssetIdsRef.current.has(asset.dataset.assetId ?? "")) return null;
+        const face = asset.querySelector<HTMLElement>(".preview-asset-face");
+        const rect = face?.getBoundingClientRect();
+        if (!rect || clientX < rect.left || clientX > rect.right || clientY < rect.top || clientY > rect.bottom) return null;
+        return {
+          id: asset.dataset.assetId ?? null,
+          depth: Number(asset.dataset.screenDepth ?? 0),
+        };
+      })
+      .filter((candidate): candidate is { id: string; depth: number } => Boolean(candidate?.id))
+      .sort((a, b) => b.depth - a.depth);
+    return candidates[0]?.id ?? null;
+  }
+
+  function setAssetHover(assetId: string | null) {
+    if (hoveredAssetIdRef.current === assetId) return;
+    hoveredAssetIdRef.current = assetId;
+    let hiddenIds: string[] = [];
+    const plane = scenePlaneRef.current;
+    if (assetId && plane) {
+      const target = Array.from(plane.querySelectorAll<HTMLElement>(".preview-asset"))
+        .find((asset) => asset.dataset.assetId === assetId);
+      const targetFace = target?.querySelector<HTMLElement>(".preview-asset-face");
+      const targetRect = targetFace?.getBoundingClientRect();
+      const targetDepth = Number(target?.dataset.screenDepth ?? 0);
+      if (targetRect) {
+        const hoverScale = 1.65;
+        const expandedWidth = targetRect.width * hoverScale;
+        const expandedHeight = targetRect.height * hoverScale;
+        const centerX = targetRect.left + targetRect.width / 2;
+        const centerY = targetRect.top + targetRect.height / 2;
+        const expanded = {
+          left: centerX - expandedWidth / 2,
+          right: centerX + expandedWidth / 2,
+          top: centerY - expandedHeight / 2,
+          bottom: centerY + expandedHeight / 2,
+        };
+        hiddenIds = Array.from(plane.querySelectorAll<HTMLElement>(".preview-asset"))
+          .filter((candidate) => {
+            if (candidate === target || Number(candidate.dataset.screenDepth ?? 0) <= targetDepth) return false;
+            const face = candidate.querySelector<HTMLElement>(".preview-asset-face");
+            const rect = face?.getBoundingClientRect();
+            return Boolean(rect && expanded.left < rect.right && expanded.right > rect.left && expanded.top < rect.bottom && expanded.bottom > rect.top);
+          })
+          .map((candidate) => candidate.dataset.assetId)
+          .filter((id): id is string => Boolean(id));
+      }
+    }
+    hiddenAssetIdsRef.current = new Set(hiddenIds);
+    setHiddenAssetIds(hiddenIds);
+    setHoveredAssetId(assetId);
+  }
+
+  function updateAssetHover(event: PointerEvent<HTMLDivElement>) {
+    if (assetDrag.current || cameraDrag.current) {
+      setAssetHover(null);
+      return;
+    }
+    const nextId = assetAtPoint(event.clientX, event.clientY);
+    setAssetHover(nextId);
+  }
+
+  function startSceneMove(event: PointerEvent<HTMLDivElement>) {
+    if (event.button !== 0) return;
+    const assetId = assetAtPoint(event.clientX, event.clientY);
+    const asset = assetId ? assets.find((candidate) => candidate.id === assetId) : null;
+    if (asset && !(mode === 3 && spaceHeldRef.current)) {
+      startAssetMove(event, asset);
+      return;
+    }
+    startCameraMove(event);
+  }
+
+  function moveInScene(event: PointerEvent<HTMLDivElement>) {
+    if (assetDrag.current) {
+      moveAsset(event);
+      return;
+    }
+    moveCamera(event);
+    updateAssetHover(event);
+  }
+
+  function endSceneMove(event: PointerEvent<HTMLDivElement>) {
+    if (assetDrag.current?.pointerId === event.pointerId) {
+      void endAssetMove(event);
+      return;
+    }
+    endCameraMove(event);
+  }
+
   function endCameraMove(event: PointerEvent<HTMLDivElement>) {
     if (cameraDrag.current?.pointerId !== event.pointerId) return;
     cameraDrag.current = null;
@@ -229,12 +330,13 @@ export function DimensionPreview({
     assetDrag.current = null;
     setCameraMoving(false);
     setDraggingAssetId(null);
+    setAssetHover(null);
     setRotateX(52);
     setRotateZ(352);
     setZoom(1);
   }
 
-  function startAssetMove(event: PointerEvent<HTMLButtonElement>, asset: Asset) {
+  function startAssetMove(event: PointerEvent<HTMLElement>, asset: Asset) {
     if (event.button !== 0) return;
     if (mode === 3 && spaceHeldRef.current) return;
     event.preventDefault();
@@ -263,10 +365,11 @@ export function DimensionPreview({
       moved: false,
     };
     dragValues.current = currentValues;
+    setAssetHover(null);
     setDraggingAssetId(asset.id);
   }
 
-  function moveAsset(event: PointerEvent<HTMLButtonElement>) {
+  function moveAsset(event: PointerEvent<HTMLElement>) {
     const active = assetDrag.current;
     const plane = scenePlaneRef.current;
     if (!active || active.pointerId !== event.pointerId || !plane || !selected.length) return;
@@ -302,7 +405,7 @@ export function DimensionPreview({
     setOverrides((current) => ({ ...current, [active.assetId]: next }));
   }
 
-  async function endAssetMove(event: PointerEvent<HTMLButtonElement>) {
+  async function endAssetMove(event: PointerEvent<HTMLElement>) {
     const active = assetDrag.current;
     if (!active || active.pointerId !== event.pointerId) return;
     event.preventDefault();
@@ -371,14 +474,15 @@ export function DimensionPreview({
           </div>
         </div>
         {mode ? (
-          <div className={`dimension-scene mode-${mode} ${cameraMoving ? "camera-moving" : ""} ${modeTransitioning ? "mode-transitioning" : ""} ${spaceHeld ? "space-held" : ""}`}>
+          <div className={`dimension-scene mode-${mode} ${cameraMoving ? "camera-moving" : ""} ${draggingAssetId ? "asset-dragging" : ""} ${hoveredAssetId ? "asset-hovered" : ""} ${modeTransitioning ? "mode-transitioning" : ""} ${spaceHeld ? "space-held" : ""}`}>
             <div
               ref={sceneViewportRef}
               className="scene-viewport"
-              onPointerDown={startCameraMove}
-              onPointerMove={moveCamera}
-              onPointerUp={endCameraMove}
-              onPointerCancel={endCameraMove}
+              onPointerDown={startSceneMove}
+              onPointerMove={moveInScene}
+              onPointerUp={endSceneMove}
+              onPointerCancel={endSceneMove}
+              onPointerLeave={() => setAssetHover(null)}
               onAuxClick={(event) => event.preventDefault()}
               onWheel={zoomWithWheel}
             >
@@ -422,8 +526,11 @@ export function DimensionPreview({
                   return (
                     <button
                       type="button"
-                      className={`preview-asset ${draggingAssetId === asset.id ? "dragging" : ""}`}
+                      className={`preview-asset ${draggingAssetId === asset.id ? "dragging" : ""} ${hoveredAssetId === asset.id ? "hovered" : ""} ${hiddenAssetIds.includes(asset.id) ? "hover-occluder" : ""}`}
                       key={asset.id}
+                      data-asset-id={asset.id}
+                      data-screen-depth={worldZ}
+                      aria-hidden={hiddenAssetIds.includes(asset.id)}
                       style={{
                         left: `${x / 10}%`,
                         top: `${y / 10}%`,
@@ -433,10 +540,6 @@ export function DimensionPreview({
                         "--billboard-rx": `${mode === 3 ? -sceneRotateX : 0}deg`,
                         "--billboard-rz": `${mode === 3 ? -sceneRotateZ : 0}deg`,
                       } as CSSProperties}
-                      onPointerDown={(event) => startAssetMove(event, asset)}
-                      onPointerMove={moveAsset}
-                      onPointerUp={(event) => void endAssetMove(event)}
-                      onPointerCancel={(event) => void endAssetMove(event)}
                       title={`${asset.name} · 拖动修改维度`}
                     >
                       <span className="preview-asset-face">

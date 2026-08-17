@@ -325,6 +325,8 @@ button:focus-visible, input:focus-visible, textarea:focus-visible {
 .camera-moving .axis-label i { transition: none; }
 .camera-moving .scene-viewport { cursor: grabbing; }
 .dimension-scene.space-held .scene-viewport { cursor: grab; }
+.dimension-scene.asset-hovered .scene-viewport { cursor: grab; }
+.dimension-scene.asset-dragging .scene-viewport { cursor: grabbing; }
 .xy-grid-plane { position: absolute; inset: 0; border: 1px solid rgba(95, 104, 94, .36); transform: translateZ(-1px); transform-style: preserve-3d; pointer-events: none; }
 .grid-line { position: absolute; display: block; background: rgba(100, 109, 99, .18); }
 .grid-line-x { top: 0; bottom: 0; width: 1px; }
@@ -348,10 +350,12 @@ button:focus-visible, input:focus-visible, textarea:focus-visible {
 .axis-label-z-start, .axis-label-z-end { left: 50%; top: 50%; }
 .axis-label-z-start { transform: translate(-50%, -50%) translateZ(-220px); }
 .axis-label-z-end { transform: translate(-50%, -50%) translateZ(220px); }
-.preview-asset { width: var(--asset-size, 82px); height: auto; aspect-ratio: var(--asset-ratio, 1 / 1); padding: 0; position: absolute; border: 0; background: transparent; cursor: grab; pointer-events: auto; transform: translate(-50%, -50%) translateZ(var(--asset-z)); transform-style: preserve-3d; touch-action: none; user-select: none; transition: left 1s ease-in-out, top 1s ease-in-out, transform 1s ease-in-out; }
-.preview-asset:active, .preview-asset.dragging { cursor: grabbing; z-index: 100; }
+.preview-asset { width: var(--asset-size, 82px); height: auto; aspect-ratio: var(--asset-ratio, 1 / 1); padding: 0; position: absolute; border: 0; background: transparent; cursor: grab; pointer-events: none; transform: translate(-50%, -50%) translateZ(var(--asset-z)); transform-style: preserve-3d; touch-action: none; user-select: none; transition: left 1s ease-in-out, top 1s ease-in-out, transform 1s ease-in-out; }
+.preview-asset.hover-occluder { visibility: hidden; }
+.preview-asset:active, .preview-asset.dragging { cursor: grabbing; z-index: 1001; }
 .preview-asset.dragging { transition: none; }
-.preview-asset-face { position: absolute; inset: 0; display: grid; place-items: center; background: #deded8; box-shadow: 0 5px 14px rgba(25, 29, 25, .22); transform: scale3d(var(--persp, 1), var(--persp, 1), var(--persp, 1)) rotateZ(var(--billboard-rz)) rotateX(var(--billboard-rx)); transform-style: preserve-3d; transition: none; }
+.preview-asset-face { position: absolute; inset: 0; display: grid; place-items: center; background: #deded8; box-shadow: 0 5px 14px rgba(25, 29, 25, .22); transform: scale3d(var(--persp, 1), var(--persp, 1), var(--persp, 1)) rotateZ(var(--billboard-rz)) rotateX(var(--billboard-rx)) scale3d(var(--hover-scale, 1), var(--hover-scale, 1), var(--hover-scale, 1)); transform-style: preserve-3d; transition: transform .18s ease, box-shadow .18s ease; }
+.preview-asset.hovered .preview-asset-face { --hover-scale: 1.65; box-shadow: 0 12px 30px rgba(25, 29, 25, .34); }
 .preview-asset.dragging .preview-asset-face { box-shadow: 0 8px 22px rgba(29, 34, 29, .3); }
 .preview-asset-face img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; object-position: center; display: block; pointer-events: none; }
 .preview-asset-face > i { width: 100%; height: 100%; display: grid; place-items: center; font-style: normal; }
