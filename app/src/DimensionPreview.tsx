@@ -6,7 +6,7 @@ import { displayDimensionValue } from "./dimensionScale";
 
 type Dimension = { id: string; leftLabel: string; rightLabel: string };
 type Asset = { id: string; name: string; thumbnailUrl: string | null; dimensionValues: Record<string, number>; width?: number; height?: number };
-type CameraDrag = { pointerId: number; startX: number; startY: number; rotateX: number; rotateZ: number };
+type CameraDrag = { pointerId: number; startX: number; startY: number; rotateX: number; rotateZ: number; assetId?: string; moved: boolean };
 type ViewPan = { pointerId: number; startX: number; startY: number; panX: number; panY: number };
 type AxisSign = -1 | 1;
 type Octant = { x: AxisSign; y: AxisSign; z: AxisSign };
@@ -94,6 +94,13 @@ export function DimensionPreview({
         z: isolatedOctant.z * 250 * DEPTH_SCALE,
       }
     : { x: 0, y: 0, z: 0 };
+  const isolatedOctantLabel = isolatedOctant && mode === 3
+    ? [
+        isolatedOctant.x === 1 ? selected[0].rightLabel : selected[0].leftLabel,
+        isolatedOctant.y === 1 ? selected[1].rightLabel : selected[1].leftLabel,
+        isolatedOctant.z === 1 ? selected[2].rightLabel : selected[2].leftLabel,
+      ].join("、")
+    : null;
   const [modeTransitioning, setModeTransitioning] = useState(false);
   const [prevMode, setPrevMode] = useState(mode);
   if (prevMode !== mode) {
@@ -252,22 +259,7 @@ export function DimensionPreview({
     };
   }
 
-  function projectLocalPoint(x: number, y: number, z: number) {
-    const pitch = (mode === 3 ? rotateX : 0) * Math.PI / 180;
-    const yaw = (mode === 3 ? rotateZ : 0) * Math.PI / 180;
-    const centeredX = x - scenePivot.x;
-    const centeredY = y - scenePivot.y;
-    const centeredZ = z - scenePivot.z;
-    const alongX = Math.cos(yaw) * centeredX - Math.sin(yaw) * centeredY;
-    const alongY = Math.sin(yaw) * centeredX + Math.cos(yaw) * centeredY;
-    const worldY = Math.cos(pitch) * alongY - Math.sin(pitch) * centeredZ;
-    const worldZ = Math.sin(pitch) * alongY + Math.cos(pitch) * centeredZ;
-    const perspective = SCENE_PERSPECTIVE;
-    const factor = perspective / (perspective - zoom * worldZ);
-    return { x: zoom * alongX * factor, y: zoom * worldY * factor };
-  }
-
-  function startCameraMove(event: PointerEvent<HTMLDivElement>) {
+  function startCameraMove(event: PointerEvent<HTMLDivElement>, assetId?: string) {
     if (mode !== 3 || event.button !== 0) return;
     setAssetHover(null);
     event.preventDefault();
@@ -278,6 +270,8 @@ export function DimensionPreview({
       startY: event.clientY,
       rotateX,
       rotateZ,
+      assetId,
+      moved: false,
     };
     setCameraMoving(true);
   }
@@ -313,6 +307,8 @@ export function DimensionPreview({
     event.preventDefault();
     const dx = event.clientX - active.startX;
     const dy = event.clientY - active.startY;
+    if (Math.hypot(dx, dy) <= 3) return;
+    active.moved = true;
     setRotateZ(wrapRotation(active.rotateZ - dx * .24));
     setRotateX(Math.max(0, Math.min(180, active.rotateX - dy * .24)));
   }
@@ -398,6 +394,10 @@ export function DimensionPreview({
     const assetId = assetAtPoint(event.clientX, event.clientY);
     const asset = assetId ? assets.find((candidate) => candidate.id === assetId) : null;
     if (asset) {
+      if (mode === 3) {
+        startCameraMove(event, asset.id);
+        return;
+      }
       startAssetMove(event, asset);
       return;
     }
@@ -431,9 +431,11 @@ export function DimensionPreview({
   }
 
   function endCameraMove(event: PointerEvent<HTMLDivElement>) {
-    if (cameraDrag.current?.pointerId !== event.pointerId) return;
+    const active = cameraDrag.current;
+    if (active?.pointerId !== event.pointerId) return;
     cameraDrag.current = null;
     setCameraMoving(false);
+    if (active.assetId && !active.moved) onSelectAsset(active.assetId);
   }
 
   function resetView() {
@@ -451,8 +453,7 @@ export function DimensionPreview({
   }
 
   function startAssetMove(event: PointerEvent<HTMLElement>, asset: Asset) {
-    if (event.button !== 0) return;
-    if (mode === 3 && spaceHeldRef.current) return;
+    if (event.button !== 0 || mode === 3) return;
     event.preventDefault();
     event.stopPropagation();
     event.currentTarget.setPointerCapture(event.pointerId);
@@ -494,25 +495,13 @@ export function DimensionPreview({
     if (Math.hypot(dx, dy) > 3) active.moved = true;
 
     const next = { ...active.startValues };
-    if (mode === 3 && event.shiftKey) {
-      const projectedStart = projectLocalPoint(active.startLocalX, active.startLocalY, active.startLocalZ);
-      const projectedDepth = projectLocalPoint(active.startLocalX, active.startLocalY, active.startLocalZ + 100);
-      const axisX = projectedDepth.x - projectedStart.x;
-      const axisY = projectedDepth.y - projectedStart.y;
-      const axisLengthSquared = axisX * axisX + axisY * axisY;
-      const depthDelta = axisLengthSquared > 9
-        ? (dx * axisX + dy * axisY) / axisLengthSquared * 100
-        : -dy * 1.5 / zoom;
-      next[selected[2].id] = clampValue(500 + (active.startLocalZ + depthDelta) / DEPTH_SCALE);
-    } else {
-      const pointerOnPlane = unprojectPointerToPlane(event.clientX, event.clientY, active.startLocalZ);
-      if (pointerOnPlane) {
-        const localX = pointerOnPlane.x + active.grabOffsetX;
-        const localY = pointerOnPlane.y + active.grabOffsetY;
-        next[selected[0].id] = clampValue((localX / plane.offsetWidth + .5) * 1000);
-        if (mode >= 2) {
-          next[selected[1].id] = clampValue((.5 - localY / plane.offsetHeight) * 1000);
-        }
+    const pointerOnPlane = unprojectPointerToPlane(event.clientX, event.clientY, active.startLocalZ);
+    if (pointerOnPlane) {
+      const localX = pointerOnPlane.x + active.grabOffsetX;
+      const localY = pointerOnPlane.y + active.grabOffsetY;
+      next[selected[0].id] = clampValue((localX / plane.offsetWidth + .5) * 1000);
+      if (mode >= 2) {
+        next[selected[1].id] = clampValue((.5 - localY / plane.offsetHeight) * 1000);
       }
     }
     dragValues.current = next;
@@ -578,7 +567,7 @@ export function DimensionPreview({
       </aside>
       <div className="preview-workspace">
         <div className="preview-toolbar">
-          <span>{mode ? `${mode}D 预览` : "未选择维度"} · {mode === 1 ? "左右拖动图片改变维度值" : mode === 2 ? "在平面中拖动图片改变两项维度" : mode === 3 ? "左键拖动改变前两项；Shift + 拖动改变深度" : "选择 1～3 个维度开始预览"}</span>
+          <span>{mode ? `${mode}D 预览` : "未选择维度"} · {mode === 1 ? "左右拖动图片改变维度值" : mode === 2 ? "在平面中拖动图片改变两项维度" : mode === 3 ? "左键拖动旋转视角；点击图片查看详情" : "选择 1～3 个维度开始预览"}</span>
           <div className="preview-tools">
             <span className="camera-hint"><MousePointer2 size={13} />空格 + 左键平移视图</span>
             {mode === 3 ? <><label><Rotate3D size={14} />俯仰<input aria-label="三维预览俯仰角" type="range" min="0" max="180" value={rotateX} onChange={(event) => setRotateX(Number(event.target.value))} /></label><label>旋转<input aria-label="三维预览水平旋转" type="range" min="0" max="360" value={rotateZ} onChange={(event) => setRotateZ(Number(event.target.value))} /></label></> : null}
@@ -661,7 +650,7 @@ export function DimensionPreview({
                         "--billboard-rx": `${mode === 3 ? -sceneRotateX : 0}deg`,
                         "--billboard-rz": `${mode === 3 ? -sceneRotateZ : 0}deg`,
                       } as CSSProperties}
-                      title={`${asset.name} · 拖动修改维度`}
+                      title={mode === 3 ? `${asset.name} · 点击查看详情 · 拖动旋转视角` : `${asset.name} · 拖动修改维度`}
                     >
                       <span className="preview-asset-face">
                         {asset.thumbnailUrl ? <img src={asset.thumbnailUrl} alt="" draggable={false} /> : <i>{asset.name.slice(0, 1)}</i>}
@@ -673,7 +662,10 @@ export function DimensionPreview({
                 </div>
               </div>
             </div>
-            {mode === 3 ? <button className={`octant-isolation-button ${isolatedOctant ? "active" : ""}`} type="button" onClick={toggleOctantIsolation}>{isolatedOctant ? "退出象限隔离" : "隔离当前象限"}</button> : null}
+            {mode === 3 ? <div className="octant-isolation-controls">
+              <button className={`octant-isolation-button ${isolatedOctant ? "active" : ""}`} type="button" onClick={toggleOctantIsolation}>{isolatedOctant ? "退出象限隔离" : "隔离当前象限"}</button>
+              {isolatedOctantLabel ? <span className="octant-isolation-label" aria-label={`当前隔离象限：${isolatedOctantLabel}`}>{isolatedOctantLabel}</span> : null}
+            </div> : null}
           </div>
         ) : <div className="preview-empty"><Box size={28} /><h3>选择预览维度</h3><p>项目可以拥有任意数量的维度，每次预览最多选择 3 个。</p></div>}
       </div>

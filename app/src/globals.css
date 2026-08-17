@@ -393,9 +393,11 @@ button:focus-visible, input:focus-visible, textarea:focus-visible {
 .preview-asset-face > i { width: 100%; height: 100%; display: grid; place-items: center; font-style: normal; }
 .preview-asset-face em { position: absolute; left: 50%; bottom: calc(100% + 5px); transform: translateX(-50%); padding: 4px 6px; background: #252925; color: white; font-size: 10px; font-style: normal; white-space: nowrap; }
 .camera-hint { display: flex; align-items: center; gap: 4px; color: var(--sage); font-size: 10px; white-space: nowrap; }
-.octant-isolation-button { min-height: 34px; padding: 0 16px; position: absolute; z-index: 8; left: 50%; bottom: 16px; border: 1px solid #778673; border-radius: 5px; background: rgba(250, 250, 247, .94); color: #4f624a; box-shadow: 0 6px 18px rgba(35, 40, 35, .14); font-size: 11px; cursor: pointer; transform: translateX(-50%); }
+.octant-isolation-controls { position: absolute; z-index: 8; left: 50%; bottom: 16px; display: flex; align-items: center; gap: 8px; transform: translateX(-50%); }
+.octant-isolation-button { min-height: 34px; padding: 0 16px; flex: none; border: 1px solid #778673; border-radius: 5px; background: rgba(250, 250, 247, .94); color: #4f624a; box-shadow: 0 6px 18px rgba(35, 40, 35, .14); font-size: 11px; white-space: nowrap; cursor: pointer; }
 .octant-isolation-button:hover { background: white; border-color: #53664e; }
 .octant-isolation-button.active { border-color: #53664e; background: var(--sage); color: white; }
+.octant-isolation-label { min-height: 34px; padding: 0 12px; border: 1px solid rgba(119, 134, 115, .55); border-radius: 5px; background: rgba(250, 250, 247, .94); color: #4f624a; box-shadow: 0 6px 18px rgba(35, 40, 35, .1); display: inline-flex; align-items: center; font-size: 11px; font-weight: 600; white-space: nowrap; }
 .preview-empty { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; color: var(--muted); }
 .preview-empty h3 { margin: 12px 0 5px; color: var(--ink); font-size: 14px; }
 .preview-empty p { margin: 0; font-size: 12px; }
