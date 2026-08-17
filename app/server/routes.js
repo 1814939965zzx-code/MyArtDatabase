@@ -103,6 +103,37 @@ async function createDimension(request, { db }) {
   return Response.json({ dimension: { id, projectId, leftLabel, rightLabel, sortOrder } }, { status: 201 });
 }
 
+async function updateDimensions(request, { db }) {
+  const payload = await request.json();
+  const projectId = cleanId(payload.projectId);
+  const rawUpdates = Array.isArray(payload.dimensions) ? payload.dimensions : [];
+  if (!projectId || !rawUpdates.length) return Response.json({ error: "维度参数不完整" }, { status: 400 });
+  const updates = rawUpdates.map((entry) => ({
+    id: cleanId(entry?.id),
+    leftLabel: cleanText(entry?.leftLabel, 24),
+    rightLabel: cleanText(entry?.rightLabel, 24),
+  }));
+  if (updates.some((entry) => !entry.id || !entry.leftLabel || !entry.rightLabel)) {
+    return Response.json({ error: "请填写维度两端的名称" }, { status: 400 });
+  }
+  if (updates.some((entry) => entry.leftLabel === entry.rightLabel)) {
+    return Response.json({ error: "维度两端不能相同" }, { status: 400 });
+  }
+  if (new Set(updates.map((entry) => entry.id)).size !== updates.length) {
+    return Response.json({ error: "维度不能重复提交" }, { status: 400 });
+  }
+  const findDimension = db.prepare("SELECT id FROM project_dimensions WHERE id = ? AND project_id = ?");
+  if (updates.some((entry) => !findDimension.get(entry.id, projectId))) {
+    return Response.json({ error: "部分维度不存在" }, { status: 404 });
+  }
+  transaction(db, () => {
+    const update = db.prepare("UPDATE project_dimensions SET left_label = ?, right_label = ? WHERE id = ? AND project_id = ?");
+    for (const entry of updates) update.run(entry.leftLabel, entry.rightLabel, entry.id, projectId);
+    db.prepare("UPDATE projects SET updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(projectId);
+  });
+  return Response.json({ dimensions: updates });
+}
+
 function deleteDimension(request, { db }) {
   const url = new URL(request.url);
   const id = cleanId(url.searchParams.get("id"));
@@ -545,6 +576,7 @@ export async function handleApi(request, ctx) {
     if (pathname === "/api/projects" && method === "DELETE") return deleteProject(request, ctx);
 
     if (pathname === "/api/dimensions" && method === "POST") return await createDimension(request, ctx);
+    if (pathname === "/api/dimensions" && method === "PATCH") return await updateDimensions(request, ctx);
     if (pathname === "/api/dimensions" && method === "DELETE") return deleteDimension(request, ctx);
 
     if (pathname === "/api/asset-values" && method === "PATCH") return await updateDimensionValue(request, ctx);

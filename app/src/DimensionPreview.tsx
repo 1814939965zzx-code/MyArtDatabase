@@ -2,6 +2,7 @@
 
 import { Box, Check, Maximize2, Minimize2, Minus, MousePointer2, Plus, Rotate3D, RotateCcw, Trash2 } from "lucide-react";
 import { CSSProperties, PointerEvent, useEffect, useMemo, useRef, useState, WheelEvent } from "react";
+import { displayDimensionValue } from "./dimensionScale";
 
 type Dimension = { id: string; leftLabel: string; rightLabel: string };
 type Asset = { id: string; name: string; thumbnailUrl: string | null; dimensionValues: Record<string, number>; width?: number; height?: number };
@@ -505,8 +506,8 @@ export function DimensionPreview({
                 {mode >= 2 ? <div className="xy-grid-plane" aria-hidden="true">
                   {gridTicks.map((tick) => <span className="grid-line grid-line-x" style={{ left: `${tick * 10}%` }} key={`grid-x-${tick}`} />)}
                   {gridTicks.map((tick) => <span className="grid-line grid-line-y" style={{ top: `${tick * 10}%` }} key={`grid-y-${tick}`} />)}
-                  {gridTicks.map((tick) => <span className="grid-number grid-number-x" style={{ left: `${tick * 10}%` }} key={`grid-number-x-${tick}`}>{tick}</span>)}
-                  {gridTicks.map((tick) => <span className="grid-number grid-number-y" style={{ top: `${(10 - tick) * 10}%` }} key={`grid-number-y-${tick}`}>{tick}</span>)}
+                  {gridTicks.map((tick) => <span className="grid-number grid-number-x" style={{ left: `${tick * 10}%` }} key={`grid-number-x-${tick}`}>{tick * 20 - 100}</span>)}
+                  {gridTicks.map((tick) => <span className="grid-number grid-number-y" style={{ top: `${(10 - tick) * 10}%` }} key={`grid-number-y-${tick}`}>{tick * 20 - 100}</span>)}
                 </div> : null}
                 <div className="coordinate-axis coordinate-axis-x" />
                 {mode >= 2 ? <div className="coordinate-axis coordinate-axis-y" /> : null}
@@ -551,7 +552,7 @@ export function DimensionPreview({
                     >
                       <span className="preview-asset-face">
                         {asset.thumbnailUrl ? <img src={asset.thumbnailUrl} alt="" draggable={false} /> : <i>{asset.name.slice(0, 1)}</i>}
-                        {draggingAssetId === asset.id ? <em>{selected.map((dimension) => `${dimension.leftLabel} ${(values[dimension.id] ?? 500) / 100}`).join(" · ")}</em> : null}
+                        {draggingAssetId === asset.id ? <em>{selected.map((dimension) => `${dimension.leftLabel} ${displayDimensionValue(values[dimension.id] ?? 500)}`).join(" · ")}</em> : null}
                       </span>
                     </button>
                   );

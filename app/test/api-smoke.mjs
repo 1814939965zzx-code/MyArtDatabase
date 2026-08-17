@@ -63,16 +63,25 @@ assert.equal(deleteTag.status, 200);
 const wsAfterTagDelete = await json(await fetch(`${base}/api/workspace?projectId=project-visual-direction`));
 assert.deepEqual(wsAfterTagDelete.assets.find((item) => item.id === asset.id).tags, ["测试"]);
 
-// 8) 画板 + 元素
+// 8) 批量更新维度两端名称
+const dimensionPatch = await fetch(`${base}/api/dimensions`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ projectId: "project-visual-direction", dimensions: [{ id: "dimension-form", leftLabel: "极度抽象", rightLabel: "极度具象" }] }) });
+assert.equal(dimensionPatch.status, 200);
+const wsAfterDimensionPatch = await json(await fetch(`${base}/api/workspace?projectId=project-visual-direction`));
+assert.deepEqual(
+  wsAfterDimensionPatch.dimensions.find((item) => item.id === "dimension-form"),
+  { id: "dimension-form", projectId: "project-visual-direction", leftLabel: "极度抽象", rightLabel: "极度具象", sortOrder: 0 },
+);
+
+// 9) 画板 + 元素
 const canvas = await json(await post(`${base}/api/canvases`, { projectId: "project-visual-direction", name: "测试画板" }));
 assert.ok(canvas.canvas.id);
 const item = await json(await post(`${base}/api/canvas-items`, { canvasId: canvas.canvas.id, assetId: asset.id, x: 10, y: 20, width: 200, height: 150, zIndex: 1, rotation: 0 }));
 assert.ok(item.item.id);
 
-// 9) 彻底删除
+// 10) 彻底删除
 const del = await fetch(`${base}/api/assets?id=${asset.id}&mode=permanent&force=true`, { method: "DELETE" });
 assert.equal(del.status, 200);
 assert.equal((await fetch(`${base}/api/media?id=${asset.id}&variant=thumbnail`)).status, 404, "删除后缩略图应 404");
 
-console.log("✓ 全部通过：项目 / 工作区 / 上传 / 缩略图 / 原图 / 去重 / 改元数据 / 画板 / 删除");
+console.log("✓ 全部通过：项目 / 工作区 / 上传 / 缩略图 / 原图 / 去重 / 改元数据 / 改维度名称 / 画板 / 删除");
 process.exit(0);

@@ -4,6 +4,7 @@ import { AlertTriangle, Check, FileImage, LoaderCircle, Upload, X } from "lucide
 import { sha256 } from "@noble/hashes/sha2.js";
 import { bytesToHex } from "@noble/hashes/utils.js";
 import { FormEvent, useEffect, useState } from "react";
+import { centeredRangeStyle, displayDimensionValue } from "./dimensionScale";
 
 type Dimension = { id: string; leftLabel: string; rightLabel: string };
 type Duplicate = { id: string; name: string; fileName: string; thumbnailUrl: string | null; inProject: number };
@@ -183,8 +184,8 @@ export function UploadModal({
                   <div className="upload-section-heading"><strong>项目维度</strong><span>{dimensions.length} 个</span></div>
                   {dimensions.length ? dimensions.map((dimension) => (
                     <div className="upload-dimension" key={dimension.id}>
-                      <span><b>{dimension.leftLabel}</b><em>{(values[dimension.id] / 100).toFixed(2)}</em><b>{dimension.rightLabel}</b></span>
-                      <input aria-label={`设置${dimension.leftLabel}到${dimension.rightLabel}的位置`} type="range" min="0" max="1000" step="1" value={values[dimension.id]} onChange={(event) => setValues((current) => ({ ...current, [dimension.id]: Number(event.target.value) }))} />
+                      <span><b>{dimension.leftLabel}</b><em>{displayDimensionValue(values[dimension.id])}</em><b>{dimension.rightLabel}</b></span>
+                      <input className="centered-range" aria-label={`设置${dimension.leftLabel}到${dimension.rightLabel}的位置`} aria-valuetext={String(displayDimensionValue(values[dimension.id]))} type="range" min="0" max="1000" step="5" value={values[dimension.id]} style={centeredRangeStyle(values[dimension.id])} onChange={(event) => setValues((current) => ({ ...current, [dimension.id]: Number(event.target.value) }))} />
                     </div>
                   )) : <p className="form-hint">项目还没有维度，可上传后再添加。</p>}
                 </div>

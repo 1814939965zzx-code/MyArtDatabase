@@ -27,6 +27,7 @@ import { AllAssetsView, type LibraryAsset } from "./AllAssetsView";
 import { AssetMetadataEditor, type AssetMetadataEditorHandle, type AssetMetadataUpdate } from "./AssetMetadataEditor";
 import { BoardView } from "./BoardView";
 import { DeletionToast } from "./DeletionToast";
+import { DimensionControlsEditor, type DimensionControlsEditorHandle } from "./DimensionControlsEditor";
 import { DimensionPreview } from "./DimensionPreview";
 import { UploadModal } from "./UploadModal";
 
@@ -143,6 +144,7 @@ export function ArtDatabaseApp() {
   const [dragActive, setDragActive] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const metadataEditorRef = useRef<AssetMetadataEditorHandle>(null);
+  const dimensionEditorRef = useRef<DimensionControlsEditorHandle>(null);
 
   async function loadProjects(preferredId?: string) {
     const data = await api<{ projects: Project[] }>("/api/projects");
@@ -221,6 +223,8 @@ export function ArtDatabaseApp() {
   }, [selectedAssetId]);
 
   async function closeAssetDetail() {
+    const dimensionsSaved = await dimensionEditorRef.current?.save();
+    if (dimensionsSaved === false) return;
     const saved = await metadataEditorRef.current?.save();
     if (saved !== false) setSelectedAssetId(null);
   }
@@ -409,6 +413,32 @@ export function ArtDatabaseApp() {
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "保存失败");
       await loadWorkspace(workspace.project.id);
+    }
+  }
+
+  async function saveDimensionLabels(updates: Array<{ id: string; leftLabel: string; rightLabel: string }>) {
+    if (!workspace) return;
+    setBusy(true);
+    try {
+      await api("/api/dimensions", {
+        method: "PATCH",
+        body: JSON.stringify({ projectId: workspace.project.id, dimensions: updates }),
+      });
+      const updateMap = new Map(updates.map((entry) => [entry.id, entry]));
+      setWorkspace((current) => current ? {
+        ...current,
+        dimensions: current.dimensions.map((dimension) => {
+          const update = updateMap.get(dimension.id);
+          return update ? { ...dimension, leftLabel: update.leftLabel, rightLabel: update.rightLabel } : dimension;
+        }),
+      } : current);
+      setMessage("维度名称已在当前项目全局更新");
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "维度名称保存失败");
+      await loadWorkspace(workspace.project.id);
+      throw error;
+    } finally {
+      setBusy(false);
     }
   }
 
@@ -650,22 +680,16 @@ export function ArtDatabaseApp() {
                 onDeleteTag={(tag) => scheduleTagDeletion(selectedAsset, tag)}
               />
               <div className="drawer-section-title"><Settings2 size={16} /><strong>维度位置</strong></div>
-              {workspace.dimensions.length ? workspace.dimensions.map((dimension) => {
-                const value = selectedAsset.dimensionValues[dimension.id] ?? 500;
-                return (
-                  <div className="dimension-control" key={dimension.id}>
-                    <span><b>{dimension.leftLabel}</b><em>{Math.round(value / 10)}%</em><b>{dimension.rightLabel}</b></span>
-                    <input
-                      id={`dimension-${dimension.id}`}
-                      aria-label={`调整${dimension.leftLabel}到${dimension.rightLabel}的位置`}
-                      type="range" min="0" max="1000" step="10" value={value}
-                      onChange={(event) => setLocalDimensionValue(selectedAsset.id, dimension.id, Number(event.target.value))}
-                      onPointerUp={(event) => void saveDimensionValue(selectedAsset.id, dimension.id, Number(event.currentTarget.value))}
-                      onBlur={(event) => void saveDimensionValue(selectedAsset.id, dimension.id, Number(event.currentTarget.value))}
-                    />
-                  </div>
-                );
-              }) : <p className="drawer-empty">先为项目添加维度，再给素材定位。</p>}
+              {workspace.dimensions.length ? <DimensionControlsEditor
+                ref={dimensionEditorRef}
+                dimensions={workspace.dimensions}
+                values={selectedAsset.dimensionValues}
+                assetId={selectedAsset.id}
+                busy={busy}
+                onChangeValue={setLocalDimensionValue}
+                onSaveValue={saveDimensionValue}
+                onSaveLabels={saveDimensionLabels}
+              /> : <p className="drawer-empty">先为项目添加维度，再给素材定位。</p>}
               <button className="drawer-remove" type="button" onClick={() => void removeAssetFromProject(selectedAsset)}><Trash2 size={14} />从当前项目移除</button>
             </div>
           </div>
