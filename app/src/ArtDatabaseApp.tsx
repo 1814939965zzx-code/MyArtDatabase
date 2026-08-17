@@ -543,7 +543,7 @@ export function ArtDatabaseApp() {
       </aside>
 
       <section
-        className="workspace"
+        className={`workspace ${activeArea === "project" && surface === "preview" ? "preview-active" : ""}`}
         onDragOver={(event) => { if (activeArea === "project") { event.preventDefault(); setDragActive(true); } }}
         onDragLeave={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node)) setDragActive(false); }}
         onDrop={(event) => { event.preventDefault(); setDragActive(false); acceptUpload(event.dataTransfer.files[0]); }}

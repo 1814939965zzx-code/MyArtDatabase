@@ -58,6 +58,8 @@ button:focus-visible, input:focus-visible, textarea:focus-visible {
 .sidebar-note svg { flex: none; margin-top: 1px; }
 
 .workspace { flex: 1; min-width: 0; padding-bottom: 60px; }
+.workspace.preview-active { height: 100dvh; padding-bottom: 0; overflow: hidden; display: flex; flex-direction: column; }
+.workspace.preview-active > .topbar, .workspace.preview-active > .surface-tabs { flex: 0 0 auto; }
 .topbar { min-height: 67px; padding: 10px 34px; display: flex; align-items: center; justify-content: space-between; gap: 18px; border-bottom: 1px solid var(--line); background: rgba(244, 243, 238, .94); position: sticky; top: 0; z-index: 20; backdrop-filter: blur(10px); }
 .topbar-leading { display: flex; align-items: center; gap: 12px; min-width: 0; flex: 1 1 auto; }
 .topbar-actions { display: flex; align-items: center; gap: 10px; flex: none; }
@@ -278,6 +280,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible {
 .upload-fields > .modal-actions { padding-top: 16px; border-top: 1px solid var(--soft-line); }
 
 .preview-layout { margin: 22px 42px 0; height: max(640px, calc(100vh - 96px)); min-height: 640px; display: grid; grid-template-columns: 230px minmax(0, 1fr); border: 1px solid var(--line); background: var(--surface); }
+.workspace.preview-active .preview-layout { flex: 1 1 auto; height: auto; min-height: 0; }
 .preview-layout.focus-mode { width: 100vw; height: 100vh; min-height: 100vh; margin: 0; position: fixed; inset: 0; z-index: 160; border: 0; background: var(--surface); }
 .preview-settings { min-height: 0; padding: 17px; border-right: 1px solid var(--line); overflow-y: auto; }
 .preview-settings-heading { display: flex; gap: 9px; align-items: flex-start; padding-bottom: 14px; border-bottom: 1px solid var(--soft-line); }
@@ -313,9 +316,10 @@ button:focus-visible, input:focus-visible, textarea:focus-visible {
 .fullscreen-button { width: 31px; height: 29px; padding: 0; border: 1px solid var(--line); background: white; color: var(--muted); display: grid; place-items: center; cursor: pointer; }
 .fullscreen-button:hover { color: var(--ink); }
 .dimension-scene { --preview-hover-duration: .18s; flex: 1; min-height: 0; padding: 38px; overflow: auto; background: #efeee8; }
-.scene-viewport { width: 100%; min-width: 620px; min-height: 520px; height: 100%; display: grid; place-items: center; container-type: size; perspective: 2200px; overflow: hidden; touch-action: none; overscroll-behavior: contain; }
+.scene-viewport { width: 100%; min-width: 620px; min-height: 520px; height: 100%; position: relative; container-type: size; perspective: 2200px; overflow: hidden; touch-action: none; overscroll-behavior: contain; }
+.workspace.preview-active .scene-viewport { min-width: 0; min-height: 0; }
 .preview-layout.focus-mode .scene-viewport { min-width: 0; min-height: 0; }
-.scene-scale { transform: scale(var(--scene-scale)); transform-style: preserve-3d; }
+.scene-scale { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%) scale(var(--scene-scale)); transform-origin: center; transform-style: preserve-3d; }
 .scene-plane { --scene-size: min(152cqw, 140cqh); width: var(--scene-size); height: var(--scene-size); position: relative; transform-origin: center center; background: transparent; pointer-events: none; transform: rotateX(var(--scene-rx)) rotateZ(var(--scene-rz)); transform-style: preserve-3d; transition: none; }
 .mode-transitioning .scene-plane { transition: transform 1s ease-in-out; }
 .mode-transitioning .preview-asset-face { transition: transform 1s ease-in-out, box-shadow var(--preview-hover-duration) ease, opacity var(--preview-hover-duration) ease, visibility 0s linear; }
