@@ -119,11 +119,13 @@ function seed(db) {
   }
 }
 
-export function openDatabase(dbPath) {
+export function openDatabase(dbPath, { seedDemo = false } = {}) {
   if (dbPath !== ":memory:") mkdirSync(path.dirname(dbPath), { recursive: true });
   const db = new DatabaseSync(dbPath);
   db.exec("PRAGMA foreign_keys = ON");
   db.exec(SCHEMA);
-  seed(db);
+  // 示例数据只允许在开发模式或显式开启时写入；生产环境绝不自动写入，
+  // 否则空库/路径配置错误会被静默伪装成“示例素材库”。
+  if (seedDemo) seed(db);
   return db;
 }

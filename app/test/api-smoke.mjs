@@ -8,6 +8,8 @@ const tmp = await mkdtemp(path.join(os.tmpdir(), "artdb-"));
 process.env.PORT = "3111";
 process.env.DB_PATH = path.join(tmp, "app.db");
 process.env.STORE_ROOT = path.join(tmp, "media");
+// 冒烟测试依赖示例数据作为基线；生产环境默认不再自动写入示例数据。
+process.env.SEED_DEMO = "1";
 
 await import("../server/index.js");
 await new Promise((resolve) => setTimeout(resolve, 400));

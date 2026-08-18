@@ -71,7 +71,8 @@ npm run build
 - 生产入口是 `app/server/index.js`；`npm start` 不会自动构建前端。
 - 生产页面来自 `app/dist/`，该目录不提交 Git。
 - 不提交 `node_modules/`、SQLite 数据库、上传图片、日志或密钥。
-- 默认开发数据位于 `app/data/`；部署脚本默认把持久化数据放在仓库根目录 `data/`。不要混淆这两个运行场景。
+- 默认开发数据位于 `app/data/`；生产部署把持久化数据固定在 `/var/lib/artdatabase/`（由 `/etc/artdatabase/env` 配置，`scripts/setup-server.sh` 初始化）。不要混淆这两个运行场景。
+- 示例数据只在开发模式（`--dev`）或显式设置 `SEED_DEMO=1` 时写入；生产环境空库启动即为空库，不得为“看起来有数据”而重新开启示例数据写入。
 - 素材文件与项目相互独立；项目只保存素材引用，不复制图片。
 - 全局 Metadata 修改会影响该素材在所有项目中的展示。
 - 项目维度数量不限；一次维度预览最多选择三个维度。
