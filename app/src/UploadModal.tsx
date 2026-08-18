@@ -13,7 +13,6 @@ type PreparedFile = {
   width: number;
   height: number;
   previewUrl: string;
-  thumbnail: Blob;
   duplicates: Duplicate[];
 };
 
@@ -24,15 +23,9 @@ async function prepareImage(file: File, projectId: string): Promise<PreparedFile
     : sha256(new Uint8Array(buffer));
   const hash = bytesToHex(digest);
   const bitmap = await createImageBitmap(file);
-  const scale = Math.min(1, 900 / Math.max(bitmap.width, bitmap.height));
-  const canvas = document.createElement("canvas");
-  canvas.width = Math.max(1, Math.round(bitmap.width * scale));
-  canvas.height = Math.max(1, Math.round(bitmap.height * scale));
-  canvas.getContext("2d")?.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+  const width = bitmap.width;
+  const height = bitmap.height;
   bitmap.close();
-  const thumbnail = await new Promise<Blob>((resolve, reject) =>
-    canvas.toBlob((blob) => blob ? resolve(blob) : reject(new Error("缩略图生成失败")), "image/webp", .82),
-  );
   const response = await fetch("/api/uploads/check", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -42,10 +35,9 @@ async function prepareImage(file: File, projectId: string): Promise<PreparedFile
   if (!response.ok) throw new Error(data.error || "重复检查失败");
   return {
     hash,
-    width: canvas.width / scale,
-    height: canvas.height / scale,
+    width,
+    height,
     previewUrl: URL.createObjectURL(file),
-    thumbnail,
     duplicates: data.duplicates ?? [],
   };
 }
@@ -124,7 +116,6 @@ export function UploadModal({
     const fields = new FormData(event.currentTarget);
     const form = new FormData();
     form.set("file", file);
-    form.set("thumbnail", new File([prepared.thumbnail], "thumbnail.webp", { type: "image/webp" }));
     form.set("projectId", projectId);
     form.set("name", String(fields.get("name") || ""));
     form.set("tags", String(fields.get("tags") || ""));

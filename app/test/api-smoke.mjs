@@ -78,10 +78,31 @@ assert.ok(canvas.canvas.id);
 const item = await json(await post(`${base}/api/canvas-items`, { canvasId: canvas.canvas.id, assetId: asset.id, x: 10, y: 20, width: 200, height: 150, zIndex: 1, rotation: 0 }));
 assert.ok(item.item.id);
 
-// 10) 彻底删除
+// 10) 软删除 → 回收站列出 → 恢复
+const softDel = await fetch(`${base}/api/assets?id=${asset.id}`, { method: "DELETE" });
+assert.equal(softDel.status, 200);
+let trash = await json(await fetch(`${base}/api/trash`));
+const trashed = trash.assets.find((item) => item.id === asset.id);
+assert.ok(trashed, "回收站应包含软删除素材");
+assert.ok(trashed.projects.length >= 1, "回收站素材应保留项目引用");
+assert.ok(trashed.deletedAt, "回收站素材应有删除时间");
+
+// 11) 恢复后回到项目
+const restore = await fetch(`${base}/api/assets/restore`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ id: asset.id }) });
+assert.equal(restore.status, 200);
+trash = await json(await fetch(`${base}/api/trash`));
+assert.ok(!trash.assets.some((item) => item.id === asset.id), "恢复后回收站不应包含该素材");
+const wsAfterRestore = await json(await fetch(`${base}/api/workspace?projectId=project-visual-direction`));
+assert.ok(wsAfterRestore.assets.some((item) => item.id === asset.id), "恢复后素材应回到项目");
+
+// 12) 再次软删除后彻底删除
+const softDel2 = await fetch(`${base}/api/assets?id=${asset.id}`, { method: "DELETE" });
+assert.equal(softDel2.status, 200);
 const del = await fetch(`${base}/api/assets?id=${asset.id}&mode=permanent&force=true`, { method: "DELETE" });
 assert.equal(del.status, 200);
+trash = await json(await fetch(`${base}/api/trash`));
+assert.ok(!trash.assets.some((item) => item.id === asset.id), "彻底删除后回收站不应包含该素材");
 assert.equal((await fetch(`${base}/api/media?id=${asset.id}&variant=thumbnail`)).status, 404, "删除后缩略图应 404");
 
-console.log("✓ 全部通过：项目 / 工作区 / 上传 / 缩略图 / 原图 / 去重 / 改元数据 / 改维度名称 / 画板 / 删除");
+console.log("✓ 全部通过：项目 / 工作区 / 上传 / 缩略图 / 原图 / 去重 / 改元数据 / 改维度名称 / 画板 / 回收站(软删-列出-恢复-彻底删)");
 process.exit(0);

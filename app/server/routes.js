@@ -404,6 +404,37 @@ function library({ db }) {
   });
 }
 
+// ---- 回收站 ----
+function trash({ db }) {
+  const assets = db.prepare(`SELECT a.id, a.name, a.file_name AS fileName,
+    CASE WHEN a.thumbnail_key IS NOT NULL OR a.storage_key IS NOT NULL
+      THEN '/api/media?id=' || a.id || '&variant=thumbnail' ELSE a.thumbnail_url END AS thumbnailUrl,
+    a.tags, a.file_size AS fileSize, a.width, a.height, a.mime_type AS mimeType,
+    a.deleted_at AS deletedAt
+    FROM assets a
+    WHERE a.deleted_at IS NOT NULL
+    ORDER BY a.deleted_at DESC, a.id`).all();
+  const references = db.prepare(`SELECT pa.asset_id AS assetId, p.id AS projectId, p.name AS projectName
+    FROM project_assets pa
+    INNER JOIN projects p ON p.id = pa.project_id
+    INNER JOIN assets a ON a.id = pa.asset_id
+    WHERE a.deleted_at IS NOT NULL
+    ORDER BY p.name, p.id`).all();
+  const projectMap = new Map();
+  for (const reference of references) {
+    const current = projectMap.get(reference.assetId) ?? [];
+    current.push({ id: reference.projectId, name: reference.projectName });
+    projectMap.set(reference.assetId, current);
+  }
+  return Response.json({
+    assets: assets.map((asset) => ({
+      ...asset,
+      tags: asset.tags ? asset.tags.split(",") : [],
+      projects: projectMap.get(asset.id) ?? [],
+    })),
+  });
+}
+
 // ---- 项目素材引用 ----
 async function assignAssets(request, { db }) {
   const payload = await request.json();
@@ -593,6 +624,7 @@ export async function handleApi(request, ctx) {
     if (pathname === "/api/assets" && method === "DELETE") return await deleteAsset(request, ctx);
 
     if (pathname === "/api/library" && method === "GET") return library(ctx);
+    if (pathname === "/api/trash" && method === "GET") return trash(ctx);
 
     if (pathname === "/api/project-assets" && method === "POST") return await assignAssets(request, ctx);
     if (pathname === "/api/project-assets" && method === "DELETE") return removeAssetFromProject(request, ctx);

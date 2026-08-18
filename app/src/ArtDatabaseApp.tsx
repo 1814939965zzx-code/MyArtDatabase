@@ -5,7 +5,6 @@ import {
   Grid2X2,
   ImageIcon,
   ImagePlus,
-  Info,
   LayoutGrid,
   List,
   LoaderCircle,
@@ -29,6 +28,7 @@ import { BoardView } from "./BoardView";
 import { DeletionToast } from "./DeletionToast";
 import { DimensionControlsEditor, type DimensionControlsEditorHandle } from "./DimensionControlsEditor";
 import { DimensionPreview } from "./DimensionPreview";
+import { TrashView, type TrashedAsset } from "./TrashView";
 import { UploadModal } from "./UploadModal";
 
 type Project = {
@@ -122,7 +122,8 @@ function Modal({
 export function ArtDatabaseApp() {
   const [projects, setProjects] = useState<Project[]>([]);
   const [libraryAssets, setLibraryAssets] = useState<LibraryAsset[]>([]);
-  const [activeArea, setActiveArea] = useState<"library" | "project">("project");
+  const [trashAssets, setTrashAssets] = useState<TrashedAsset[]>([]);
+  const [activeArea, setActiveArea] = useState<"library" | "project" | "trash">("project");
   const [selectedProjectId, setSelectedProjectId] = useState("");
   const [workspace, setWorkspace] = useState<Workspace | null>(null);
   const [selectedAssetId, setSelectedAssetId] = useState<string | null>(null);
@@ -132,6 +133,7 @@ export function ArtDatabaseApp() {
   const [projectTagFilter, setProjectTagFilter] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
   const [libraryLoading, setLibraryLoading] = useState(true);
+  const [trashLoading, setTrashLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const [pendingDeletion, setPendingDeletion] = useState<PendingDeletion | null>(null);
@@ -194,13 +196,24 @@ export function ArtDatabaseApp() {
     }
   }
 
+  async function loadTrash(quiet = false) {
+    if (!quiet) setTrashLoading(true);
+    try {
+      const data = await api<{ assets: TrashedAsset[] }>("/api/trash");
+      setTrashAssets(data.assets);
+    } finally {
+      setTrashLoading(false);
+    }
+  }
+
   useEffect(() => {
     // The state updates happen after the initial API request resolves.
     // eslint-disable-next-line react-hooks/set-state-in-effect
-    Promise.all([loadProjects(), loadLibrary()]).catch((error) => {
+    Promise.all([loadProjects(), loadLibrary(), loadTrash()]).catch((error) => {
       setMessage(error instanceof Error ? error.message : "项目载入失败");
       setLoading(false);
       setLibraryLoading(false);
+      setTrashLoading(false);
     });
   }, []);
 
@@ -518,6 +531,75 @@ export function ArtDatabaseApp() {
     }
   }
 
+  async function restoreTrashAsset(asset: TrashedAsset) {
+    try {
+      await api("/api/assets/restore", {
+        method: "POST",
+        body: JSON.stringify({ id: asset.id }),
+      });
+      await Promise.all([loadTrash(true), loadLibrary(), loadProjects()]);
+      setMessage(`已恢复“${asset.name}”`);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "恢复失败");
+    }
+  }
+
+  async function restoreTrashAssets(assetsToRestore: TrashedAsset[]) {
+    if (!assetsToRestore.length) return;
+    setBusy(true);
+    try {
+      const results = await Promise.allSettled(assetsToRestore.map((asset) =>
+        api("/api/assets/restore", { method: "POST", body: JSON.stringify({ id: asset.id }) }),
+      ));
+      const ok = results.filter((result) => result.status === "fulfilled").length;
+      const failed = results.length - ok;
+      await Promise.all([loadTrash(true), loadLibrary(), loadProjects()]);
+      setMessage(failed ? `已恢复 ${ok} 个素材，${failed} 个失败` : `已恢复 ${ok} 个素材`);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "恢复失败");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function purgeTrashAsset(asset: TrashedAsset) {
+    const referenceNote = asset.projects.length
+      ? `\n\n它目前被 ${asset.projects.length} 个项目引用，这些引用和相关画板内容也会一并移除。`
+      : "";
+    if (!window.confirm(`永久删除“${asset.name}”？${referenceNote}\n\n此操作会删除原始图片文件和数据库记录，无法恢复。`)) return;
+    setBusy(true);
+    try {
+      await api(`/api/assets?id=${encodeURIComponent(asset.id)}&mode=permanent&force=true`, { method: "DELETE" });
+      await Promise.all([loadTrash(true), loadLibrary(), loadProjects()]);
+      setMessage("素材已永久删除");
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "永久删除失败");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function purgeTrashAssets(assetsToPurge: TrashedAsset[]) {
+    if (!assetsToPurge.length) return;
+    const referenced = assetsToPurge.filter((asset) => asset.projects.length).length;
+    const referenceNote = referenced ? `\n\n其中 ${referenced} 个素材仍被项目引用，这些引用和相关画板内容也会一并移除。` : "";
+    if (!window.confirm(`永久删除选中的 ${assetsToPurge.length} 个素材？${referenceNote}\n\n此操作会删除原始图片文件和数据库记录，无法恢复。`)) return;
+    setBusy(true);
+    try {
+      const results = await Promise.allSettled(assetsToPurge.map((asset) =>
+        api(`/api/assets?id=${encodeURIComponent(asset.id)}&mode=permanent&force=true`, { method: "DELETE" }),
+      ));
+      const ok = results.filter((result) => result.status === "fulfilled").length;
+      const failed = results.length - ok;
+      await Promise.all([loadTrash(true), loadLibrary(), loadProjects()]);
+      setMessage(failed ? `已永久删除 ${ok} 个素材，${failed} 个失败` : `已永久删除 ${ok} 个素材`);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "永久删除失败");
+    } finally {
+      setBusy(false);
+    }
+  }
+
   return (
     <main className={`app-shell ${sidebarCollapsed ? "sidebar-hidden" : ""}`}>
       <aside className={`sidebar ${sidebarOpen ? "sidebar-open" : ""}`}>
@@ -553,7 +635,14 @@ export function ArtDatabaseApp() {
         <button className="new-project-button" type="button" onClick={() => setCreateOpen(true)}>
           <Plus size={17} /> 新建项目
         </button>
-        <div className="sidebar-note"><Info size={15} /><span>原文件保存在本地图片存储；项目只保存素材引用与分类数据。</span></div>
+        <button
+          className={`trash-nav-item ${activeArea === "trash" ? "active" : ""}`}
+          type="button"
+          onClick={() => { setActiveArea("trash"); setSelectedAssetId(null); setSidebarOpen(false); void loadTrash(); }}
+        >
+          <span className="project-icon"><Trash2 size={16} /></span>
+          <span className="project-copy"><strong>回收站</strong><small>{trashAssets.length} 个已删除素材</small></span>
+        </button>
       </aside>
 
       <section
@@ -585,6 +674,13 @@ export function ArtDatabaseApp() {
                   <em className="topbar-title-total">{libraryAssets.length}</em>
                 </div>
               </div>
+            ) : activeArea === "trash" ? (
+              <div className="topbar-project">
+                <div className="topbar-title">
+                  <h1>回收站</h1>
+                  <em className="topbar-title-total">{trashAssets.length}</em>
+                </div>
+              </div>
             ) : null}
           </div>
           <div className="topbar-actions">
@@ -593,7 +689,18 @@ export function ArtDatabaseApp() {
           </div>
         </header>
 
-        {activeArea === "library" ? (
+        {activeArea === "trash" ? (
+          <TrashView
+            assets={trashAssets}
+            search={search}
+            loading={trashLoading}
+            busy={busy}
+            onRestore={(asset) => void restoreTrashAsset(asset)}
+            onPurge={(asset) => void purgeTrashAsset(asset)}
+            onRestoreMany={(assets) => void restoreTrashAssets(assets)}
+            onPurgeMany={(assets) => void purgeTrashAssets(assets)}
+          />
+        ) : activeArea === "library" ? (
           <AllAssetsView
             assets={libraryAssets}
             projects={projects}

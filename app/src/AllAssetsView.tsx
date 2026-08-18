@@ -149,20 +149,17 @@ export function AllAssetsView({
     }
   }
 
-  async function permanentlyDelete(asset: LibraryAsset) {
-    const referenceNote = asset.projects.length
-      ? `\n\n它目前被 ${asset.projects.length} 个项目引用，这些引用和相关画板内容也会一并移除。`
-      : "";
-    if (!window.confirm(`永久删除“${asset.name}”？${referenceNote}\n\n此操作会删除原始图片文件和数据库记录，无法恢复。`)) return;
+  async function deleteToTrash(asset: LibraryAsset) {
     setBusy(true);
+    setError("");
     try {
-      await request(`/api/assets?id=${encodeURIComponent(asset.id)}&mode=permanent&force=true`, { method: "DELETE" });
+      await request(`/api/assets?id=${encodeURIComponent(asset.id)}`, { method: "DELETE" });
       setSelectedAssetId(null);
       setAssignAssetId(null);
       await onRefresh();
-      onMessage("素材及其所有项目引用已永久删除");
+      onMessage("素材已移入回收站，可在回收站恢复或永久删除");
     } catch (reason) {
-      onMessage(reason instanceof Error ? reason.message : "永久删除失败");
+      onMessage(reason instanceof Error ? reason.message : "删除失败");
     } finally {
       setBusy(false);
     }
@@ -251,7 +248,7 @@ export function AllAssetsView({
               <div className="drawer-section-title"><Images size={16} /><strong>已引用项目</strong><em>{selectedAsset.projects.length}</em></div>
               {selectedAsset.projects.length ? <div className="reference-projects">{selectedAsset.projects.map((project) => <span key={project.id}><Check size={12} />{project.name}</span>)}</div> : <p className="drawer-empty">当前没有项目引用这项素材。</p>}
               <button className="drawer-project-add" type="button" onClick={() => openAssign(selectedAsset)}><FolderPlus size={14} />添加到其他项目</button>
-              <button className="drawer-remove drawer-permanent-delete" type="button" disabled={busy} onClick={() => void permanentlyDelete(selectedAsset)}><Trash2 size={14} />永久删除素材</button>
+              <button className="drawer-remove drawer-delete" type="button" disabled={busy} onClick={() => void deleteToTrash(selectedAsset)}><Trash2 size={14} />删除素材</button>
             </div>
           </div>
         </aside>
