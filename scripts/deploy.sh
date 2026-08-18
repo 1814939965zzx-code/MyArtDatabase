@@ -11,6 +11,7 @@ set -Eeuo pipefail
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=scripts/lib-deploy.sh
 source "${SCRIPT_DIR}/lib-deploy.sh"
+SHOW_RECOVERY_HINTS=1
 
 REPO_DIR="${REPO_DIR:-$(cd -- "${SCRIPT_DIR}/.." && pwd)}"
 APP_DIR="${REPO_DIR}/app"
@@ -34,7 +35,6 @@ PUBLIC_URL="${PUBLIC_URL:-}"
 
 [[ -n "${DB_PATH:-}" && -n "${STORE_ROOT:-}" ]] || {
   die "配置不完整：DB_PATH 或 STORE_ROOT 缺失，请检查 ${ENV_FILE}"
-  recovery_hint
 }
 
 mkdir -p "${REPO_DIR}/tmp"
@@ -65,17 +65,10 @@ LOCAL_COMMIT="$(git -C "${REPO_DIR}" rev-parse HEAD)"
 REMOTE_COMMIT="$(git -C "${REPO_DIR}" rev-parse "origin/${BRANCH}")"
 [[ "${LOCAL_COMMIT}" == "${REMOTE_COMMIT}" ]] || {
   die "本地提交与 origin/${BRANCH} 不一致，无法 fast-forward"
-  recovery_hint
 }
 log "已对齐提交 ${LOCAL_COMMIT}"
 
-node -e '
-const [major, minor] = process.versions.node.split(".").map(Number);
-if (major < 23 || (major === 23 && minor < 4)) {
-  console.error(`Node.js ${process.versions.node} 过旧，需要 >= 23.4.0`);
-  process.exit(1);
-}
-'
+require_supported_node
 
 # ---------------- 构建与测试 ----------------
 log "安装锁定依赖、类型检查、测试并构建前端"
@@ -88,7 +81,6 @@ log "安装锁定依赖、类型检查、测试并构建前端"
 )
 [[ -s "${DIST_INDEX}" ]] || {
   die "构建完成但未生成 ${DIST_INDEX}"
-  recovery_hint
 }
 
 # ---------------- 重启 systemd 服务 ----------------
@@ -97,7 +89,6 @@ run_as_root systemctl restart "${SERVICE_NAME}"
 run_as_root systemctl is-active --quiet "${SERVICE_NAME}" || {
   run_as_root systemctl status "${SERVICE_NAME}" --no-pager || true
   die "systemd 服务 ${SERVICE_NAME} 启动失败"
-  recovery_hint
 }
 
 # ---------------- 部署后检查（全部硬失败） ----------------
@@ -105,6 +96,7 @@ LOCAL_URL="http://127.0.0.1:${PORT}"
 
 MAIN_PID="$(service_entry_ok "${SERVICE_NAME}" "${SERVER_ENTRY}")"
 log "systemd 运行当前入口：PID=${MAIN_PID}"
+verify_service_runtime_config "${MAIN_PID}" "${DB_PATH}" "${STORE_ROOT}" "${PORT}"
 
 HOME_HTML="$(fetch_homepage "${LOCAL_URL}")"
 verify_api_json "${LOCAL_URL}"

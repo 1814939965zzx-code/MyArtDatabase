@@ -45,6 +45,8 @@
 | `app/server/storage.js` | 原图和缩略图存储 |
 | `app/test/api-smoke.mjs` | API 全链路冒烟测试 |
 | `scripts/deploy.sh` | 服务器部署与版本校验 |
+| `scripts/setup-server.sh` | 首次安装、旧数据安全迁移与 systemd 初始化 |
+| `scripts/check-production.sh` | 只读生产环境巡检 |
 
 ## 常用命令
 

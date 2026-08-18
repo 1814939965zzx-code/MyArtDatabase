@@ -30,6 +30,8 @@ FAKEBIN="${TMP}/fakebin"
 mkdir -p "${FAKEBIN}"
 cat >"${FAKEBIN}/sudo" <<'EOF'
 #!/usr/bin/env bash
+if [[ "${1:-}" == "-u" ]]; then shift 2; fi
+if [[ "${1:-}" == "--" ]]; then shift; fi
 exec "$@"
 EOF
 cat >"${FAKEBIN}/systemctl" <<'EOF'
@@ -69,11 +71,17 @@ make_db() { # path label(empty|demo|real)
     const { DatabaseSync } = require("node:sqlite");
     const db = new DatabaseSync(process.argv[1]);
     db.exec("CREATE TABLE projects (id TEXT PRIMARY KEY, name TEXT, description TEXT, created_at TEXT, updated_at TEXT)");
-    db.exec("CREATE TABLE assets (id TEXT PRIMARY KEY, name TEXT, file_name TEXT, thumbnail_url TEXT, tags TEXT, description TEXT, notes TEXT, source_url TEXT, file_size INTEGER, width INTEGER, height INTEGER, mime_type TEXT, created_at TEXT, deleted_at TEXT)");
+    db.exec("CREATE TABLE assets (id TEXT PRIMARY KEY, name TEXT, file_name TEXT, thumbnail_url TEXT, storage_key TEXT, thumbnail_key TEXT, tags TEXT, description TEXT, notes TEXT, source_url TEXT, file_size INTEGER, width INTEGER, height INTEGER, mime_type TEXT, created_at TEXT, deleted_at TEXT)");
     if (process.argv[2] === "demo") {
       db.prepare("INSERT INTO projects (id, name) VALUES (?, ?)").run("project-visual-direction", "示例项目");
     } else if (process.argv[2] === "real") {
       db.prepare("INSERT INTO projects (id, name) VALUES (?, ?)").run("11111111-2222-3333-4444-555555555555", "真实项目");
+    } else if (process.argv[2] === "asset-only") {
+      db.prepare("INSERT INTO assets (id, name, file_name) VALUES (?, ?, ?)").run("asset-only", "全局素材", "asset.jpg");
+    } else if (process.argv[2] === "local-media") {
+      db.prepare("INSERT INTO projects (id, name) VALUES (?, ?)").run("11111111-2222-3333-4444-555555555555", "真实项目");
+      db.prepare("INSERT INTO assets (id, name, file_name, storage_key, thumbnail_key) VALUES (?, ?, ?, ?, ?)")
+        .run("asset-local", "本地素材", "asset.jpg", "file-a", "file-a");
     }
   ' "$1" "$2"
 }
@@ -99,6 +107,8 @@ mkdir -p "${TMP}/dbs"
 make_db "${TMP}/dbs/empty.db" empty
 make_db "${TMP}/dbs/demo.db" demo
 make_db "${TMP}/dbs/real.db" real
+make_db "${TMP}/dbs/asset-only.db" asset-only
+make_db "${TMP}/dbs/local-media.db" local-media
 check "quick_check ok" "ok" "$(db_quick_check "${TMP}/dbs/real.db")"
 check "projects 计数 real" "1" "$(db_projects_count "${TMP}/dbs/real.db")"
 check "projects 计数 empty" "0" "$(db_projects_count "${TMP}/dbs/empty.db")"
@@ -107,6 +117,37 @@ check "has_demo demo=yes" "yes" "$(db_has_demo "${TMP}/dbs/demo.db")"
 check "has_demo real=no" "no" "$(db_has_demo "${TMP}/dbs/real.db")"
 if db_is_empty "${TMP}/dbs/empty.db"; then pass "is_empty empty=true"; else fail "is_empty empty=true" "返回 false"; fi
 if db_is_empty "${TMP}/dbs/real.db"; then fail "is_empty real=false" "返回 true"; else pass "is_empty real=false"; fi
+if db_is_empty "${TMP}/dbs/asset-only.db"; then fail "is_empty asset-only=false" "返回 true"; else pass "is_empty asset-only=false"; fi
+
+if validate_service_name "artdatabase-prod_1"; then pass "合法 systemd 服务名"; else fail "合法 systemd 服务名" "被拒绝"; fi
+if validate_service_name 'bad;touch-x'; then fail "非法 systemd 服务名" "未被拒绝"; else pass "非法 systemd 服务名"; fi
+
+sqlite_backup "${TMP}/dbs/real.db" "${TMP}/dbs/real-backup.db"
+check "SQLite 一致性备份" "1" "$(db_projects_count "${TMP}/dbs/real-backup.db")"
+
+mkdir -p "${TMP}/media-source/blobs" "${TMP}/media-source/thumbs"
+printf 'blob' >"${TMP}/media-source/blobs/a"
+printf 'thumb' >"${TMP}/media-source/thumbs/a"
+copy_media_tree "${TMP}/media-source" "${TMP}/media-target"
+check "媒体树复制原图" "yes" "$([[ -f "${TMP}/media-target/blobs/a" ]] && echo yes || echo no)"
+check "媒体树复制缩略图" "yes" "$([[ -f "${TMP}/media-target/thumbs/a" ]] && echo yes || echo no)"
+set +e
+bash -c 'source "$1"; copy_media_tree "$2" "$3"' _ "${LIB}" "${TMP}/media-source" "${TMP}/media-target" >/dev/null 2>&1
+RC_MEDIA_OVERWRITE=$?
+set -e
+check_exit "媒体复制拒绝覆盖非空目录" 1 "${RC_MEDIA_OVERWRITE}"
+
+mkdir -p "${TMP}/verified-media/blobs" "${TMP}/verified-media/thumbs"
+printf 'blob' >"${TMP}/verified-media/blobs/file-a"
+printf 'thumb' >"${TMP}/verified-media/thumbs/file-a"
+check "媒体完整性校验通过" "1" "$(verify_media_files "${TMP}/dbs/local-media.db" "${TMP}/verified-media")"
+mkdir -p "${TMP}/missing-media/blobs" "${TMP}/missing-media/thumbs"
+printf 'blob' >"${TMP}/missing-media/blobs/file-a"
+set +e
+verify_media_files "${TMP}/dbs/local-media.db" "${TMP}/missing-media" >/dev/null 2>&1
+RC_MISSING_MEDIA=$?
+set -e
+check_exit "媒体完整性拒绝缺失缩略图" 1 "${RC_MISSING_MEDIA}"
 
 if path_inside_repo "/repo/data/app.db" "/repo"; then pass "path_inside_repo 仓库内=true"; else fail "path_inside_repo 仓库内=true" "返回 false"; fi
 if path_inside_repo "/var/lib/artdatabase/app.db" "/repo"; then fail "path_inside_repo 仓库外=false" "返回 true"; else pass "path_inside_repo 仓库外=false"; fi
@@ -130,9 +171,12 @@ git -C "${TMP}/repo" init -q 2>/dev/null || true
 # 单个旧库（app/data）→ 输出备份与迁移
 mkdir -p "${TMP}/repo/app/data"
 cp "${TMP}/dbs/real.db" "${TMP}/repo/app/data/app.db"
+mkdir -p "${TMP}/repo/app/data/media/blobs" "${TMP}/repo/app/data/media/thumbs"
+printf 'old-blob' >"${TMP}/repo/app/data/media/blobs/old-file"
 OUT="$(DATA_DIR="${TMP}/var1" REPO_DIR="${TMP}/repo" bash "${SETUP}" --dry-run 2>&1)"
-check "单库迁移包含备份动作" "yes" "$(printf '%s' "${OUT}" | grep -q '备份旧数据库' && echo yes || echo no)"
-check "单库迁移包含迁移动作" "yes" "$(printf '%s' "${OUT}" | grep -q '迁移数据库' && echo yes || echo no)"
+check "单库迁移包含一致性备份" "yes" "$(printf '%s' "${OUT}" | grep -q '一致性备份' && echo yes || echo no)"
+check "单库迁移包含安全复制" "yes" "$(printf '%s' "${OUT}" | grep -q '复制备份到生产库' && echo yes || echo no)"
+check "单库迁移包含媒体复制" "yes" "$(printf '%s' "${OUT}" | grep -q '复制媒体目录' && echo yes || echo no)"
 check "dry-run 不移动原文件" "yes" "$([[ -s "${TMP}/repo/app/data/app.db" ]] && echo yes || echo no)"
 
 # 多个旧库 → 停止
@@ -157,6 +201,12 @@ check "无库未确认提示 INIT_EMPTY_DB" "yes" "$(printf '%s' "${OUT3}" | gre
 # 无库 + INIT_EMPTY_DB=1 → 允许
 OUT4="$(DATA_DIR="${TMP}/var4" INIT_EMPTY_DB=1 REPO_DIR="${TMP}/repo" bash "${SETUP}" --dry-run 2>&1)"
 check "INIT_EMPTY_DB 允许空库" "yes" "$(printf '%s' "${OUT4}" | grep -q '创建空库' && echo yes || echo no)"
+
+set +e
+OUT_BAD_NAME="$(DATA_DIR="${TMP}/var5" INIT_EMPTY_DB=1 REPO_DIR="${TMP}/repo" bash "${SETUP}" --dry-run '--service-name=bad;name' 2>&1)"
+RC_BAD_NAME=$?
+set -e
+check_exit "setup 拒绝非法服务名" 1 "${RC_BAD_NAME}"
 
 echo "== 3. check-production 只读检查 =="
 CHECK="${ROOT}/check-production.sh"

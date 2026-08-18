@@ -1,11 +1,19 @@
 import assert from "node:assert/strict";
 import { mkdtemp } from "node:fs/promises";
+import { createServer } from "node:http";
 import os from "node:os";
 import path from "node:path";
 import sharp from "sharp";
 
 const tmp = await mkdtemp(path.join(os.tmpdir(), "artdb-"));
-process.env.PORT = "3111";
+const probe = createServer();
+await new Promise((resolve, reject) => {
+  probe.once("error", reject);
+  probe.listen(0, "127.0.0.1", resolve);
+});
+const testPort = probe.address().port;
+await new Promise((resolve, reject) => probe.close((error) => error ? reject(error) : resolve()));
+process.env.PORT = String(testPort);
 process.env.DB_PATH = path.join(tmp, "app.db");
 process.env.STORE_ROOT = path.join(tmp, "media");
 // 冒烟测试依赖示例数据作为基线；生产环境默认不再自动写入示例数据。
@@ -14,7 +22,7 @@ process.env.SEED_DEMO = "1";
 await import("../server/index.js");
 await new Promise((resolve) => setTimeout(resolve, 400));
 
-const base = "http://localhost:3111";
+const base = `http://127.0.0.1:${testPort}`;
 const json = (r) => r.json();
 const post = (url, body) => fetch(url, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
 

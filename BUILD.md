@@ -18,10 +18,12 @@ sudo ./scripts/setup-server.sh          # 首次初始化（只执行一次）
 - 把持久化数据固定到 `/var/lib/artdatabase/`（`app.db` + `media/`）；
 - 探测旧数据库：`<repo>/app/data/app.db`、`<repo>/data/app.db`、`/var/lib/artdatabase/app.db`；
   - **多个数据库同时存在时停止**，绝不自动猜测；
-  - 唯一旧库迁移前先备份到 `/var/lib/artdatabase/backups/`；
+  - 先停止同名旧服务，使用 SQLite Online Backup API 生成一致性备份；
+  - 将备份复制到生产目录，旧数据库与旧媒体目录原地保留，便于回退；
+- 以仓库所有者身份执行 `npm ci`、类型检查、测试和首次构建；
 - 写入 `/etc/artdatabase/env`（`PORT`/`DB_PATH`/`STORE_ROOT`/`SERVICE_NAME`/`RUN_USER`）；
 - 生成 systemd unit（`User=artdatabase`，`EnvironmentFile=/etc/artdatabase/env`）；
-- 启动并验证服务。
+- 显式重启并验证服务用户、代码入口、API、数据库和媒体文件。
 
 **未发现旧库时不创建空库**，必须明确执行：
 
@@ -29,14 +31,14 @@ sudo ./scripts/setup-server.sh          # 首次初始化（只执行一次）
 sudo INIT_EMPTY_DB=1 ./scripts/setup-server.sh
 ```
 
-想先预览操作可以加 `--dry-run`（无需 root）。初始化完成后先执行一次 `./scripts/deploy.sh` 完成构建。
+想先预览操作可以加 `--dry-run`（无需 root）。setup 本身已完成首次构建，成功后可直接访问服务；全新空库请先在界面创建第一个项目，之后日常更新只需 `./scripts/deploy.sh`。
 
 ## 日常部署：`./scripts/deploy.sh`
 
 脚本自己读取 `/etc/artdatabase/env` 和仓库位置，无需手动传参。流程：
 
 ```text
-数据预检（库在仓库外 / SQLite quick_check / 非空库非示例库 / 无 SEED_DEMO / 媒体目录可读 / 非 root 运行 / 工作区干净）
+数据预检（数据库与媒体均在仓库外 / SQLite quick_check / 非空库非示例库 / 无 SEED_DEMO / 服务用户可读写 / 每个本地素材文件存在 / 非 root 运行 / 工作区干净）
   ↓
 git fetch + fast-forward（本地有未提交修改、分支不对或无法 ff 则停止）
   ↓

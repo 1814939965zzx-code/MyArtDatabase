@@ -4,6 +4,7 @@
 
 | 日期 | 版本 | 变化 | 状态 |
 | --- | --- | --- | --- |
+| 2026-08-18 | v0.41 | 加固首次部署与数据迁移：旧服务停止后使用 SQLite Online Backup API 一致性备份，数据库与媒体改为安全复制并保留旧文件；setup 自动完成首次 ci/typecheck/test/build，显式重启并校验非 root 服务；增加服务名注入防护、仓库外媒体约束、数据库与媒体文件完整性检查及回归测试 | 已完成 |
 | 2026-08-18 | v0.40 | 部署流程标准化：`scripts/setup-server.sh`（首次初始化：非 root 服务用户、数据固定 `/var/lib/artdatabase/`、旧库探测/备份/迁移、多库共存停止、`INIT_EMPTY_DB` 显式空库、生成 `/etc/artdatabase/env` 与 systemd unit，支持 `--dry-run`）+ `scripts/deploy.sh`（日常一键部署：读取 env 文件，预检→git ff→ci+typecheck+test+build→重启→后检，任何异常非零退出）+ `scripts/check-production.sh`（只读检查）；生产环境不再自动写入示例数据（仅 `--dev` 或 `SEED_DEMO=1`），根治“部署后变回示例素材库”；新增 `scripts/test-deploy.sh` 部署脚本测试 | 已完成 |
 | 2026-08-18 | v0.39 | 修复专注模式（全屏预览）下点击图片无法查看详情：全屏预览层 z-index 由 160 降至 50，避免盖住素材详情抽屉（60）、弹窗（80）与 toast（100）等浮动 UI | 已完成 |
 | 2026-08-17 | v0.38 | 修复 3D 预览 Z 轴坐标映射：图片 Z 位置改用动态场景尺寸（sceneSize/1000）替代固定深度系数，图片拉满时与 Z 轴端点严格对齐，隔离象限中心三轴对称 | 已完成 |
