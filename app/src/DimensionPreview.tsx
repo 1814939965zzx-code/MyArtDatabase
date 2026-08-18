@@ -27,7 +27,6 @@ type AssetDrag = {
 const clampValue = (value: number) => Math.max(0, Math.min(1000, Math.round(value)));
 const wrapRotation = (value: number) => ((value % 360) + 360) % 360;
 const SCENE_PERSPECTIVE = 2200;
-const DEPTH_SCALE = .68;
 const aspectRatioFor = (asset: Asset) => {
   const width = asset.width ?? 0;
   const height = asset.height ?? 0;
@@ -103,7 +102,7 @@ export function DimensionPreview({
     ? {
         x: isolatedOctant.x * planeSize / 4,
         y: -isolatedOctant.y * planeSize / 4,
-        z: isolatedOctant.z * 250 * DEPTH_SCALE,
+        z: isolatedOctant.z * planeSize / 4,
       }
     : { x: 0, y: 0, z: 0 };
   function octantName(octant: Octant) {
@@ -126,7 +125,7 @@ export function DimensionPreview({
         for (const z of signs) {
           const localX = x * size / 4;
           const localY = -y * size / 4;
-          const localZ = z * 250 * DEPTH_SCALE;
+          const localZ = z * size / 4;
           const alongY = Math.sin(yaw) * localX + Math.cos(yaw) * localY;
           const depth = Math.sin(pitch) * alongY + Math.cos(pitch) * localZ;
           if (depth > nearestDepth) {
@@ -536,7 +535,7 @@ export function DimensionPreview({
     const startLocalY = mode >= 2
       ? (.5 - (currentValues[selected[1].id] ?? 500) / 1000) * plane.offsetHeight
       : 0;
-    const startLocalZ = mode === 3 ? ((currentValues[selected[2].id] ?? 500) - 500) * DEPTH_SCALE : 0;
+    const startLocalZ = mode === 3 ? ((currentValues[selected[2].id] ?? 500) - 500) * plane.offsetWidth / 1000 : 0;
     const pointerOnPlane = unprojectPointerToPlane(event.clientX, event.clientY, startLocalZ);
     assetDrag.current = {
       pointerId: event.pointerId,
@@ -729,7 +728,7 @@ export function DimensionPreview({
                   const yaw = (mode === 3 ? rotateZ : 0) * Math.PI / 180;
                   const localX = (x / 1000 - 0.5) * planeSize;
                   const localY = (y / 1000 - 0.5) * planeSize;
-                  const localZ = z * DEPTH_SCALE;
+                  const localZ = z * planeSize / 1000;
                   const centeredX = localX - scenePivot.x;
                   const centeredY = localY - scenePivot.y;
                   const centeredZ = localZ - scenePivot.z;
@@ -747,7 +746,7 @@ export function DimensionPreview({
                       style={{
                         left: `${x / 10}%`,
                         top: `${y / 10}%`,
-                        "--asset-z": `${z * DEPTH_SCALE}px`,
+                        "--asset-z": `${z * planeSize / 1000}px`,
                         "--asset-ratio": aspectRatioFor(asset),
                         "--persp": persp,
                         "--billboard-rx": `${mode === 3 ? -sceneRotateX : 0}deg`,
