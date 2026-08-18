@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
 import { mkdtemp } from "node:fs/promises";
-import { createServer } from "node:http";
+import { createServer, request as httpRequest } from "node:http";
 import os from "node:os";
 import path from "node:path";
 import sharp from "sharp";
+import { createLocalDiskStore } from "../server/storage.js";
 
 const tmp = await mkdtemp(path.join(os.tmpdir(), "artdb-"));
 const probe = createServer();
@@ -25,6 +26,25 @@ await new Promise((resolve) => setTimeout(resolve, 400));
 const base = `http://127.0.0.1:${testPort}`;
 const json = (r) => r.json();
 const post = (url, body) => fetch(url, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+const rawGet = (requestPath) => new Promise((resolve, reject) => {
+  const req = httpRequest({ hostname: "127.0.0.1", port: testPort, path: requestPath, method: "GET" }, (res) => {
+    const chunks = [];
+    res.on("data", (chunk) => chunks.push(chunk));
+    res.on("end", () => resolve({ status: res.statusCode, body: Buffer.concat(chunks).toString("utf8") }));
+  });
+  req.on("error", reject);
+  req.end();
+});
+
+// 0) 安全边界：编码路径穿越不得读取系统文件或导致进程崩溃
+const traversal = await rawGet("/%2e%2e%2f%2e%2e%2f%2e%2e%2f%2e%2e%2fetc%2fpasswd");
+assert.equal(traversal.status, 400, "路径穿越应返回 400");
+assert.ok(!traversal.body.includes("root:"), "不得泄露系统文件内容");
+assert.equal((await fetch(`${base}/api/projects`)).status, 200, "恶意请求后服务应继续运行");
+
+const guardedStore = createLocalDiskStore({ root: path.join(tmp, "guarded-media") });
+await assert.rejects(() => guardedStore.open("../../../../etc/passwd", "original"), /非法存储键/);
+await assert.rejects(() => guardedStore.remove("../../../../etc/passwd"), /非法存储键/);
 
 // 1) 项目列表（含种子数据）
 const projects = await json(await fetch(`${base}/api/projects`));

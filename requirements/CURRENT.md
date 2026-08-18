@@ -132,6 +132,7 @@ Metadata 字段：
 
 - 单个原生 Node.js 进程同时提供前端、`/api/*`、SQLite 和图片存储。
 - 默认开发数据位于 `app/data/app.db` 和 `app/data/media/`。
+- 静态资源路径和本地媒体存储键必须限定在各自根目录内，禁止通过编码路径、`..` 或路径分隔符访问任意文件。
 - 环境变量：`PORT`（默认 `3000`）、`DB_PATH`、`STORE_ROOT`。
 - Node.js 要求 `>=23.4.0`。
 - 启动、验证和部署方式分别以根目录 `README.md`、`AGENTS.md` 和 `BUILD.md` 为准。

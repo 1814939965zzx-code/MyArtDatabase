@@ -1,6 +1,6 @@
 import { createServer } from "node:http";
 import { Readable } from "node:stream";
-import { createReadStream, existsSync, statSync } from "node:fs";
+import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { openDatabase } from "./db.js";
@@ -47,7 +47,12 @@ function sendResponse(res, response) {
   response.headers.forEach((value, key) => { headers[key] = value; });
   res.writeHead(response.status, headers);
   if (response.body) {
-    Readable.fromWeb(response.body).pipe(res);
+    const stream = Readable.fromWeb(response.body);
+    stream.on("error", (error) => {
+      console.error("[artdatabase] 响应流读取失败:", error);
+      res.destroy(error);
+    });
+    stream.pipe(res);
   } else {
     res.end();
   }
@@ -71,23 +76,58 @@ async function toWebRequest(req) {
   });
 }
 
-function serveStatic(req, res, url) {
-  let pathname = decodeURIComponent(url.pathname);
-  if (pathname === "/") pathname = "/index.html";
-  const filePath = path.join(appRoot, "dist", pathname);
-  if (existsSync(filePath) && statSync(filePath).isFile()) {
-    const ext = path.extname(filePath).toLowerCase();
-    res.writeHead(200, {
-      "content-type": MIME[ext] || "application/octet-stream",
-      "content-length": String(statSync(filePath).size),
-    });
-    createReadStream(filePath).pipe(res);
+const distRoot = path.resolve(appRoot, "dist");
+
+function resolveStaticPath(pathname) {
+  const relative = pathname.replace(/^[/\\]+/, "");
+  const candidate = path.resolve(distRoot, relative);
+  if (candidate !== distRoot && !candidate.startsWith(`${distRoot}${path.sep}`)) return null;
+  return candidate;
+}
+
+async function readStatic(pathname) {
+  const filePath = resolveStaticPath(pathname);
+  if (!filePath) return null;
+  try {
+    return { filePath, content: await readFile(filePath) };
+  } catch (error) {
+    if (error && (error.code === "ENOENT" || error.code === "EISDIR")) return null;
+    throw error;
+  }
+}
+
+async function serveStatic(req, res, url) {
+  let pathname;
+  try {
+    pathname = decodeURIComponent(url.pathname);
+  } catch {
+    res.writeHead(400, { "content-type": "text/plain; charset=utf-8" });
+    res.end("Bad request");
     return;
   }
-  const indexFile = path.join(appRoot, "dist", "index.html");
-  if (existsSync(indexFile)) {
-    res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
-    createReadStream(indexFile).pipe(res);
+  if (pathname === "/") pathname = "/index.html";
+  if (!resolveStaticPath(pathname)) {
+    res.writeHead(400, { "content-type": "text/plain; charset=utf-8" });
+    res.end("Bad request");
+    return;
+  }
+  const found = await readStatic(pathname);
+  if (found) {
+    const ext = path.extname(found.filePath).toLowerCase();
+    res.writeHead(200, {
+      "content-type": MIME[ext] || "application/octet-stream",
+      "content-length": String(found.content.length),
+    });
+    res.end(found.content);
+    return;
+  }
+  const index = await readStatic("index.html");
+  if (index) {
+    res.writeHead(200, {
+      "content-type": "text/html; charset=utf-8",
+      "content-length": String(index.content.length),
+    });
+    res.end(index.content);
     return;
   }
   res.writeHead(404, { "content-type": "text/plain; charset=utf-8" });
@@ -95,8 +135,8 @@ function serveStatic(req, res, url) {
 }
 
 const server = createServer(async (req, res) => {
-  const url = new URL(req.url, "http://localhost");
   try {
+    const url = new URL(req.url, "http://localhost");
     if (url.pathname.startsWith("/api/")) {
       const request = await toWebRequest(req);
       const response = await handleApi(request, { db, store });
@@ -107,7 +147,7 @@ const server = createServer(async (req, res) => {
       vite.middlewares(req, res);
       return;
     }
-    serveStatic(req, res, url);
+    await serveStatic(req, res, url);
   } catch (error) {
     res.writeHead(500, { "content-type": "text/plain; charset=utf-8" });
     res.end(error instanceof Error ? error.message : "服务器错误");
@@ -116,6 +156,7 @@ const server = createServer(async (req, res) => {
 
 server.listen(PORT, () => {
   console.log(`[artdatabase] 服务已启动 http://localhost:${PORT}${dev ? "（开发模式）" : ""}`);
+  console.log(`[artdatabase] Node.js=${process.version}`);
   console.log(`[artdatabase] DB_PATH=${DB_PATH}`);
   console.log(`[artdatabase] STORE_ROOT=${STORE_ROOT}`);
   console.log(`[artdatabase] 示例数据写入=${seedDemo ? "开启" : "关闭（生产环境不会自动生成示例库）"}`);

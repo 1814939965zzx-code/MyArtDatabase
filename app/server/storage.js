@@ -1,6 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { mkdir, stat, unlink, writeFile } from "node:fs/promises";
-import { createReadStream } from "node:fs";
+import { mkdir, open as openFile, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import sharp from "sharp";
 
@@ -20,8 +19,19 @@ export class StorageError extends Error {
 export function createLocalDiskStore({ root, thumbMax = 900, thumbQuality = 82 }) {
   const blobsDir = path.join(root, "blobs");
   const thumbsDir = path.join(root, "thumbs");
-  const blobPath = (id) => path.join(blobsDir, id);
-  const thumbPath = (id) => path.join(thumbsDir, id);
+  const safePath = (directory, id) => {
+    // 存储键是服务端生成的 UUID；仅允许单一文件名，绝不允许路径分隔符或点号。
+    if (typeof id !== "string" || !/^[A-Za-z0-9_-]{1,128}$/.test(id)) {
+      throw new StorageError("非法存储键", 400);
+    }
+    const file = path.resolve(directory, id);
+    if (path.dirname(file) !== path.resolve(directory)) {
+      throw new StorageError("非法存储路径", 400);
+    }
+    return file;
+  };
+  const blobPath = (id) => safePath(blobsDir, id);
+  const thumbPath = (id) => safePath(thumbsDir, id);
 
   async function ensureDirs() {
     await mkdir(blobsDir, { recursive: true });
@@ -60,10 +70,14 @@ export function createLocalDiskStore({ root, thumbMax = 900, thumbQuality = 82 }
 
   async function open(id, variant) {
     const file = variant === "thumbnail" ? thumbPath(id) : blobPath(id);
+    let handle;
     try {
-      const info = await stat(file);
-      return { stream: createReadStream(file), size: info.size, mtimeMs: info.mtimeMs };
+      // 先等待 open 成功再创建流，权限错误会被 try/catch 捕获，不会变成未处理的 stream error 导致进程崩溃。
+      handle = await openFile(file, "r");
+      const info = await handle.stat();
+      return { stream: handle.createReadStream(), size: info.size, mtimeMs: info.mtimeMs };
     } catch (error) {
+      await handle?.close().catch(() => {});
       if (error && error.code === "ENOENT") return null;
       throw error;
     }
