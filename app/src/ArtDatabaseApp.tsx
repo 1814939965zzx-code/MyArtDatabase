@@ -30,6 +30,7 @@ import { DimensionControlsEditor, type DimensionControlsEditorHandle } from "./D
 import { DimensionPreview } from "./DimensionPreview";
 import { TrashView, type TrashedAsset } from "./TrashView";
 import { UploadModal } from "./UploadModal";
+import { useProgressiveImage } from "./useProgressiveImage";
 
 type Project = {
   id: string;
@@ -293,6 +294,7 @@ export function ArtDatabaseApp() {
   }, [projectTags]);
 
   const selectedAsset = workspace?.assets.find((asset) => asset.id === selectedAssetId) ?? null;
+  const detailImage = useProgressiveImage(selectedAsset?.thumbnailUrl ?? null, selectedAsset?.originalUrl ?? null);
 
   async function createProject(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -763,7 +765,7 @@ export function ArtDatabaseApp() {
       {activeArea === "project" && selectedAsset && workspace ? (
         <aside className="asset-drawer" aria-label="素材详情">
           <div className="asset-detail-stage" role="button" tabIndex={0} aria-label="关闭素材详情" onClick={() => void closeAssetDetail()} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); void closeAssetDetail(); } }}>
-            {selectedAsset.originalUrl ? <span className="drawer-image-frame"><img className="drawer-image" src={selectedAsset.originalUrl} alt={selectedAsset.name} onClick={(event) => event.stopPropagation()} /></span> : <span className="drawer-image-fallback" onClick={(event) => event.stopPropagation()}><ImageIcon size={40} /></span>}
+            {detailImage ? <span className="drawer-image-frame"><img key={detailImage} className="drawer-image" src={detailImage} alt={selectedAsset.name} onClick={(event) => event.stopPropagation()} /></span> : <span className="drawer-image-fallback" onClick={(event) => event.stopPropagation()}><ImageIcon size={40} /></span>}
           </div>
           <div className="drawer-panel">
             <div className="drawer-heading"><div><p className="eyebrow">ASSET DETAIL</p><h2>素材详情</h2></div><button className="icon-button" type="button" onClick={() => void closeAssetDetail()} aria-label="关闭素材详情"><X size={18} /></button></div>

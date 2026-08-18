@@ -14,6 +14,7 @@ import {
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { AssetMetadataEditor, type AssetMetadataEditorHandle, type AssetMetadataUpdate } from "./AssetMetadataEditor";
+import { useProgressiveImage } from "./useProgressiveImage";
 
 export type LibraryProject = {
   id: string;
@@ -101,6 +102,7 @@ export function AllAssetsView({
   }, [assets, search, selectedTags]);
 
   const selectedAsset = assets.find((asset) => asset.id === selectedAssetId) ?? null;
+  const detailImage = useProgressiveImage(selectedAsset?.thumbnailUrl ?? null, selectedAsset?.originalUrl ?? null);
   const assignAsset = assets.find((asset) => asset.id === assignAssetId) ?? null;
   const assignedIds = new Set(assignAsset?.projects.map((project) => project.id) ?? []);
 
@@ -230,7 +232,7 @@ export function AllAssetsView({
       {selectedAsset ? (
         <aside className="asset-drawer" aria-label="全局素材详情">
           <div className="asset-detail-stage" role="button" tabIndex={0} aria-label="关闭素材详情" onClick={() => void closeAssetDetail()} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); void closeAssetDetail(); } }}>
-            {selectedAsset.originalUrl ? <span className="drawer-image-frame"><img className="drawer-image" src={selectedAsset.originalUrl} alt={selectedAsset.name} onClick={(event) => event.stopPropagation()} /></span> : <span className="drawer-image-fallback" onClick={(event) => event.stopPropagation()}><ImageIcon size={40} /></span>}
+            {detailImage ? <span className="drawer-image-frame"><img key={detailImage} className="drawer-image" src={detailImage} alt={selectedAsset.name} onClick={(event) => event.stopPropagation()} /></span> : <span className="drawer-image-fallback" onClick={(event) => event.stopPropagation()}><ImageIcon size={40} /></span>}
           </div>
           <div className="drawer-panel">
             <div className="drawer-heading"><div><p className="eyebrow">GLOBAL ASSET</p><h2>素材详情</h2></div><button className="icon-button" type="button" onClick={() => void closeAssetDetail()} aria-label="关闭素材详情"><X size={18} /></button></div>
