@@ -27,6 +27,7 @@ import { AssetMetadataEditor, type AssetMetadataEditorHandle, type AssetMetadata
 import { BoardView } from "./BoardView";
 import { DeletionToast } from "./DeletionToast";
 import { DimensionControlsEditor, type DimensionControlsEditorHandle } from "./DimensionControlsEditor";
+import { DimensionEditorModal } from "./DimensionEditorModal";
 import { DimensionPreview } from "./DimensionPreview";
 import { TrashView, type TrashedAsset } from "./TrashView";
 import { UploadModal } from "./UploadModal";
@@ -141,6 +142,7 @@ export function ArtDatabaseApp() {
   const [createOpen, setCreateOpen] = useState(false);
   const [editOpen, setEditOpen] = useState(false);
   const [dimensionOpen, setDimensionOpen] = useState(false);
+  const [editingDimensionId, setEditingDimensionId] = useState<string | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [uploadFile, setUploadFile] = useState<File | null>(null);
@@ -755,7 +757,7 @@ export function ArtDatabaseApp() {
               </div>
             ) : (
               <div className="empty-state"><Grid2X2 size={25} /><h3>{search || projectTagFilter.length ? "没有匹配的素材" : "项目还是空的"}</h3><p>{search || projectTagFilter.length ? "换一个关键词或标签试试。" : "拖入、粘贴或选择一张图片开始。"}</p><button className="primary-button" type="button" onClick={() => fileInputRef.current?.click()}><Upload size={15} />上传图片</button></div>
-            )}</> : surface === "preview" ? <DimensionPreview key={workspace.project.id} dimensions={workspace.dimensions} assets={workspace.assets} onSelectAsset={setSelectedAssetId} onUpdateAssetDimensions={savePreviewDimensionValues} onAddDimension={() => setDimensionOpen(true)} onDeleteDimension={(dimension) => { const fullDimension = workspace.dimensions.find((entry) => entry.id === dimension.id); if (fullDimension) scheduleDimensionDeletion(fullDimension); }} /> : <BoardView key={workspace.project.id} projectId={workspace.project.id} assets={workspace.assets} onMessage={setMessage} />}
+            )}</> : surface === "preview" ? <DimensionPreview key={workspace.project.id} dimensions={workspace.dimensions} assets={workspace.assets} onSelectAsset={setSelectedAssetId} onUpdateAssetDimensions={savePreviewDimensionValues} onAddDimension={() => setDimensionOpen(true)} onEditDimension={(dimension) => setEditingDimensionId(dimension.id)} /> : <BoardView key={workspace.project.id} projectId={workspace.project.id} assets={workspace.assets} onMessage={setMessage} />}
           </>
         ) : (
           <div className="empty-state project-empty"><Archive size={28} /><h2>建立第一个项目</h2><p>项目用于保存独立的素材集合与分类维度。</p><button className="primary-button" type="button" onClick={() => setCreateOpen(true)}><Plus size={16} /> 新建项目</button></div>
@@ -788,7 +790,6 @@ export function ArtDatabaseApp() {
                 busy={busy}
                 onChangeValue={setLocalDimensionValue}
                 onSaveValue={saveDimensionValue}
-                onApplyLabels={applyDimensionLabels}
               /> : <p className="drawer-empty">先为项目添加维度，再给素材定位。</p>}
               <button className="drawer-remove" type="button" onClick={() => void removeAssetFromProject(selectedAsset)}><Trash2 size={14} />从当前项目移除</button>
             </div>
@@ -801,6 +802,21 @@ export function ArtDatabaseApp() {
       {editOpen && workspace ? <Modal title="项目设置" description="修改项目名称和用途说明。" onClose={() => setEditOpen(false)}><form className="modal-form" onSubmit={editProject}><label>项目名称<input name="name" required maxLength={50} defaultValue={workspace.project.name} /></label><label>项目说明<textarea name="description" maxLength={240} rows={3} defaultValue={workspace.project.description} /></label><div className="danger-zone"><button type="button" onClick={() => void deleteProject()} disabled={busy}><Trash2 size={15} /> 删除项目</button><span>素材原文件不会被删除</span></div><div className="modal-actions"><button className="secondary-button" type="button" onClick={() => setEditOpen(false)}>取消</button><button className="primary-button" type="submit" disabled={busy}>{busy ? "保存中…" : "保存修改"}</button></div></form></Modal> : null}
 
       {dimensionOpen && workspace ? <Modal title="添加分类维度" description="项目维度数量不限；进入预览后再选择最多 3 个坐标轴。" onClose={() => setDimensionOpen(false)}><form className="modal-form" onSubmit={addDimension}><div className="dimension-form-row"><label>左端名称<input name="leftLabel" required maxLength={24} placeholder="例如：克制" /></label><span>—</span><label>右端名称<input name="rightLabel" required maxLength={24} placeholder="例如：张扬" /></label></div><p className="form-hint">添加后，项目内已有素材会先放在维度中点。</p><div className="modal-actions"><button className="secondary-button" type="button" onClick={() => setDimensionOpen(false)}>取消</button><button className="primary-button" type="submit" disabled={busy}>{busy ? "添加中…" : "添加维度"}</button></div></form></Modal> : null}
+
+      {workspace ? (() => { const editingDimension = workspace.dimensions.find((dimension) => dimension.id === editingDimensionId); return editingDimension
+        ? <DimensionEditorModal
+            key={editingDimension.id}
+            dimension={editingDimension}
+            busy={busy}
+            onClose={() => setEditingDimensionId(null)}
+            onApplyLabels={applyDimensionLabels}
+            onDelete={(dimension) => {
+              setEditingDimensionId(null);
+              const fullDimension = workspace.dimensions.find((entry) => entry.id === dimension.id);
+              if (fullDimension) scheduleDimensionDeletion(fullDimension);
+            }}
+          />
+        : null; })() : null}
 
       {activeArea === "project" && uploadFile && workspace ? <UploadModal file={uploadFile} projectId={workspace.project.id} dimensions={workspace.dimensions} onClose={() => setUploadFile(null)} onComplete={async () => { await Promise.all([loadProjects(workspace.project.id), loadWorkspace(workspace.project.id), loadLibrary()]); }} onMessage={setMessage} /> : null}
 

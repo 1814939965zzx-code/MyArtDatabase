@@ -1,6 +1,6 @@
 "use client";
 
-import { Box, Check, Maximize2, Minimize2, Minus, MousePointer2, Plus, Rotate3D, RotateCcw, Trash2 } from "lucide-react";
+import { Box, Check, Maximize2, Minimize2, Minus, MousePointer2, Pencil, Plus, Rotate3D, RotateCcw } from "lucide-react";
 import { CSSProperties, PointerEvent, useEffect, useMemo, useRef, useState, WheelEvent } from "react";
 import { displayDimensionValue } from "./dimensionScale";
 
@@ -54,14 +54,14 @@ export function DimensionPreview({
   onSelectAsset,
   onUpdateAssetDimensions,
   onAddDimension,
-  onDeleteDimension,
+  onEditDimension,
 }: {
   dimensions: Dimension[];
   assets: Asset[];
   onSelectAsset: (assetId: string) => void;
   onUpdateAssetDimensions: (assetId: string, values: Record<string, number>) => Promise<void>;
   onAddDimension: () => void;
-  onDeleteDimension: (dimension: Dimension) => void;
+  onEditDimension: (dimension: Dimension) => void;
 }) {
   const [selectedIds, setSelectedIds] = useState(() => dimensions.slice(0, 3).map((dimension) => dimension.id));
   const [zoom, setZoom] = useState(1);
@@ -629,7 +629,7 @@ export function DimensionPreview({
               >
                 <span className="preview-dimension-index">{active ? <Check size={13} /> : index + 1}</span>
                 <div className="preview-dimension-labels"><strong>{dimension.leftLabel}</strong><i>—</i><strong>{dimension.rightLabel}</strong></div>
-                <button className="preview-dimension-delete" type="button" onClick={(event) => { event.stopPropagation(); onDeleteDimension(dimension); }} aria-label={`删除${dimension.leftLabel}到${dimension.rightLabel}维度`}><Trash2 size={13} /></button>
+                <button className="preview-dimension-delete" type="button" onClick={(event) => { event.stopPropagation(); if (!disabled) onEditDimension(dimension); }} aria-label={`编辑${dimension.leftLabel}到${dimension.rightLabel}维度`} title="编辑维度名称"><Pencil size={13} /></button>
               </div>
             );
           })}
