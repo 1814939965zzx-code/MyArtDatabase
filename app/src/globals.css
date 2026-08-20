@@ -402,8 +402,6 @@ button:focus-visible, input:focus-visible, textarea:focus-visible {
 .preview-toolbar, .board-toolbar { min-height: 52px; padding: 9px 13px; border-bottom: 1px solid var(--line); display: flex; align-items: center; justify-content: space-between; gap: 10px; }
 .preview-toolbar > span { min-width: 0; flex: 1; overflow: hidden; color: var(--muted); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
 .preview-tools { display: flex; align-items: center; gap: 10px; flex: none; }
-.preview-tools label { display: flex; align-items: center; gap: 5px; color: var(--muted); font-size: 10px; }
-.preview-tools input { width: 70px; accent-color: var(--accent); }
 .preview-zoom { height: 29px; display: flex; align-items: center; border: 1px solid var(--line); background: white; }
 .preview-zoom button { width: 27px; height: 27px; border: 0; background: transparent; display: grid; place-items: center; cursor: pointer; }
 .preview-zoom span { min-width: 42px; text-align: center; color: var(--muted); font-size: 10px; }
@@ -417,10 +415,10 @@ button:focus-visible, input:focus-visible, textarea:focus-visible {
 .scene-plane { --scene-size: min(152cqw, 140cqh); width: var(--scene-size); height: var(--scene-size); position: relative; transform-origin: center center; background: transparent; pointer-events: none; transform: rotateX(var(--scene-rx)) rotateZ(var(--scene-rz)) translate3d(var(--scene-pivot-x, 0px), var(--scene-pivot-y, 0px), var(--scene-pivot-z, 0px)); transform-style: preserve-3d; transition: none; }
 .mode-transitioning .scene-plane { transition: transform 1s ease-in-out; }
 .octant-transitioning .scene-plane { transition: transform .45s ease-in-out; }
-.mode-transitioning .preview-asset-face { transition: transform 1s ease-in-out, box-shadow var(--preview-hover-duration) ease, opacity var(--preview-hover-duration) ease, visibility 0s linear; }
+.mode-transitioning .preview-asset-face { transition: transform 1s ease-in-out, opacity var(--preview-hover-duration) ease, visibility 0s linear; }
 .mode-transitioning .axis-label i { transition: transform 1s ease-in-out; }
 .camera-moving .scene-plane { transition: none; }
-.camera-moving .preview-asset-face { transition: transform 0s, box-shadow var(--preview-hover-duration) ease, opacity var(--preview-hover-duration) ease, visibility 0s linear; }
+.camera-moving .preview-asset-face { transition: transform 0s, opacity var(--preview-hover-duration) ease, visibility 0s linear; }
 .camera-moving .axis-label i { transition: none; }
 .camera-moving .scene-viewport { cursor: grabbing; }
 .dimension-scene.space-held .scene-viewport { cursor: grab; }
@@ -461,23 +459,22 @@ button:focus-visible, input:focus-visible, textarea:focus-visible {
 .corner-label { position: absolute; z-index: 4; transform-style: preserve-3d; pointer-events: none; transform: translate(calc(-50% + var(--corner-dx, 0px)), calc(-50% + var(--corner-dy, 0px))) translateZ(var(--corner-tz, 0px)); transition: opacity .3s ease, visibility 0s linear .3s; }
 .corner-label.octant-hidden { visibility: hidden; opacity: 0; }
 .corner-label i { display: block; padding: 3px 6px; border-radius: 4px; background: rgba(239, 238, 232, .92); color: #565c55; font-size: 12px; font-style: normal; white-space: nowrap; transform: rotateZ(var(--billboard-rz)) rotateX(var(--billboard-rx)); transition: none; }
-.preview-asset { width: var(--asset-size, 82px); height: auto; aspect-ratio: var(--asset-ratio, 1 / 1); padding: 0; position: absolute; border: 0; background: transparent; cursor: grab; pointer-events: none; transform: translate(-50%, -50%) translateZ(var(--asset-z)); transform-style: preserve-3d; touch-action: none; user-select: none; transition: left 1s ease-in-out, top 1s ease-in-out, transform 1s ease-in-out; }
+.preview-asset { width: var(--asset-size, 41px); height: auto; aspect-ratio: var(--asset-ratio, 1 / 1); padding: 0; position: absolute; border: 0; background: transparent; cursor: grab; pointer-events: none; transform: translate(-50%, -50%) translateZ(var(--asset-z)); transform-style: preserve-3d; touch-action: none; user-select: none; transition: left 1s ease-in-out, top 1s ease-in-out, transform 1s ease-in-out; }
 .preview-asset:active, .preview-asset.dragging { cursor: grabbing; z-index: 1001; }
 .preview-asset.dragging { transition: none; }
-.preview-asset-face { position: absolute; inset: 0; display: grid; place-items: center; visibility: visible; opacity: 1; background: #deded8; box-shadow: 0 5px 14px rgba(25, 29, 25, .22); transform: scale3d(var(--persp, 1), var(--persp, 1), var(--persp, 1)) rotateZ(var(--billboard-rz)) rotateX(var(--billboard-rx)) scale3d(var(--hover-scale, 1), var(--hover-scale, 1), var(--hover-scale, 1)); transform-style: preserve-3d; transition: transform var(--preview-hover-duration) ease, box-shadow var(--preview-hover-duration) ease, opacity var(--preview-hover-duration) ease, visibility 0s linear; }
-.preview-asset.hover-occluder .preview-asset-face { visibility: hidden; opacity: 0; transition: transform var(--preview-hover-duration) ease, box-shadow var(--preview-hover-duration) ease, opacity var(--preview-hover-duration) ease, visibility 0s linear var(--preview-hover-duration); }
-.preview-asset.octant-hidden .preview-asset-face { visibility: hidden; opacity: 0; transition: transform var(--preview-hover-duration) ease, box-shadow var(--preview-hover-duration) ease, opacity var(--preview-hover-duration) ease, visibility 0s linear var(--preview-hover-duration); }
-.preview-asset.hovered .preview-asset-face { --hover-scale: 1.65; box-shadow: 0 12px 30px rgba(25, 29, 25, .34); }
-.preview-asset.dragging .preview-asset-face { box-shadow: 0 8px 22px rgba(29, 34, 29, .3); }
-.preview-asset-face img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; object-position: center; display: block; pointer-events: none; }
+.preview-asset-face { position: absolute; inset: 0; display: grid; place-items: center; visibility: visible; opacity: 1; background: transparent; transform: scale3d(var(--persp, 1), var(--persp, 1), var(--persp, 1)) rotateZ(var(--billboard-rz)) rotateX(var(--billboard-rx)) scale3d(var(--hover-scale, 1), var(--hover-scale, 1), var(--hover-scale, 1)); transform-style: preserve-3d; transition: transform var(--preview-hover-duration) ease, opacity var(--preview-hover-duration) ease, visibility 0s linear; }
+.preview-asset.hover-occluder .preview-asset-face { visibility: hidden; opacity: 0; transition: transform var(--preview-hover-duration) ease, opacity var(--preview-hover-duration) ease, visibility 0s linear var(--preview-hover-duration); }
+.preview-asset.octant-hidden .preview-asset-face { visibility: hidden; opacity: 0; transition: transform var(--preview-hover-duration) ease, opacity var(--preview-hover-duration) ease, visibility 0s linear var(--preview-hover-duration); }
+.preview-asset.hovered .preview-asset-face { --hover-scale: 4.95; }
+.preview-asset-face img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; object-position: center; display: block; pointer-events: none; }
 .preview-asset-face > i { width: 100%; height: 100%; display: grid; place-items: center; font-style: normal; }
-.preview-asset-face em { position: absolute; left: 50%; bottom: calc(100% + 5px); transform: translateX(-50%); padding: 4px 6px; background: #252925; color: white; font-size: 10px; font-style: normal; white-space: nowrap; }
+.preview-asset em { position: absolute; left: 50%; bottom: calc(100% + 5px); z-index: 6; transform: translateX(-50%) scale3d(var(--persp, 1), var(--persp, 1), var(--persp, 1)) rotateZ(var(--billboard-rz)) rotateX(var(--billboard-rx)); padding: 4px 6px; background: #252925; color: white; font-size: 14px; font-style: normal; white-space: nowrap; }
 .camera-hint { display: flex; align-items: center; gap: 4px; color: var(--sage); font-size: 10px; white-space: nowrap; }
-.octant-isolation-controls { position: absolute; z-index: 8; left: 50%; bottom: 16px; display: flex; align-items: center; gap: 8px; transform: translateX(-50%); }
+.octant-isolation-controls { position: absolute; z-index: 8; top: 16px; right: 16px; display: flex; flex-direction: column; align-items: flex-start; gap: 8px; }
 .octant-isolation-button { min-height: 34px; padding: 0 16px; flex: none; border: 1px solid #778673; border-radius: 5px; background: rgba(250, 250, 247, .94); color: #4f624a; box-shadow: 0 6px 18px rgba(35, 40, 35, .14); font-size: 11px; white-space: nowrap; cursor: pointer; }
 .octant-isolation-button:hover { background: white; border-color: #53664e; }
 .octant-isolation-button.active { border-color: #53664e; background: var(--sage); color: white; }
-.octant-isolation-label { min-height: 34px; padding: 0 12px; border: 1px solid rgba(119, 134, 115, .55); border-radius: 5px; background: rgba(250, 250, 247, .94); color: #4f624a; box-shadow: 0 6px 18px rgba(35, 40, 35, .1); display: inline-flex; align-items: center; font-size: 11px; font-weight: 600; white-space: nowrap; }
+.octant-isolation-label { min-height: 34px; padding: 0; border: 0; border-radius: 0; background: transparent; color: #4f624a; box-shadow: none; display: inline-flex; align-items: center; font-size: 11px; font-weight: 600; white-space: nowrap; }
 .preview-empty { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; color: var(--muted); }
 .preview-empty h3 { margin: 12px 0 5px; color: var(--ink); font-size: 14px; }
 .preview-empty p { margin: 0; font-size: 12px; }
