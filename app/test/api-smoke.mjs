@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp } from "node:fs/promises";
+import { mkdtemp, readdir } from "node:fs/promises";
 import { createServer, request as httpRequest } from "node:http";
 import os from "node:os";
 import path from "node:path";
@@ -85,7 +85,7 @@ const check = await json(await post(`${base}/api/uploads/check`, { sha256: asset
 assert.ok(check.duplicates.length >= 1, "重复检测应命中");
 
 // 7) 更新素材元数据
-const patch = await fetch(`${base}/api/assets`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ id: asset.id, name: "冒烟测试图-改", tags: "测试,改", description: "x", notes: "", sourceUrl: "" }) });
+const patch = await fetch(`${base}/api/assets`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ id: asset.id, name: "冒烟测试图-改", tags: "测试,改", description: "x", notes: "保留备注", sourceUrl: "https://example.com/source" }) });
 assert.equal(patch.status, 200);
 
 const deleteTag = await fetch(`${base}/api/assets`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ id: asset.id, deleteTag: "改" }) });
@@ -108,7 +108,62 @@ assert.ok(canvas.canvas.id);
 const item = await json(await post(`${base}/api/canvas-items`, { canvasId: canvas.canvas.id, assetId: asset.id, x: 10, y: 20, width: 200, height: 150, zIndex: 1, rotation: 0 }));
 assert.ok(item.item.id);
 
-// 10) 软删除 → 回收站列出 → 恢复
+// 10) 替换图片：只更新文件字段，保留素材 ID、Metadata、项目引用、维度值和画板元素
+const beforeReplaceWorkspace = await json(await fetch(`${base}/api/workspace?projectId=project-visual-direction`));
+const beforeReplaceAsset = beforeReplaceWorkspace.assets.find((entry) => entry.id === asset.id);
+const beforeReplaceLibrary = await json(await fetch(`${base}/api/library`));
+const beforeReplaceLibraryAsset = beforeReplaceLibrary.assets.find((entry) => entry.id === asset.id);
+const replacementBuffer = await sharp({ create: { width: 320, height: 240, channels: 3, background: { r: 210, g: 60, b: 40 } } }).webp().toBuffer();
+const replacementForm = new FormData();
+replacementForm.set("id", asset.id);
+replacementForm.set("file", new File([replacementBuffer], "replacement.webp", { type: "image/webp" }));
+const replacement = await fetch(`${base}/api/assets/image`, { method: "POST", body: replacementForm });
+assert.equal(replacement.status, 200, `替换图片应 200，实际 ${replacement.status}`);
+
+const afterReplaceWorkspace = await json(await fetch(`${base}/api/workspace?projectId=project-visual-direction`));
+const afterReplaceAsset = afterReplaceWorkspace.assets.find((entry) => entry.id === asset.id);
+assert.equal(afterReplaceAsset.id, beforeReplaceAsset.id, "替换后素材 ID 必须不变");
+assert.equal(afterReplaceAsset.name, beforeReplaceAsset.name, "替换后素材名称必须不变");
+assert.deepEqual(afterReplaceAsset.tags, beforeReplaceAsset.tags, "替换后标签必须不变");
+assert.equal(afterReplaceAsset.description, beforeReplaceAsset.description, "替换后描述必须不变");
+assert.equal(afterReplaceAsset.notes, beforeReplaceAsset.notes, "替换后备注必须不变");
+assert.equal(afterReplaceAsset.sourceUrl, beforeReplaceAsset.sourceUrl, "替换后来源链接必须不变");
+assert.equal(afterReplaceAsset.createdAt, beforeReplaceAsset.createdAt, "替换后创建时间必须不变");
+assert.deepEqual(afterReplaceAsset.dimensionValues, beforeReplaceAsset.dimensionValues, "替换后维度值必须不变");
+assert.equal(afterReplaceAsset.fileName, "replacement.webp");
+assert.equal(afterReplaceAsset.width, 320);
+assert.equal(afterReplaceAsset.height, 240);
+assert.equal(afterReplaceAsset.mimeType, "image/webp");
+assert.notEqual(afterReplaceAsset.thumbnailUrl, beforeReplaceAsset.thumbnailUrl, "替换后媒体版本 URL 必须更新以避开旧缓存");
+
+const afterReplaceLibrary = await json(await fetch(`${base}/api/library`));
+const afterReplaceLibraryAsset = afterReplaceLibrary.assets.find((entry) => entry.id === asset.id);
+assert.deepEqual(afterReplaceLibraryAsset.projects, beforeReplaceLibraryAsset.projects, "替换后项目引用必须不变");
+const canvasAfterReplace = await json(await fetch(`${base}/api/canvas?canvasId=${canvas.canvas.id}`));
+assert.ok(canvasAfterReplace.items.some((entry) => entry.id === item.item.id && entry.assetId === asset.id), "替换后画板元素必须保留");
+assert.match(canvasAfterReplace.items.find((entry) => entry.assetId === asset.id).thumbnailUrl, /[?&]v=/, "画板缩略图应包含新文件版本");
+
+const replacedOriginal = await fetch(`${base}${afterReplaceAsset.originalUrl}`);
+assert.equal(replacedOriginal.status, 200);
+assert.equal((await sharp(Buffer.from(await replacedOriginal.arrayBuffer())).metadata()).format, "webp");
+assert.deepEqual(await readdir(path.join(tmp, "media", "blobs")), await readdir(path.join(tmp, "media", "thumbs")), "原图和缩略图存储键应一一对应");
+assert.equal((await readdir(path.join(tmp, "media", "blobs"))).length, 1, "替换成功后应清理旧媒体文件，不得影响其他素材");
+
+const invalidReplacementForm = new FormData();
+invalidReplacementForm.set("id", asset.id);
+invalidReplacementForm.set("file", new File(["not an image"], "bad.txt", { type: "text/plain" }));
+assert.equal((await fetch(`${base}/api/assets/image`, { method: "POST", body: invalidReplacementForm })).status, 400, "非法替换文件应被拒绝");
+
+const corruptReplacementForm = new FormData();
+corruptReplacementForm.set("id", asset.id);
+corruptReplacementForm.set("file", new File(["not really a png"], "corrupt.png", { type: "image/png" }));
+assert.equal((await fetch(`${base}/api/assets/image`, { method: "POST", body: corruptReplacementForm })).status, 500, "图片处理失败时替换应失败");
+const originalAfterRejectedReplacement = await fetch(`${base}${afterReplaceAsset.originalUrl}`);
+assert.equal(originalAfterRejectedReplacement.status, 200, "替换失败后当前图片必须仍然可读");
+assert.equal((await originalAfterRejectedReplacement.arrayBuffer()).byteLength, replacementBuffer.length, "替换失败不得改动当前图片");
+assert.equal((await readdir(path.join(tmp, "media", "blobs"))).length, 1, "替换失败不得留下新文件或删除当前文件");
+
+// 11) 软删除 → 回收站列出 → 恢复
 const softDel = await fetch(`${base}/api/assets?id=${asset.id}`, { method: "DELETE" });
 assert.equal(softDel.status, 200);
 let trash = await json(await fetch(`${base}/api/trash`));
@@ -117,7 +172,7 @@ assert.ok(trashed, "回收站应包含软删除素材");
 assert.ok(trashed.projects.length >= 1, "回收站素材应保留项目引用");
 assert.ok(trashed.deletedAt, "回收站素材应有删除时间");
 
-// 11) 恢复后回到项目
+// 12) 恢复后回到项目
 const restore = await fetch(`${base}/api/assets/restore`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ id: asset.id }) });
 assert.equal(restore.status, 200);
 trash = await json(await fetch(`${base}/api/trash`));
@@ -125,7 +180,7 @@ assert.ok(!trash.assets.some((item) => item.id === asset.id), "恢复后回收�
 const wsAfterRestore = await json(await fetch(`${base}/api/workspace?projectId=project-visual-direction`));
 assert.ok(wsAfterRestore.assets.some((item) => item.id === asset.id), "恢复后素材应回到项目");
 
-// 12) 再次软删除后彻底删除
+// 13) 再次软删除后彻底删除
 const softDel2 = await fetch(`${base}/api/assets?id=${asset.id}`, { method: "DELETE" });
 assert.equal(softDel2.status, 200);
 const del = await fetch(`${base}/api/assets?id=${asset.id}&mode=permanent&force=true`, { method: "DELETE" });
@@ -134,5 +189,5 @@ trash = await json(await fetch(`${base}/api/trash`));
 assert.ok(!trash.assets.some((item) => item.id === asset.id), "彻底删除后回收站不应包含该素材");
 assert.equal((await fetch(`${base}/api/media?id=${asset.id}&variant=thumbnail`)).status, 404, "删除后缩略图应 404");
 
-console.log("✓ 全部通过：项目 / 工作区 / 上传 / 缩略图 / 原图 / 去重 / 改元数据 / 改维度名称 / 画板 / 回收站(软删-列出-恢复-彻底删)");
+console.log("✓ 全部通过：项目 / 工作区 / 上传 / 缩略图 / 原图 / 去重 / 改元数据 / 改维度名称 / 画板 / 安全替换图片 / 回收站(软删-列出-恢复-彻底删)");
 process.exit(0);

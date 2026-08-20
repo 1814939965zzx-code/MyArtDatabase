@@ -177,9 +177,9 @@ function workspace(request, { db }) {
   const dimensions = db.prepare("SELECT id, project_id AS projectId, left_label AS leftLabel, right_label AS rightLabel, sort_order AS sortOrder FROM project_dimensions WHERE project_id = ? ORDER BY sort_order").all(projectId);
   const assets = db.prepare(`SELECT a.id, a.name, a.file_name AS fileName,
     CASE WHEN a.thumbnail_key IS NOT NULL OR a.storage_key IS NOT NULL
-      THEN '/api/media?id=' || a.id || '&variant=thumbnail' ELSE a.thumbnail_url END AS thumbnailUrl,
+      THEN '/api/media?id=' || a.id || '&variant=thumbnail&v=' || COALESCE(a.thumbnail_key, a.storage_key) ELSE a.thumbnail_url END AS thumbnailUrl,
     CASE WHEN a.storage_key IS NOT NULL
-      THEN '/api/media?id=' || a.id || '&variant=original' ELSE a.thumbnail_url END AS originalUrl,
+      THEN '/api/media?id=' || a.id || '&variant=original&v=' || a.storage_key ELSE a.thumbnail_url END AS originalUrl,
     a.tags, a.description, a.notes, a.source_url AS sourceUrl,
     a.file_size AS fileSize, a.width, a.height, a.mime_type AS mimeType,
     a.created_at AS createdAt
@@ -214,7 +214,7 @@ async function checkUpload(request, { db }) {
   const duplicates = db.prepare(`
     SELECT a.id, a.name, a.file_name AS fileName,
       CASE WHEN a.thumbnail_key IS NOT NULL OR a.storage_key IS NOT NULL
-        THEN '/api/media?id=' || a.id || '&variant=thumbnail' ELSE a.thumbnail_url END AS thumbnailUrl,
+        THEN '/api/media?id=' || a.id || '&variant=thumbnail&v=' || COALESCE(a.thumbnail_key, a.storage_key) ELSE a.thumbnail_url END AS thumbnailUrl,
       EXISTS(SELECT 1 FROM project_assets pa WHERE pa.asset_id = a.id AND pa.project_id = ?) AS inProject
     FROM assets a
     WHERE a.sha256 = ? AND a.deleted_at IS NULL
@@ -282,6 +282,55 @@ async function upload(request, { db, store }) {
   } catch (error) {
     if (storedId) await store.remove(storedId).catch(() => {});
     return Response.json({ error: errorMessage(error, "上传失败") }, { status: 500 });
+  }
+}
+
+async function replaceAssetImage(request, { db, store }) {
+  let storedId = "";
+  try {
+    const form = await request.formData();
+    const id = cleanId(form.get("id"));
+    const file = form.get("file");
+    if (!id) return Response.json({ error: "缺少素材 ID" }, { status: 400 });
+    if (!(file instanceof File) || !ALLOWED_TYPES.has(file.type)) {
+      return Response.json({ error: "仅支持 JPEG、PNG 和 WebP 图片" }, { status: 400 });
+    }
+    if (file.size <= 0 || file.size > 50 * 1024 * 1024) {
+      return Response.json({ error: "图片不能为空或超过 50MB" }, { status: 400 });
+    }
+    const fileName = cleanText(file.name, 240) || `replacement.${file.type === "image/png" ? "png" : file.type === "image/webp" ? "webp" : "jpg"}`;
+
+    const existing = db.prepare(`SELECT id, storage_key AS storageKey, thumbnail_key AS thumbnailKey
+      FROM assets WHERE id = ? AND deleted_at IS NULL`).get(id);
+    if (!existing) return Response.json({ error: "素材不存在" }, { status: 404 });
+
+    const buffer = Buffer.from(await file.arrayBuffer());
+    const stored = await store.put(buffer, file.type);
+    storedId = stored.id;
+    const result = db.prepare(`UPDATE assets SET
+      file_name = ?, sha256 = ?, file_size = ?, width = ?, height = ?, mime_type = ?,
+      storage_key = ?, thumbnail_key = ?, thumbnail_url = NULL
+      WHERE id = ? AND deleted_at IS NULL`)
+      .run(fileName, stored.sha256, stored.size, stored.width, stored.height, stored.mimeType, stored.id, stored.id, id);
+    if (!result.changes) {
+      await store.remove(stored.id).catch(() => {});
+      storedId = "";
+      return Response.json({ error: "素材不存在" }, { status: 404 });
+    }
+
+    // 数据库已经安全切换到新文件。后续清理旧文件失败只会留下可清理的孤儿文件，
+    // 不能反过来删除新文件或让已经完成的替换失效。
+    storedId = "";
+    const oldKeys = [...new Set([existing.storageKey, existing.thumbnailKey].filter(Boolean))];
+    const cleanup = await Promise.allSettled(oldKeys.map((key) => store.remove(key)));
+    return Response.json({
+      ok: true,
+      asset: { id, fileName, sha256: stored.sha256, fileSize: stored.size, width: stored.width, height: stored.height, mimeType: stored.mimeType },
+      cleanupWarning: cleanup.some((entry) => entry.status === "rejected"),
+    });
+  } catch (error) {
+    if (storedId) await store.remove(storedId).catch(() => {});
+    return Response.json({ error: errorMessage(error, "替换图片失败") }, { status: 500 });
   }
 }
 
@@ -374,9 +423,9 @@ async function restoreAsset(request, { db }) {
 function library({ db }) {
   const assets = db.prepare(`SELECT a.id, a.name, a.file_name AS fileName,
     CASE WHEN a.thumbnail_key IS NOT NULL OR a.storage_key IS NOT NULL
-      THEN '/api/media?id=' || a.id || '&variant=thumbnail' ELSE a.thumbnail_url END AS thumbnailUrl,
+      THEN '/api/media?id=' || a.id || '&variant=thumbnail&v=' || COALESCE(a.thumbnail_key, a.storage_key) ELSE a.thumbnail_url END AS thumbnailUrl,
     CASE WHEN a.storage_key IS NOT NULL
-      THEN '/api/media?id=' || a.id || '&variant=original' ELSE a.thumbnail_url END AS originalUrl,
+      THEN '/api/media?id=' || a.id || '&variant=original&v=' || a.storage_key ELSE a.thumbnail_url END AS originalUrl,
     a.tags, a.description, a.notes, a.source_url AS sourceUrl,
     a.file_size AS fileSize, a.width, a.height, a.mime_type AS mimeType,
     a.created_at AS createdAt
@@ -408,7 +457,7 @@ function library({ db }) {
 function trash({ db }) {
   const assets = db.prepare(`SELECT a.id, a.name, a.file_name AS fileName,
     CASE WHEN a.thumbnail_key IS NOT NULL OR a.storage_key IS NOT NULL
-      THEN '/api/media?id=' || a.id || '&variant=thumbnail' ELSE a.thumbnail_url END AS thumbnailUrl,
+      THEN '/api/media?id=' || a.id || '&variant=thumbnail&v=' || COALESCE(a.thumbnail_key, a.storage_key) ELSE a.thumbnail_url END AS thumbnailUrl,
     a.tags, a.file_size AS fileSize, a.width, a.height, a.mime_type AS mimeType,
     a.deleted_at AS deletedAt
     FROM assets a
@@ -526,7 +575,7 @@ function getCanvas(request, { db }) {
   const items = db.prepare(`SELECT ci.id, ci.canvas_id AS canvasId, ci.asset_id AS assetId,
     ci.x, ci.y, ci.width, ci.height, ci.z_index AS zIndex, ci.rotation,
     a.name, CASE WHEN a.thumbnail_key IS NOT NULL OR a.storage_key IS NOT NULL
-      THEN '/api/media?id=' || a.id || '&variant=thumbnail' ELSE a.thumbnail_url END AS thumbnailUrl
+      THEN '/api/media?id=' || a.id || '&variant=thumbnail&v=' || COALESCE(a.thumbnail_key, a.storage_key) ELSE a.thumbnail_url END AS thumbnailUrl
     FROM canvas_items ci INNER JOIN assets a ON a.id = ci.asset_id
     WHERE ci.canvas_id = ? AND a.deleted_at IS NULL ORDER BY ci.z_index, ci.id`).all(canvasId);
   return Response.json({ canvas, items });
@@ -620,6 +669,7 @@ export async function handleApi(request, ctx) {
     if (pathname === "/api/media" && method === "GET") return await media(request, ctx);
 
     if (pathname === "/api/assets/restore" && method === "POST") return await restoreAsset(request, ctx);
+    if (pathname === "/api/assets/image" && method === "POST") return await replaceAssetImage(request, ctx);
     if (pathname === "/api/assets" && method === "PATCH") return await updateAsset(request, ctx);
     if (pathname === "/api/assets" && method === "DELETE") return await deleteAsset(request, ctx);
 

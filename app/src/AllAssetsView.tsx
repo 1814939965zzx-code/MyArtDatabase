@@ -14,6 +14,7 @@ import {
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { AssetMetadataEditor, type AssetMetadataEditorHandle, type AssetMetadataUpdate } from "./AssetMetadataEditor";
+import { AssetImageReplacement } from "./AssetImageReplacement";
 import { useProgressiveImage } from "./useProgressiveImage";
 
 export type LibraryProject = {
@@ -240,6 +241,13 @@ export function AllAssetsView({
               <div className="drawer-file"><small>文件名</small><span>{selectedAsset.fileName}</span></div>
               <div className="drawer-facts"><span>{selectedAsset.width && selectedAsset.height ? `${selectedAsset.width} × ${selectedAsset.height}` : "尺寸未知"}</span><span>{selectedAsset.fileSize ? `${(selectedAsset.fileSize / 1024 / 1024).toFixed(2)} MB` : "大小未知"}</span><span>{selectedAsset.mimeType || "image"}</span></div>
               {error ? <div className="form-error"><AlertTriangle size={15} />{error}</div> : null}
+              <AssetImageReplacement
+                asset={selectedAsset}
+                busy={busy}
+                onBusyChange={setBusy}
+                onComplete={onRefresh}
+                onMessage={onMessage}
+              />
               <AssetMetadataEditor
                 ref={metadataEditorRef}
                 asset={selectedAsset}

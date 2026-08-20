@@ -24,6 +24,7 @@ import {
 import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { AllAssetsView, type LibraryAsset } from "./AllAssetsView";
 import { AssetMetadataEditor, type AssetMetadataEditorHandle, type AssetMetadataUpdate } from "./AssetMetadataEditor";
+import { AssetImageReplacement } from "./AssetImageReplacement";
 import { BoardView } from "./BoardView";
 import { DeletionToast } from "./DeletionToast";
 import { DimensionControlsEditor, type DimensionControlsEditorHandle } from "./DimensionControlsEditor";
@@ -273,11 +274,11 @@ export function ArtDatabaseApp() {
   useEffect(() => {
     const handlePaste = (event: ClipboardEvent) => {
       const file = Array.from(event.clipboardData?.files ?? []).find((candidate) => candidate.type.startsWith("image/"));
-      if (file && activeArea === "project") setUploadFile(file);
+      if (file && activeArea === "project" && !selectedAssetId) setUploadFile(file);
     };
     window.addEventListener("paste", handlePaste);
     return () => window.removeEventListener("paste", handlePaste);
-  }, [activeArea]);
+  }, [activeArea, selectedAssetId]);
 
   const filteredAssets = useMemo(() => {
     const keyword = search.trim().toLowerCase();
@@ -774,6 +775,13 @@ export function ArtDatabaseApp() {
             <div className="drawer-scroll">
               <div className="drawer-file"><small>文件名</small><span>{selectedAsset.fileName}</span></div>
               {selectedAsset.width || selectedAsset.fileSize ? <div className="drawer-facts"><span>{selectedAsset.width && selectedAsset.height ? `${selectedAsset.width} × ${selectedAsset.height}` : "尺寸未知"}</span><span>{selectedAsset.fileSize ? `${(selectedAsset.fileSize / 1024 / 1024).toFixed(2)} MB` : "演示素材"}</span><span>{selectedAsset.mimeType || "image"}</span></div> : null}
+              <AssetImageReplacement
+                asset={selectedAsset}
+                busy={busy}
+                onBusyChange={setBusy}
+                onComplete={async () => { await Promise.all([loadWorkspace(workspace.project.id), loadLibrary()]); }}
+                onMessage={setMessage}
+              />
               <AssetMetadataEditor
                 ref={metadataEditorRef}
                 asset={selectedAsset}

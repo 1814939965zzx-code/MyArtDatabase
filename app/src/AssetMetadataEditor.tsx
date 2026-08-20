@@ -1,6 +1,6 @@
 "use client";
 
-import { Plus, RotateCcw, X } from "lucide-react";
+import { Check, ExternalLink, Pencil, Plus, RotateCcw, X } from "lucide-react";
 import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState } from "react";
 
 export type EditableAssetMetadata = {
@@ -17,6 +17,15 @@ export type AssetMetadataUpdate = Omit<EditableAssetMetadata, "id">;
 export type AssetMetadataEditorHandle = {
   save: () => Promise<boolean>;
 };
+
+function safeExternalUrl(value: string) {
+  try {
+    const url = new URL(value);
+    return url.protocol === "http:" || url.protocol === "https:" ? url.toString() : null;
+  } catch {
+    return null;
+  }
+}
 
 export const AssetMetadataEditor = forwardRef<AssetMetadataEditorHandle, {
   asset: EditableAssetMetadata;
@@ -37,6 +46,7 @@ export const AssetMetadataEditor = forwardRef<AssetMetadataEditorHandle, {
   const [description, setDescription] = useState(asset.description);
   const [notes, setNotes] = useState(asset.notes);
   const [sourceUrl, setSourceUrl] = useState(asset.sourceUrl);
+  const [editingSourceUrl, setEditingSourceUrl] = useState(false);
   const [pendingDeleteTags, setPendingDeleteTags] = useState<string[]>([]);
   const [highlightIndex, setHighlightIndex] = useState(-1);
 
@@ -47,6 +57,7 @@ export const AssetMetadataEditor = forwardRef<AssetMetadataEditorHandle, {
     setDescription(asset.description);
     setNotes(asset.notes);
     setSourceUrl(asset.sourceUrl);
+    setEditingSourceUrl(false);
     setPendingDeleteTags([]);
   }, [asset.id, asset.name, asset.tags, asset.description, asset.notes, asset.sourceUrl]);
 
@@ -87,6 +98,17 @@ export const AssetMetadataEditor = forwardRef<AssetMetadataEditorHandle, {
   }
 
   useImperativeHandle(ref, () => ({ save }));
+
+  async function applySourceUrl() {
+    const normalized = sourceUrl.trim();
+    if (normalized && !safeExternalUrl(normalized)) {
+      formRef.current?.querySelector<HTMLInputElement>(".source-link-input")?.setCustomValidity("请输入以 http:// 或 https:// 开头的网页链接");
+      formRef.current?.reportValidity();
+      return;
+    }
+    const saved = await save();
+    if (saved) setEditingSourceUrl(false);
+  }
 
   function removeTag(tag: string) {
     if (!tag || !tags.includes(tag)) return;
@@ -228,10 +250,39 @@ export const AssetMetadataEditor = forwardRef<AssetMetadataEditorHandle, {
         描述
         <textarea value={description} onChange={(event) => setDescription(event.target.value)} rows={3} maxLength={2000} placeholder="描述图片内容或使用方向" />
       </label>
-      <label>
-        来源链接
-        <input value={sourceUrl} onChange={(event) => setSourceUrl(event.target.value)} type="url" maxLength={1000} placeholder="https://" />
-      </label>
+      <div className="source-link-field">
+        <div className="source-link-heading">
+          <strong>来源链接</strong>
+          {!editingSourceUrl ? sourceUrl ? (
+            <button type="button" onClick={() => setEditingSourceUrl(true)}><Pencil size={12} />编辑</button>
+          ) : (
+            <button type="button" aria-label="增加来源链接" onClick={() => setEditingSourceUrl(true)}><Plus size={13} />增加</button>
+          ) : null}
+        </div>
+        {editingSourceUrl ? (
+          <div className="source-link-editor">
+            <input
+              className="source-link-input"
+              value={sourceUrl}
+              onChange={(event) => { event.target.setCustomValidity(""); setSourceUrl(event.target.value); }}
+              type="url"
+              maxLength={1000}
+              placeholder="https://"
+              autoFocus
+            />
+            <button type="button" aria-label="保存来源链接" disabled={busy} onClick={() => void applySourceUrl()}><Check size={14} /></button>
+            <button type="button" aria-label="取消编辑来源链接" disabled={busy} onClick={() => { setSourceUrl(asset.sourceUrl); setEditingSourceUrl(false); }}><X size={14} /></button>
+          </div>
+        ) : sourceUrl && safeExternalUrl(sourceUrl) ? (
+          <a className="source-link-display" href={safeExternalUrl(sourceUrl) ?? undefined} target="_blank" rel="noopener noreferrer">
+            <span>{sourceUrl}</span><ExternalLink size={13} />
+          </a>
+        ) : sourceUrl ? (
+          <button className="source-link-invalid" type="button" onClick={() => setEditingSourceUrl(true)}>链接格式无效，点击编辑</button>
+        ) : (
+          <span className="source-link-empty">暂无来源链接</span>
+        )}
+      </div>
       <label>
         备注
         <textarea value={notes} onChange={(event) => setNotes(event.target.value)} rows={2} maxLength={2000} placeholder="团队内部备注" />
