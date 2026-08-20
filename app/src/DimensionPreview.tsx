@@ -391,7 +391,9 @@ export function DimensionPreview({
       .map((asset, order) => {
         if (hiddenAssetIdsRef.current.has(asset.dataset.assetId ?? "")) return null;
         const face = asset.querySelector<HTMLElement>(".preview-asset-face");
-        const rect = face?.getBoundingClientRect();
+        // 命中检测跟随图片实际视觉大小：hover 放大时用放大后的 img/占位符 rect，平时用原始 rect
+        const visual = asset.querySelector<HTMLElement>(".preview-asset-face img, .preview-asset-face > i");
+        const rect = (visual ?? face)?.getBoundingClientRect();
         if (!rect || clientX < rect.left || clientX > rect.right || clientY < rect.top || clientY > rect.bottom) return null;
         return {
           id: asset.dataset.assetId ?? null,
@@ -610,11 +612,6 @@ export function DimensionPreview({
     });
   }
 
-  const activeAssetId = draggingAssetId ?? hoveredAssetId;
-  const activeAsset = activeAssetId ? assets.find((asset) => asset.id === activeAssetId) ?? null : null;
-  const assetDisplayValue = (asset: Asset, dimensionId: string) =>
-    displayDimensionValue({ ...asset.dimensionValues, ...overrides[asset.id] }[dimensionId] ?? 500);
-
   return (
     <section className={`preview-layout ${focusMode ? "focus-mode" : ""}`}>
       <aside className="preview-settings">
@@ -693,10 +690,10 @@ export function DimensionPreview({
                   <div className={`axis-half axis-half-z-neg ${isolatedOctant && isolatedOctant.z !== -1 ? "octant-hidden" : ""}`}><AxisFaces /></div>
                 </div> : null}
                 <span className="axis-origin" />
-                <span className={`axis-label axis-label-x-start ${isolatedOctant && isolatedOctant.x === 1 ? "octant-hidden" : ""}`}><i style={{ "--billboard-rx": `${mode === 3 ? -sceneRotateX : 0}deg`, "--billboard-rz": `${mode === 3 ? -sceneRotateZ : 0}deg` } as CSSProperties}>{activeAsset ? `${selected[0].leftLabel}：${assetDisplayValue(activeAsset, selected[0].id)}` : selected[0].leftLabel}</i></span>
-                <span className={`axis-label axis-label-x-end ${isolatedOctant && isolatedOctant.x === -1 ? "octant-hidden" : ""}`}><i style={{ "--billboard-rx": `${mode === 3 ? -sceneRotateX : 0}deg`, "--billboard-rz": `${mode === 3 ? -sceneRotateZ : 0}deg` } as CSSProperties}>{activeAsset ? `${selected[0].rightLabel}：${assetDisplayValue(activeAsset, selected[0].id)}` : selected[0].rightLabel}</i></span>
-                {mode >= 2 ? <><span className={`axis-label axis-label-y-start ${isolatedOctant && isolatedOctant.y === -1 ? "octant-hidden" : ""}`}><i style={{ "--billboard-rx": `${mode === 3 ? -sceneRotateX : 0}deg`, "--billboard-rz": `${mode === 3 ? -sceneRotateZ : 0}deg` } as CSSProperties}>{activeAsset ? `${selected[1].rightLabel}：${assetDisplayValue(activeAsset, selected[1].id)}` : selected[1].rightLabel}</i></span><span className={`axis-label axis-label-y-end ${isolatedOctant && isolatedOctant.y === 1 ? "octant-hidden" : ""}`}><i style={{ "--billboard-rx": `${mode === 3 ? -sceneRotateX : 0}deg`, "--billboard-rz": `${mode === 3 ? -sceneRotateZ : 0}deg` } as CSSProperties}>{activeAsset ? `${selected[1].leftLabel}：${assetDisplayValue(activeAsset, selected[1].id)}` : selected[1].leftLabel}</i></span></> : null}
-                {mode === 3 ? <><span className={`axis-label axis-label-z-start ${isolatedOctant && isolatedOctant.z === 1 ? "octant-hidden" : ""}`}><i style={{ "--billboard-rx": `${-sceneRotateX}deg`, "--billboard-rz": `${-sceneRotateZ}deg` } as CSSProperties}>{activeAsset ? `${selected[2].leftLabel}：${assetDisplayValue(activeAsset, selected[2].id)}` : selected[2].leftLabel}</i></span><span className={`axis-label axis-label-z-end ${isolatedOctant && isolatedOctant.z === -1 ? "octant-hidden" : ""}`}><i style={{ "--billboard-rx": `${-sceneRotateX}deg`, "--billboard-rz": `${-sceneRotateZ}deg` } as CSSProperties}>{activeAsset ? `${selected[2].rightLabel}：${assetDisplayValue(activeAsset, selected[2].id)}` : selected[2].rightLabel}</i></span></> : null}
+                <span className={`axis-label axis-label-x-start ${isolatedOctant && isolatedOctant.x === 1 ? "octant-hidden" : ""}`}><i style={{ "--billboard-rx": `${mode === 3 ? -sceneRotateX : 0}deg`, "--billboard-rz": `${mode === 3 ? -sceneRotateZ : 0}deg` } as CSSProperties}>{selected[0].leftLabel}</i></span>
+                <span className={`axis-label axis-label-x-end ${isolatedOctant && isolatedOctant.x === -1 ? "octant-hidden" : ""}`}><i style={{ "--billboard-rx": `${mode === 3 ? -sceneRotateX : 0}deg`, "--billboard-rz": `${mode === 3 ? -sceneRotateZ : 0}deg` } as CSSProperties}>{selected[0].rightLabel}</i></span>
+                {mode >= 2 ? <><span className={`axis-label axis-label-y-start ${isolatedOctant && isolatedOctant.y === -1 ? "octant-hidden" : ""}`}><i style={{ "--billboard-rx": `${mode === 3 ? -sceneRotateX : 0}deg`, "--billboard-rz": `${mode === 3 ? -sceneRotateZ : 0}deg` } as CSSProperties}>{selected[1].rightLabel}</i></span><span className={`axis-label axis-label-y-end ${isolatedOctant && isolatedOctant.y === 1 ? "octant-hidden" : ""}`}><i style={{ "--billboard-rx": `${mode === 3 ? -sceneRotateX : 0}deg`, "--billboard-rz": `${mode === 3 ? -sceneRotateZ : 0}deg` } as CSSProperties}>{selected[1].leftLabel}</i></span></> : null}
+                {mode === 3 ? <><span className={`axis-label axis-label-z-start ${isolatedOctant && isolatedOctant.z === 1 ? "octant-hidden" : ""}`}><i style={{ "--billboard-rx": `${-sceneRotateX}deg`, "--billboard-rz": `${-sceneRotateZ}deg` } as CSSProperties}>{selected[2].leftLabel}</i></span><span className={`axis-label axis-label-z-end ${isolatedOctant && isolatedOctant.z === -1 ? "octant-hidden" : ""}`}><i style={{ "--billboard-rx": `${-sceneRotateX}deg`, "--billboard-rz": `${-sceneRotateZ}deg` } as CSSProperties}>{selected[2].rightLabel}</i></span></> : null}
                 {cornerLabels.map((corner) => {
                   const octantHidden = isolatedOctant && !(
                     (corner.x === 0 || corner.x === isolatedOctant.x) &&
@@ -760,12 +757,12 @@ export function DimensionPreview({
                     >
                       <span className="preview-asset-face">
                         {asset.thumbnailUrl ? <img src={asset.thumbnailUrl} alt="" draggable={false} /> : <i>{asset.name.slice(0, 1)}</i>}
+                        {(draggingAssetId === asset.id || hoveredAssetId === asset.id) ? <em>{selected.map((dimension) => {
+                          const value = values[dimension.id] ?? 500;
+                          const label = value > 500 ? dimension.rightLabel : dimension.leftLabel;
+                          return `${label} ${Math.abs(displayDimensionValue(value))}`;
+                        }).join(" · ")}</em> : null}
                       </span>
-                      {draggingAssetId === asset.id ? <em>{selected.map((dimension) => {
-                        const value = values[dimension.id] ?? 500;
-                        const label = value > 500 ? dimension.rightLabel : dimension.leftLabel;
-                        return `${label} ${Math.abs(displayDimensionValue(value))}`;
-                      }).join(" · ")}</em> : null}
                     </button>
                   );
                 })}

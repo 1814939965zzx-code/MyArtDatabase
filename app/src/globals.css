@@ -425,6 +425,10 @@ button:focus-visible, input:focus-visible, textarea:focus-visible {
 .dimension-scene.view-panning .scene-viewport { cursor: grabbing; }
 .dimension-scene.asset-hovered .scene-viewport { cursor: grab; }
 .dimension-scene.asset-dragging .scene-viewport { cursor: grabbing; }
+/* 3D 模式下图片不可拖动，hover 图片时不再切换为 grab/grabbing 光标，保持默认 */
+.dimension-scene.mode-3 .preview-asset,
+.dimension-scene.mode-3 .preview-asset:active { cursor: default; }
+.dimension-scene.mode-3.asset-hovered .scene-viewport { cursor: default; }
 .xy-grid-plane { position: absolute; inset: 0; border: 1px solid rgba(95, 104, 94, .36); transform: translateZ(-1px); transform-style: preserve-3d; pointer-events: none; }
 .grid-line { position: absolute; display: block; background: rgba(100, 109, 99, .18); }
 .grid-line-x { top: 0; bottom: 0; width: 1px; }
@@ -462,13 +466,15 @@ button:focus-visible, input:focus-visible, textarea:focus-visible {
 .preview-asset { width: var(--asset-size, 41px); height: auto; aspect-ratio: var(--asset-ratio, 1 / 1); padding: 0; position: absolute; border: 0; background: transparent; cursor: grab; pointer-events: none; transform: translate(-50%, -50%) translateZ(var(--asset-z)); transform-style: preserve-3d; touch-action: none; user-select: none; transition: left 1s ease-in-out, top 1s ease-in-out, transform 1s ease-in-out; }
 .preview-asset:active, .preview-asset.dragging { cursor: grabbing; z-index: 1001; }
 .preview-asset.dragging { transition: none; }
-.preview-asset-face { position: absolute; inset: 0; display: grid; place-items: center; visibility: visible; opacity: 1; background: transparent; transform: scale3d(var(--persp, 1), var(--persp, 1), var(--persp, 1)) rotateZ(var(--billboard-rz)) rotateX(var(--billboard-rx)) scale3d(var(--hover-scale, 1), var(--hover-scale, 1), var(--hover-scale, 1)); transform-style: preserve-3d; transition: transform var(--preview-hover-duration) ease, opacity var(--preview-hover-duration) ease, visibility 0s linear; }
+.preview-asset-face { position: absolute; inset: 0; display: grid; place-items: center; visibility: visible; opacity: 1; background: transparent; transform: scale3d(var(--persp, 1), var(--persp, 1), var(--persp, 1)) rotateZ(var(--billboard-rz)) rotateX(var(--billboard-rx)); transform-style: preserve-3d; transition: transform var(--preview-hover-duration) ease, opacity var(--preview-hover-duration) ease, visibility 0s linear; }
 .preview-asset.hover-occluder .preview-asset-face { visibility: hidden; opacity: 0; transition: transform var(--preview-hover-duration) ease, opacity var(--preview-hover-duration) ease, visibility 0s linear var(--preview-hover-duration); }
 .preview-asset.octant-hidden .preview-asset-face { visibility: hidden; opacity: 0; transition: transform var(--preview-hover-duration) ease, opacity var(--preview-hover-duration) ease, visibility 0s linear var(--preview-hover-duration); }
 .preview-asset.hovered .preview-asset-face { --hover-scale: 4.95; }
-.preview-asset-face img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; object-position: center; display: block; pointer-events: none; }
-.preview-asset-face > i { width: 100%; height: 100%; display: grid; place-items: center; font-style: normal; }
-.preview-asset em { position: absolute; left: 50%; bottom: calc(100% + 5px); z-index: 6; transform: translateX(-50%) scale3d(var(--persp, 1), var(--persp, 1), var(--persp, 1)) rotateZ(var(--billboard-rz)) rotateX(var(--billboard-rx)); padding: 4px 6px; background: #252925; color: white; font-size: 14px; font-style: normal; white-space: nowrap; }
+.preview-asset-face img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; object-position: center; display: block; pointer-events: none; transform: scale3d(var(--hover-scale, 1), var(--hover-scale, 1), var(--hover-scale, 1)); transform-origin: center; transition: transform var(--preview-hover-duration) ease; }
+.preview-asset-face > i { width: 100%; height: 100%; display: grid; place-items: center; font-style: normal; transform: scale3d(var(--hover-scale, 1), var(--hover-scale, 1), var(--hover-scale, 1)); transform-origin: center; transition: transform var(--preview-hover-duration) ease; }
+.preview-asset-face em { position: absolute; left: 50%; bottom: calc(100% + 5px); z-index: 6; transform: translateX(-50%); transition: bottom var(--preview-hover-duration) ease; padding: 4px 6px; background: #252925; color: white; font-size: 14px; font-style: normal; white-space: nowrap; }
+/* hover 放大 4.95 倍时图片顶部上移 (4.95-1)/2 = 197.5% 的图片高度，气泡同步上移避让，始终在图片上方 5px */
+.preview-asset.hovered .preview-asset-face em { bottom: calc(100% + 197.5% + 5px); }
 .camera-hint { display: flex; align-items: center; gap: 4px; color: var(--sage); font-size: 10px; white-space: nowrap; }
 .octant-isolation-controls { position: absolute; z-index: 8; top: 16px; right: 16px; display: flex; flex-direction: column; align-items: flex-start; gap: 8px; }
 .octant-isolation-button { min-height: 34px; padding: 0 16px; flex: none; border: 1px solid #778673; border-radius: 5px; background: rgba(250, 250, 247, .94); color: #4f624a; box-shadow: 0 6px 18px rgba(35, 40, 35, .14); font-size: 11px; white-space: nowrap; cursor: pointer; }
