@@ -315,6 +315,10 @@ export function BoardView({ projectId, assets, onMessage, onSelectAsset }: { pro
     } catch (error) { onMessage(error instanceof Error ? error.message : "添加失败"); }
   }
 
+  function isPanGesture(event: PointerEvent<Element>) {
+    return event.button === 1 || (event.button === 0 && spaceHeld);
+  }
+
   function startPan(event: PointerEvent<HTMLDivElement>) {
     if (event.button === 0 && !spaceHeld) {
       const rect = event.currentTarget.getBoundingClientRect();
@@ -325,6 +329,7 @@ export function BoardView({ projectId, assets, onMessage, onSelectAsset }: { pro
       return;
     }
     if (event.button !== 1 && !(event.button === 0 && spaceHeld)) return;
+    event.preventDefault();
     panRef.current = { pointerId: event.pointerId, startX: event.clientX, startY: event.clientY, originX: view.x, originY: view.y };
     event.currentTarget.setPointerCapture(event.pointerId); setPanning(true);
   }
@@ -351,6 +356,7 @@ export function BoardView({ projectId, assets, onMessage, onSelectAsset }: { pro
   }
 
   function startFrameMove(event: PointerEvent<HTMLElement>, frame: PageFrame) {
+    if (isPanGesture(event)) return;
     event.stopPropagation(); selectItems([]);
     if (selectedFrameId !== frame.id) { setSelectedFrameId(frame.id); return; }
     if (event.button !== 0 || spaceHeld || editingFrameId === frame.id) return;
@@ -376,6 +382,7 @@ export function BoardView({ projectId, assets, onMessage, onSelectAsset }: { pro
     return { width: Math.max(MIN_FRAME_WIDTH, ...frameItems.map((item) => item.x + item.width + 24)), height: Math.max(MIN_FRAME_HEIGHT, ...frameItems.map((item) => item.y + item.height + 24)) };
   }
   function startFrameResize(event: PointerEvent<HTMLButtonElement>, frame: PageFrame, direction: ResizeDirection) {
+    if (isPanGesture(event)) return;
     event.stopPropagation(); event.currentTarget.setPointerCapture(event.pointerId);
     selectItems([]); setSelectedFrameId(frame.id);
     frameResizeRef.current = { pointerId: event.pointerId, frameId: frame.id, direction, startX: event.clientX, startY: event.clientY, frame };
@@ -451,6 +458,7 @@ export function BoardView({ projectId, assets, onMessage, onSelectAsset }: { pro
   }
 
   function startInteraction(event: PointerEvent<HTMLElement>, item: CanvasItem, mode: "move" | "resize") {
+    if (isPanGesture(event)) return;
     event.stopPropagation();
     if (event.button !== 0) return;
     let movingIds: string[];
@@ -581,7 +589,7 @@ export function BoardView({ projectId, assets, onMessage, onSelectAsset }: { pro
                 const frameSelected = selectedFrameId === frame.id && !selectedItemIds.length;
                 return <div className={`board-frame ${frameSelected ? "selected" : ""}`} key={frame.id} style={{ left: frame.x, top: frame.y, width: frame.width, height: frame.height }} onPointerDown={(event) => startFrameMove(event, frame)} onPointerMove={moveFrame} onPointerUp={endFrameMove} onPointerCancel={endFrameMove} onContextMenu={(event) => openFrameMenu(event, frame)}>
                   <div className="board-frame-title" style={{ transform: `scale(${titleScale})` }} onPointerDown={(event) => startFrameMove(event, frame)} onPointerMove={moveFrame} onPointerUp={endFrameMove}>
-                    {editingFrameId === frame.id ? <input value={frameNameDraft} maxLength={50} autoFocus aria-label="修改 Frame 名称" onPointerDown={(event) => event.stopPropagation()} onChange={(event) => setFrameNameDraft(event.target.value)} onBlur={() => finishFrameNameEdit(frame)} onKeyDown={(event) => { if (event.key === "Enter") event.currentTarget.blur(); if (event.key === "Escape") { setFrameNameDraft(frame.name); setEditingFrameId(null); } }} /> : <button type="button" onPointerDown={(event) => event.stopPropagation()} onClick={() => { selectItems([]); setSelectedFrameId(frame.id); }} onDoubleClick={(event) => { event.stopPropagation(); startFrameNameEdit(frame); }} title={frame.name}>{frame.name}</button>}
+                    {editingFrameId === frame.id ? <input value={frameNameDraft} maxLength={50} autoFocus aria-label="修改 Frame 名称" onPointerDown={(event) => { if (!isPanGesture(event)) event.stopPropagation(); }} onChange={(event) => setFrameNameDraft(event.target.value)} onBlur={() => finishFrameNameEdit(frame)} onKeyDown={(event) => { if (event.key === "Enter") event.currentTarget.blur(); if (event.key === "Escape") { setFrameNameDraft(frame.name); setEditingFrameId(null); } }} /> : <button type="button" onPointerDown={(event) => { if (!isPanGesture(event)) event.stopPropagation(); }} onClick={() => { if (panning || spaceHeld) return; selectItems([]); setSelectedFrameId(frame.id); }} onDoubleClick={(event) => { event.stopPropagation(); startFrameNameEdit(frame); }} title={frame.name}>{frame.name}</button>}
                     <span>{frame.width} × {frame.height}</span>
                   </div>
                   <div className="board-grid" />
