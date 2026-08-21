@@ -597,13 +597,12 @@ async function addCanvasItem(request, { db }) {
     WHERE c.id = ? AND pa.asset_id = ?`).get(canvasId, assetId);
   if (!membership) return Response.json({ error: "素材不属于当前项目" }, { status: 409 });
   const { count } = db.prepare("SELECT COUNT(*) AS count FROM canvas_items WHERE canvas_id = ?").get(canvasId);
-  if (count >= 200) return Response.json({ error: "单个画板最多放置 200 个元素" }, { status: 409 });
 
   const id = randomUUID();
   const item = {
     id, canvasId, assetId,
-    x: number(payload.x, 120, 0, 1880),
-    y: number(payload.y, 100, 0, 1080),
+    x: number(payload.x, 120, 0, 1_000_000_000),
+    y: number(payload.y, 100, 0, 1_000_000_000),
     width: number(payload.width, 220, 80, 800),
     height: number(payload.height, 170, 60, 800),
     zIndex: number(payload.zIndex, count + 1, 0, 10000),
@@ -623,7 +622,7 @@ async function updateCanvasItem(request, { db }) {
   const result = db.prepare(`UPDATE canvas_items SET x = ?, y = ?, width = ?, height = ?, z_index = ?, rotation = ?
     WHERE id = ? AND canvas_id = ?`)
     .run(
-      number(payload.x, 0, 0, 1920), number(payload.y, 0, 0, 1120),
+      number(payload.x, 0, 0, 1_000_000_000), number(payload.y, 0, 0, 1_000_000_000),
       number(payload.width, 220, 80, 900), number(payload.height, 170, 60, 900),
       number(payload.zIndex, 1, 0, 10000), number(payload.rotation, 0, -180, 180),
       id, canvasId,
