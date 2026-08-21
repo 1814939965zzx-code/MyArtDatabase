@@ -68,8 +68,7 @@ CREATE TABLE IF NOT EXISTS canvas_items (
   width INTEGER NOT NULL,
   height INTEGER NOT NULL,
   z_index INTEGER NOT NULL DEFAULT 0,
-  rotation INTEGER NOT NULL DEFAULT 0,
-  UNIQUE(canvas_id, asset_id)
+  rotation INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS project_assets_project_idx ON project_assets(project_id);
 CREATE INDEX IF NOT EXISTS dimensions_project_idx ON project_dimensions(project_id);
@@ -77,6 +76,36 @@ CREATE INDEX IF NOT EXISTS assets_sha256_idx ON assets(sha256);
 CREATE INDEX IF NOT EXISTS canvases_project_idx ON canvases(project_id);
 CREATE INDEX IF NOT EXISTS canvas_items_canvas_idx ON canvas_items(canvas_id);
 `;
+
+function allowRepeatedCanvasAssets(db) {
+  const row = db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'canvas_items'").get();
+  if (!row?.sql || !/UNIQUE\s*\(\s*canvas_id\s*,\s*asset_id\s*\)/i.test(row.sql)) return;
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    db.exec(`
+      CREATE TABLE canvas_items_next (
+        id TEXT PRIMARY KEY NOT NULL,
+        canvas_id TEXT NOT NULL REFERENCES canvases(id) ON DELETE CASCADE,
+        asset_id TEXT NOT NULL REFERENCES assets(id) ON DELETE CASCADE,
+        x INTEGER NOT NULL,
+        y INTEGER NOT NULL,
+        width INTEGER NOT NULL,
+        height INTEGER NOT NULL,
+        z_index INTEGER NOT NULL DEFAULT 0,
+        rotation INTEGER NOT NULL DEFAULT 0
+      );
+      INSERT INTO canvas_items_next (id, canvas_id, asset_id, x, y, width, height, z_index, rotation)
+        SELECT id, canvas_id, asset_id, x, y, width, height, z_index, rotation FROM canvas_items;
+      DROP TABLE canvas_items;
+      ALTER TABLE canvas_items_next RENAME TO canvas_items;
+      CREATE INDEX canvas_items_canvas_idx ON canvas_items(canvas_id);
+      COMMIT;
+    `);
+  } catch (error) {
+    db.exec("ROLLBACK");
+    throw error;
+  }
+}
 
 const SEED_ASSETS = [
   ["asset-01", "雾中建筑", "mist-architecture.jpg", "artdatabase-mist", "建筑,氛围,灰调"],
@@ -124,6 +153,9 @@ export function openDatabase(dbPath, { seedDemo = false } = {}) {
   const db = new DatabaseSync(dbPath);
   db.exec("PRAGMA foreign_keys = ON");
   db.exec(SCHEMA);
+  // 旧版本限制同一素材在一张画板只能出现一次。事务迁移保留全部既有元素，
+  // 只移除该唯一约束，使每次放置都由独立的 canvas_items.id 表示。
+  allowRepeatedCanvasAssets(db);
   // 示例数据只允许在开发模式或显式开启时写入；生产环境绝不自动写入，
   // 否则空库/路径配置错误会被静默伪装成“示例素材库”。
   if (seedDemo) seed(db);

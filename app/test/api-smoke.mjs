@@ -1,12 +1,33 @@
 import assert from "node:assert/strict";
 import { mkdtemp, readdir } from "node:fs/promises";
 import { createServer, request as httpRequest } from "node:http";
+import { DatabaseSync } from "node:sqlite";
 import os from "node:os";
 import path from "node:path";
 import sharp from "sharp";
+import { openDatabase } from "../server/db.js";
 import { createLocalDiskStore } from "../server/storage.js";
 
 const tmp = await mkdtemp(path.join(os.tmpdir(), "artdb-"));
+const legacyDbPath = path.join(tmp, "legacy.db");
+const legacyDb = new DatabaseSync(legacyDbPath);
+legacyDb.exec(`
+  PRAGMA foreign_keys = ON;
+  CREATE TABLE projects (id TEXT PRIMARY KEY NOT NULL, name TEXT NOT NULL, description TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
+  CREATE TABLE assets (id TEXT PRIMARY KEY NOT NULL, name TEXT NOT NULL, file_name TEXT NOT NULL, thumbnail_url TEXT, storage_key TEXT, thumbnail_key TEXT, sha256 TEXT, file_size INTEGER NOT NULL DEFAULT 0, width INTEGER NOT NULL DEFAULT 0, height INTEGER NOT NULL DEFAULT 0, mime_type TEXT NOT NULL DEFAULT 'image/jpeg', tags TEXT NOT NULL DEFAULT '', description TEXT NOT NULL DEFAULT '', notes TEXT NOT NULL DEFAULT '', source_url TEXT NOT NULL DEFAULT '', deleted_at TEXT, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
+  CREATE TABLE canvases (id TEXT PRIMARY KEY NOT NULL, project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE, name TEXT NOT NULL, revision INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
+  CREATE TABLE canvas_items (id TEXT PRIMARY KEY NOT NULL, canvas_id TEXT NOT NULL REFERENCES canvases(id) ON DELETE CASCADE, asset_id TEXT NOT NULL REFERENCES assets(id) ON DELETE CASCADE, x INTEGER NOT NULL, y INTEGER NOT NULL, width INTEGER NOT NULL, height INTEGER NOT NULL, z_index INTEGER NOT NULL DEFAULT 0, rotation INTEGER NOT NULL DEFAULT 0, UNIQUE(canvas_id, asset_id));
+  INSERT INTO projects (id, name) VALUES ('legacy-project', '旧项目');
+  INSERT INTO assets (id, name, file_name) VALUES ('legacy-asset', '旧素材', 'legacy.png');
+  INSERT INTO canvases (id, project_id, name) VALUES ('legacy-canvas', 'legacy-project', '旧画板');
+  INSERT INTO canvas_items (id, canvas_id, asset_id, x, y, width, height) VALUES ('legacy-item', 'legacy-canvas', 'legacy-asset', 11, 22, 333, 222);
+`);
+legacyDb.close();
+const migratedDb = openDatabase(legacyDbPath);
+assert.deepEqual({ ...migratedDb.prepare("SELECT id, x, y, width, height FROM canvas_items WHERE id = 'legacy-item'").get() }, { id: "legacy-item", x: 11, y: 22, width: 333, height: 222 }, "迁移必须保留既有画板元素");
+migratedDb.prepare("INSERT INTO canvas_items (id, canvas_id, asset_id, x, y, width, height) VALUES (?, ?, ?, ?, ?, ?, ?)").run("legacy-item-copy", "legacy-canvas", "legacy-asset", 44, 55, 333, 222);
+assert.equal(migratedDb.prepare("SELECT COUNT(*) AS count FROM canvas_items WHERE canvas_id = 'legacy-canvas' AND asset_id = 'legacy-asset'").get().count, 2, "迁移后同一素材应允许重复放置");
+migratedDb.close();
 const probe = createServer();
 await new Promise((resolve, reject) => {
   probe.once("error", reject);
@@ -107,6 +128,15 @@ const canvas = await json(await post(`${base}/api/canvases`, { projectId: "proje
 assert.ok(canvas.canvas.id);
 const item = await json(await post(`${base}/api/canvas-items`, { canvasId: canvas.canvas.id, assetId: asset.id, x: 10, y: 20, width: 200, height: 150, zIndex: 1, rotation: 0 }));
 assert.ok(item.item.id);
+const repeatedItem = await json(await post(`${base}/api/canvas-items`, { canvasId: canvas.canvas.id, assetId: asset.id, x: 40, y: 50, width: 200, height: 150, zIndex: 2, rotation: 0 }));
+assert.ok(repeatedItem.item.id);
+assert.notEqual(repeatedItem.item.id, item.item.id, "同一素材的每次放置必须拥有独立实例 ID");
+const repeatedCanvas = await json(await fetch(`${base}/api/canvas?canvasId=${canvas.canvas.id}`));
+assert.equal(repeatedCanvas.items.filter((entry) => entry.assetId === asset.id).length, 2, "同一素材应能在 Page 内重复放置");
+assert.equal((await fetch(`${base}/api/canvas-items?id=${repeatedItem.item.id}&canvasId=${canvas.canvas.id}`, { method: "DELETE" })).status, 200, "应能删除单个画板实例");
+const canvasAfterInstanceDelete = await json(await fetch(`${base}/api/canvas?canvasId=${canvas.canvas.id}`));
+assert.equal(canvasAfterInstanceDelete.items.filter((entry) => entry.assetId === asset.id).length, 1, "删除单个实例不得影响同素材的其他画板实例");
+assert.ok((await json(await fetch(`${base}/api/workspace?projectId=project-visual-direction`))).assets.some((entry) => entry.id === asset.id), "删除画板实例不得删除项目素材");
 
 // 10) 替换图片：只更新文件字段，保留素材 ID、Metadata、项目引用、维度值和画板元素
 const beforeReplaceWorkspace = await json(await fetch(`${base}/api/workspace?projectId=project-visual-direction`));
@@ -189,5 +219,5 @@ trash = await json(await fetch(`${base}/api/trash`));
 assert.ok(!trash.assets.some((item) => item.id === asset.id), "彻底删除后回收站不应包含该素材");
 assert.equal((await fetch(`${base}/api/media?id=${asset.id}&variant=thumbnail`)).status, 404, "删除后缩略图应 404");
 
-console.log("✓ 全部通过：项目 / 工作区 / 上传 / 缩略图 / 原图 / 去重 / 改元数据 / 改维度名称 / 画板 / 安全替换图片 / 回收站(软删-列出-恢复-彻底删)");
+console.log("✓ 全部通过：项目 / 工作区 / 上传 / 缩略图 / 原图 / 去重 / 改元数据 / 改维度名称 / 画板迁移与重复实例 / 安全替换图片 / 回收站(软删-列出-恢复-彻底删)");
 process.exit(0);
