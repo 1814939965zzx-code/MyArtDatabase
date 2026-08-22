@@ -221,7 +221,7 @@ export function TagManager({
   return (
     <>
     <div className="modal-backdrop">
-      <section className={`modal-card tag-manager-card ${mergeMode ? "merge-active" : ""}`} role="dialog" aria-modal="true" aria-labelledby="tag-manager-title">
+      <section className="modal-card tag-manager-card" role="dialog" aria-modal="true" aria-labelledby="tag-manager-title">
         <div className="modal-heading">
           <div>
             <p className="eyebrow">TAG DICTIONARY</p>

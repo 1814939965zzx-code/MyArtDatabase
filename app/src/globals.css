@@ -653,7 +653,6 @@ button:focus-visible, input:focus-visible, textarea:focus-visible {
 .tag-manager-open-button:hover { border-color: #919b8c; background: #f1f4ef; color: #3f4d3b; }
 
 .tag-manager-card { width: min(680px, 100%); height: min(760px, calc(100dvh - 40px)); display: flex; flex-direction: column; }
-.tag-manager-card.merge-active { width: min(1120px, 100%); }
 .tag-manager-body { min-height: 0; flex: 1 1 auto; display: flex; gap: 12px; }
 .tag-manager-body .tag-manager-list { min-width: 0; flex: 1 1 auto; }
 .tag-manager-body > .tag-manager-loading { min-height: 0; flex: 1 1 auto; }
