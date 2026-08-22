@@ -130,7 +130,7 @@ Metadata 字段：
 ### 3.7 AI 自动打标签
 
 - 素材详情页（全局库与项目两处抽屉共用）的“全局标签”区提供“AI 打标”按钮，一次只对当前打开的素材打标。
-- AI 服务不内置：通过 OpenAI 兼容接口调用。侧栏“AI 服务配置”页可填写接口地址、API key 与模型名并提交到服务端保存；key 只存服务端、页面只显示尾号掩码，配置页提供“测试连接”与“查看可用模型”按钮。环境变量 `AI_BASE_URL`、`AI_API_KEY`、`AI_MODEL` 优先于页面配置生效；配置文件默认为 `app/data/ai-config.json`（可用 `AI_CONFIG_PATH` 指定），生产环境可写入 `/etc/artdatabase/env`。未配置时触发按钮返回明确错误提示。
+- AI 服务不内置：通过 OpenAI 兼容接口调用。侧栏“AI 服务配置”页可填写接口地址、API key 与模型名并提交到服务端保存；key 只存服务端、页面只显示尾号掩码，配置页提供“测试连接”与“查看可用模型”按钮。环境变量 `AI_BASE_URL`、`AI_API_KEY`、`AI_MODEL` 优先于页面配置生效；配置文件默认与数据库同目录（开发 `app/data/ai-config.json`，生产 `/var/lib/artdatabase/ai-config.json`），可用 `AI_CONFIG_PATH` 覆盖，生产环境另可写入 `/etc/artdatabase/env`。未配置时触发按钮返回明确错误提示。
 - 服务端同步执行，前端只有“等待中 / 成功 / 失败”三种状态（无进度轮询）：等待中按钮 loading，成功以 toast 提示复用/新建数量，失败 toast 展示原因并可重试。
 - 打标链路：
   1. 取原图（本地文件直接读取，远程 URL 由服务端下载），压缩到最长边 ≤1024 后以 base64 发送；
@@ -169,6 +169,6 @@ Metadata 字段：
 - 单个原生 Node.js 进程同时提供前端、`/api/*`、SQLite 和图片存储。
 - 默认开发数据位于 `app/data/app.db` 和 `app/data/media/`。
 - 静态资源路径和本地媒体存储键必须限定在各自根目录内，禁止通过编码路径、`..` 或路径分隔符访问任意文件。
-- 环境变量：`PORT`（默认 `3000`）、`DB_PATH`、`STORE_ROOT`；AI 打标可选配置 `AI_BASE_URL`、`AI_API_KEY`、`AI_MODEL`（优先于页面配置）与 `AI_CONFIG_PATH`（配置文件路径，默认 `app/data/ai-config.json`）。
+- 环境变量：`PORT`（默认 `3000`）、`DB_PATH`、`STORE_ROOT`；AI 打标可选配置 `AI_BASE_URL`、`AI_API_KEY`、`AI_MODEL`（优先于页面配置）与 `AI_CONFIG_PATH`（配置文件路径，默认与数据库同目录）。
 - Node.js 要求 `>=23.4.0`。
 - 启动、验证和部署方式分别以根目录 `README.md`、`AGENTS.md` 和 `BUILD.md` 为准。

@@ -21,9 +21,15 @@ export class AiError extends Error {
   }
 }
 
-/** 配置文件路径：AI_CONFIG_PATH 或默认 app/data/ai-config.json。 */
+/**
+ * 配置文件路径：AI_CONFIG_PATH 显式指定 > 数据库同目录。
+ * 跟随 DB_PATH 保证服务进程永远有权写入（开发 app/data/，生产 /var/lib/artdatabase/）。
+ */
 export function resolveConfigPath() {
-  return process.env.AI_CONFIG_PATH?.trim() || path.join(appRoot, "data", "ai-config.json");
+  const explicit = process.env.AI_CONFIG_PATH?.trim();
+  if (explicit) return explicit;
+  const dbPath = process.env.DB_PATH?.trim() || path.join(appRoot, "data", "app.db");
+  return path.join(path.dirname(dbPath), "ai-config.json");
 }
 
 function readConfigFile() {

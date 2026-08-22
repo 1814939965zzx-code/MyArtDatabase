@@ -92,8 +92,8 @@ await new Promise((resolve, reject) => {
 });
 const aiMockPort = aiMock.address().port;
 // AI 配置走文件回退路径（不设环境变量），端到端验证读取链路
-process.env.AI_CONFIG_PATH = path.join(tmp, "ai-config.json");
-await writeFile(process.env.AI_CONFIG_PATH, JSON.stringify({
+// AI 配置走“跟随数据库目录”的默认路径（DB_PATH=tmp/app.db → tmp/ai-config.json），端到端验证默认解析逻辑
+await writeFile(path.join(tmp, "ai-config.json"), JSON.stringify({
   baseUrl: `http://127.0.0.1:${aiMockPort}`,
   apiKey: "sk-smoke-1234",
   model: "smoke-model",
@@ -375,7 +375,7 @@ assert.equal(cfgSave.ok, true);
 cfg = await json(await fetch(`${base}/api/ai-config`));
 assert.equal(cfg.model, "smoke-model-2");
 assert.equal(cfg.apiKeyLast4, "1234", "未提交 apiKey 应保留原 key");
-const onDiskConfig = JSON.parse(await readFile(process.env.AI_CONFIG_PATH, "utf8"));
+const onDiskConfig = JSON.parse(await readFile(path.join(tmp, "ai-config.json"), "utf8"));
 assert.equal(onDiskConfig.apiKey, "sk-smoke-1234", "key 应完整保存在服务端文件，接口不回显");
 
 const cfgSave2 = await json(await fetch(`${base}/api/ai-config`, {

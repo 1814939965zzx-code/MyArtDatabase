@@ -79,9 +79,9 @@ npm ci + typecheck + test + build
 | `AI_BASE_URL` | 兼容接口根地址，如 `https://dashscope.aliyuncs.com/compatible-mode/v1` |
 | `AI_API_KEY` | API key，仅存服务端，前端不回显 |
 | `AI_MODEL` | 模型名，如 `qwen-vl-plus` |
-| `AI_CONFIG_PATH` | 配置文件路径；默认 `app/data/ai-config.json`（JSON：`{"baseUrl": "...", "apiKey": "...", "model": "..."}`，该文件已被 Git 忽略） |
+| `AI_CONFIG_PATH` | 配置文件路径；默认**与数据库同目录**（`DB_PATH` 所在目录下的 `ai-config.json`，开发为 `app/data/ai-config.json`，生产为 `/var/lib/artdatabase/ai-config.json`），该文件已被 Git 忽略 |
 
-生产环境建议在 `/etc/artdatabase/env` 写入三项变量（systemd `EnvironmentFile` 自动加载）；或只写 `AI_CONFIG_PATH=/var/lib/artdatabase/ai-config.json` 让界面配置直接落到数据目录（服务用户可写）。未配置时点击“AI 打标”会得到明确错误提示，不影响其他功能。
+生产环境通常无需配置 `AI_CONFIG_PATH`：界面保存的配置会自动落到 `/var/lib/artdatabase/`（服务用户可写）。若坚持用环境变量，把 `AI_BASE_URL` / `AI_API_KEY` / `AI_MODEL` 写入 `/etc/artdatabase/env`（systemd `EnvironmentFile` 自动加载）并 `sudo systemctl restart artdatabase`。未配置时点击“AI 打标”会得到明确错误提示，不影响其他功能。
 
 > 注意：打标会把图片（压缩到长边 ≤1024）上传到所配置的第三方 AI 服务，开启前请确认素材保密要求；敏感素材不要执行 AI 打标。
 
