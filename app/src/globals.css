@@ -416,6 +416,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible {
 .preview-zoom span { min-width: 42px; text-align: center; color: var(--muted); font-size: 10px; }
 .fullscreen-button { width: 31px; height: 29px; padding: 0; border: 1px solid var(--line); background: white; color: var(--muted); display: grid; place-items: center; cursor: pointer; }
 .fullscreen-button:hover { color: var(--ink); }
+.fullscreen-button.dof-active { border-color: #5d7b56; background: #eef4ec; color: #4f624a; }
 .dimension-scene { --preview-hover-duration: .18s; flex: 1; min-height: 0; padding: 38px; position: relative; overflow: auto; background: #efeee8; }
 .scene-viewport { width: 100%; min-width: 620px; min-height: 520px; height: 100%; position: relative; container-type: size; perspective: 2200px; overflow: hidden; touch-action: none; overscroll-behavior: contain; }
 .workspace.preview-active .scene-viewport { min-width: 0; min-height: 0; }
@@ -472,18 +473,53 @@ button:focus-visible, input:focus-visible, textarea:focus-visible {
 .corner-label { position: absolute; z-index: 4; transform-style: preserve-3d; pointer-events: none; transform: translate(calc(-50% + var(--corner-dx, 0px)), calc(-50% + var(--corner-dy, 0px))) translateZ(var(--corner-tz, 0px)); transition: opacity .3s ease, visibility 0s linear .3s; }
 .corner-label.octant-hidden { visibility: hidden; opacity: 0; }
 .corner-label i { display: block; padding: 3px 6px; border-radius: 4px; background: rgba(239, 238, 232, .92); color: #565c55; font-size: 12px; font-style: normal; white-space: nowrap; transform: rotateZ(var(--billboard-rz)) rotateX(var(--billboard-rx)); transition: none; }
-.preview-asset { width: var(--asset-size, 41px); height: auto; aspect-ratio: var(--asset-ratio, 1 / 1); padding: 0; position: absolute; border: 0; background: transparent; cursor: grab; pointer-events: none; transform: translate(-50%, -50%) translateZ(var(--asset-z)); transform-style: preserve-3d; touch-action: none; user-select: none; transition: left 1s ease-in-out, top 1s ease-in-out, transform 1s ease-in-out; }
+.preview-asset { width: var(--asset-size, 41px); height: auto; aspect-ratio: var(--asset-ratio, 1 / 1); padding: 0; position: absolute; border: 0; background: transparent; cursor: grab; pointer-events: none; transform: translate(-50%, -50%) translateZ(calc(var(--asset-z, 0px) + var(--asset-z-lift, 0px))); transform-style: preserve-3d; touch-action: none; user-select: none; transition: left 1s ease-in-out, top 1s ease-in-out, transform 1s ease-in-out; }
+/* 1D/2D 下图片整体抬高到坐标轴前方（3D 下按真实深度，不加偏移） */
+.dimension-scene.mode-1 { --asset-z-lift: 2px; }
+.dimension-scene.mode-2 { --asset-z-lift: 2px; }
 .preview-asset:active, .preview-asset.dragging { cursor: grabbing; z-index: 1001; }
 .preview-asset.dragging { transition: none; }
 .preview-asset-face { position: absolute; inset: 0; display: grid; place-items: center; visibility: visible; opacity: 1; background: transparent; transform: scale3d(var(--persp, 1), var(--persp, 1), var(--persp, 1)) rotateZ(var(--billboard-rz)) rotateX(var(--billboard-rx)); transform-style: preserve-3d; transition: transform var(--preview-hover-duration) ease, opacity var(--preview-hover-duration) ease, visibility 0s linear; }
 .preview-asset.hover-occluder .preview-asset-face { visibility: hidden; opacity: 0; transition: transform var(--preview-hover-duration) ease, opacity var(--preview-hover-duration) ease, visibility 0s linear var(--preview-hover-duration); }
 .preview-asset.octant-hidden .preview-asset-face { visibility: hidden; opacity: 0; transition: transform var(--preview-hover-duration) ease, opacity var(--preview-hover-duration) ease, visibility 0s linear var(--preview-hover-duration); }
-.preview-asset.hovered .preview-asset-face { --hover-scale: 4.95; }
+.preview-asset.hovered .preview-asset-face { --hover-scale: 2.475; }
 .preview-asset-face img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; object-position: center; display: block; pointer-events: none; transform: scale3d(var(--hover-scale, 1), var(--hover-scale, 1), var(--hover-scale, 1)); transform-origin: center; transition: transform var(--preview-hover-duration) ease; }
 .preview-asset-face > i { width: 100%; height: 100%; display: grid; place-items: center; font-style: normal; transform: scale3d(var(--hover-scale, 1), var(--hover-scale, 1), var(--hover-scale, 1)); transform-origin: center; transition: transform var(--preview-hover-duration) ease; }
 .preview-asset-face em { position: absolute; left: 50%; bottom: calc(100% + 5px); z-index: 6; transform: translateX(-50%); transition: bottom var(--preview-hover-duration) ease; padding: 4px 6px; background: #252925; color: white; font-size: 14px; font-style: normal; white-space: nowrap; }
-/* hover 放大 4.95 倍时图片顶部上移 (4.95-1)/2 = 197.5% 的图片高度，气泡同步上移避让，始终在图片上方 5px */
-.preview-asset.hovered .preview-asset-face em { bottom: calc(100% + 197.5% + 5px); }
+/* hover 放大 2.475 倍时图片顶部上移 (2.475-1)/2 = 73.75% 的图片高度，气泡同步上移避让，始终在图片上方 5px */
+.preview-asset.hovered .preview-asset-face em { bottom: calc(100% + 73.75% + 5px); }
+/* 素材堆叠：按坐标聚簇成“一摞卡片”，hover 时展开查看 */
+.preview-asset.preview-stack { cursor: default; }
+.preview-stack .stack-card { position: absolute; inset: 0; display: grid; place-items: center; background: transparent; }
+.preview-stack .stack-card img, .preview-stack .stack-card i { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; object-position: center; display: block; pointer-events: none; }
+.preview-stack .stack-card i { display: grid; place-items: center; font-style: normal; }
+.preview-stack .stack-card:nth-child(2) { transform: translate(-4px, 3px); }
+.preview-stack .stack-card:nth-child(3) { transform: translate(-8px, 6px); }
+.preview-stack .stack-count { position: absolute; right: -8px; top: -8px; z-index: 5; min-width: 17px; height: 17px; padding: 0 4px; border-radius: 9px; background: var(--sage); color: #fff; font-size: 10px; font-weight: 700; line-height: 17px; text-align: center; }
+.preview-asset.preview-stack.hovered { z-index: 1002; }
+/* 拖动接近某堆时，该堆放大并高亮提示（drop-target） */
+.preview-asset.preview-stack.drop-target { z-index: 1002; }
+.preview-asset.preview-stack.drop-target .preview-asset-face { filter: drop-shadow(0 0 10px rgba(76, 101, 73, .9)); }
+.dimension-scene.stack-hovered .scene-viewport { cursor: default; }
+/* 堆展开的独立平面：与堆完全重合的悬浮 2D 卡片层（无底色），交互与场景完全隔离 */
+.stack-plane { position: absolute; z-index: 2000; padding: 20px 28px 14px; box-sizing: border-box; background: transparent; }
+.stack-plane-surface { position: relative; width: 100%; height: 100%; }
+/* 卡片从中心位移到各自矩阵位置的展开过渡 */
+.stack-plane-card { position: absolute; top: 50%; left: 50%; width: 90px; height: 90px; padding: 0; border: 0; background: transparent; cursor: grab; touch-action: none; user-select: none; transform: translate(calc(-50% + var(--card-offset-x, 0px)), calc(-50% + var(--card-offset-y, 0px))); animation: stack-card-in .18s ease-out; }
+@keyframes stack-card-in { from { transform: translate(-50%, -50%); } to { transform: translate(calc(-50% + var(--card-offset-x, 0px)), calc(-50% + var(--card-offset-y, 0px))); } }
+/* 退出 hover：卡片向中心收拢，收拢后再消失 */
+.stack-plane.closing { pointer-events: none; }
+.stack-plane.closing .stack-plane-card { animation: stack-card-out .16s ease-in forwards; }
+@keyframes stack-card-out { from { transform: translate(calc(-50% + var(--card-offset-x, 0px)), calc(-50% + var(--card-offset-y, 0px))); } to { transform: translate(-50%, -50%); } }
+.dimension-scene.mode-3 .stack-plane-card { cursor: default; }
+.stack-plane-card:hover { z-index: 10; }
+.stack-plane-card.dragging { z-index: 20; cursor: grabbing; animation: none; transform: translate(calc(-50% + var(--card-offset-x, 0px) + var(--drag-dx, 0px)), calc(-50% + var(--card-offset-y, 0px) + var(--drag-dy, 0px))); }
+.stack-plane-card img, .stack-plane-card > i { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; object-position: center; pointer-events: none; display: block; transform-origin: center; transition: transform var(--preview-hover-duration) ease; }
+.stack-plane-card > i { display: grid; place-items: center; font-style: normal; }
+/* 平面内卡片 hover 放大 1.86x，不隐藏任何图片 */
+.stack-plane-card:hover img, .stack-plane-card:hover > i { transform: scale3d(1.86, 1.86, 1.86); }
+.stack-plane-card em { position: absolute; left: 50%; bottom: calc(100% + 5px); z-index: 6; padding: 4px 6px; background: #252925; color: white; font-size: 14px; font-style: normal; white-space: nowrap; transform: translateX(-50%); pointer-events: none; visibility: hidden; opacity: 0; transition: bottom var(--preview-hover-duration) ease, opacity var(--preview-hover-duration) ease, visibility 0s linear var(--preview-hover-duration); }
+.stack-plane-card:hover em { visibility: visible; opacity: 1; bottom: calc(100% + 43% + 5px); transition: bottom var(--preview-hover-duration) ease, opacity var(--preview-hover-duration) ease, visibility 0s; }
 .camera-hint { display: flex; align-items: center; gap: 4px; color: var(--sage); font-size: 10px; white-space: nowrap; }
 .octant-isolation-controls { position: absolute; z-index: 8; top: 16px; right: 16px; display: flex; flex-direction: column; align-items: flex-start; gap: 8px; }
 .octant-isolation-button { min-height: 34px; padding: 0 16px; flex: none; border: 1px solid #778673; border-radius: 5px; background: rgba(250, 250, 247, .94); color: #4f624a; box-shadow: 0 6px 18px rgba(35, 40, 35, .14); font-size: 11px; white-space: nowrap; cursor: pointer; }
