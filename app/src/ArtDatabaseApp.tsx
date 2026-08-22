@@ -23,7 +23,6 @@ import {
 } from "lucide-react";
 import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { AllAssetsView, type LibraryAsset } from "./AllAssetsView";
-import { AiConfigModal } from "./AiConfigModal";
 import { AssetMetadataEditor, type AssetMetadataEditorHandle, type AssetMetadataUpdate } from "./AssetMetadataEditor";
 import { AssetImageReplacement } from "./AssetImageReplacement";
 import { BoardView } from "./BoardView";
@@ -152,7 +151,6 @@ export function ArtDatabaseApp() {
   const [dragActive, setDragActive] = useState(false);
   const [tagDict, setTagDict] = useState<TagEntry[]>([]);
   const [aiTagBusy, setAiTagBusy] = useState(false);
-  const [aiConfigOpen, setAiConfigOpen] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const metadataEditorRef = useRef<AssetMetadataEditorHandle>(null);
   const dimensionEditorRef = useRef<DimensionControlsEditorHandle>(null);
@@ -680,14 +678,6 @@ export function ArtDatabaseApp() {
           <Plus size={17} /> 新建项目
         </button>
         <button
-          className={`ai-config-nav-item ${aiConfigOpen ? "active" : ""}`}
-          type="button"
-          onClick={() => setAiConfigOpen(true)}
-        >
-          <span className="project-icon"><Settings2 size={16} /></span>
-          <span className="project-copy"><strong>AI 服务配置</strong><small>OpenAI 兼容接口</small></span>
-        </button>
-        <button
           className={`trash-nav-item ${activeArea === "trash" ? "active" : ""}`}
           type="button"
           onClick={() => { setActiveArea("trash"); setSelectedAssetId(null); setSidebarOpen(false); void loadTrash(); }}
@@ -876,8 +866,6 @@ export function ArtDatabaseApp() {
         : null; })() : null}
 
       {activeArea === "project" && uploadFile && workspace ? <UploadModal file={uploadFile} projectId={workspace.project.id} dimensions={workspace.dimensions} onClose={() => setUploadFile(null)} onComplete={async () => { await Promise.all([loadProjects(workspace.project.id), loadWorkspace(workspace.project.id), loadLibrary()]); }} onMessage={setMessage} /> : null}
-
-      {aiConfigOpen ? <AiConfigModal onClose={() => setAiConfigOpen(false)} /> : null}
 
       {message ? <div className="toast" role="status">{message}</div> : null}
       {pendingDeletion ? (

@@ -57,9 +57,6 @@ button:focus-visible, input:focus-visible, textarea:focus-visible {
 .trash-nav-item { width: 100%; margin-top: auto; padding: 10px; border: 0; border-radius: 8px; background: transparent; color: #d9ddd7; display: flex; align-items: center; gap: 10px; text-align: left; cursor: pointer; transition: background .18s ease, color .18s ease; }
 .trash-nav-item:hover { background: #303531; color: #fff; }
 .trash-nav-item.active { background: #f3f1e9; color: #252825; }
-.ai-config-nav-item { width: 100%; margin-top: 10px; padding: 10px; border: 0; border-radius: 8px; background: transparent; color: #d9ddd7; display: flex; align-items: center; gap: 10px; text-align: left; cursor: pointer; transition: background .18s ease, color .18s ease; }
-.ai-config-nav-item:hover { background: #303531; color: #fff; }
-.ai-config-nav-item.active { background: #f3f1e9; color: #252825; }
 
 .workspace { flex: 1; min-width: 0; padding-bottom: 60px; }
 .workspace.preview-active, .workspace.board-active { height: 100dvh; padding-bottom: 0; overflow: hidden; display: flex; flex-direction: column; }
@@ -668,6 +665,8 @@ button:focus-visible, input:focus-visible, textarea:focus-visible {
 .tag-cleanup-button { flex: none; height: 33px; padding: 0 11px; border: 1px solid #e4c8bf; border-radius: 6px; background: #fff8f5; color: #a7462e; display: inline-flex; align-items: center; gap: 5px; font-size: 12px; cursor: pointer; }
 .tag-cleanup-button:hover { background: #fbece6; border-color: #d9a892; }
 .tag-cleanup-button:disabled { opacity: .5; cursor: default; }
+.tag-ai-config-button { flex: none; height: 33px; padding: 0 11px; border: 1px solid #d5d6d0; border-radius: 6px; background: white; color: #5f645e; display: inline-flex; align-items: center; gap: 5px; font-size: 12px; cursor: pointer; }
+.tag-ai-config-button:hover { border-color: #919b8c; background: #f1f4ef; color: #3f4d3b; }
 .tag-manager-loading { min-height: 140px; display: flex; align-items: center; justify-content: center; gap: 8px; color: var(--muted); font-size: 13px; }
 .tag-manager-list { min-height: 0; max-height: min(440px, 54vh); overflow-y: auto; border: 1px solid var(--soft-line); background: white; display: flex; flex-direction: column; }
 .tag-manager-row { min-height: 42px; padding: 5px 8px 5px 12px; border-bottom: 1px solid var(--soft-line); display: flex; align-items: center; justify-content: space-between; gap: 10px; }

@@ -1,7 +1,8 @@
 "use client";
 
-import { Check, LoaderCircle, Merge, Pencil, Search, Sparkles, Trash2, X } from "lucide-react";
+import { Check, KeyRound, LoaderCircle, Merge, Pencil, Search, Sparkles, Trash2, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { AiConfigModal } from "./AiConfigModal";
 
 export type TagEntry = {
   id: string;
@@ -37,6 +38,7 @@ export function TagManager({
   const [editingName, setEditingName] = useState("");
   const [mergeSourceId, setMergeSourceId] = useState<string | null>(null);
   const [mergeTargetId, setMergeTargetId] = useState<string | null>(null);
+  const [aiConfigOpen, setAiConfigOpen] = useState(false);
 
   const load = useCallback(async () => {
     try {
@@ -165,6 +167,7 @@ export function TagManager({
   }
 
   return (
+    <>
     <div className="modal-backdrop">
       <section className="modal-card tag-manager-card" role="dialog" aria-modal="true" aria-labelledby="tag-manager-title">
         <div className="modal-heading">
@@ -187,6 +190,9 @@ export function TagManager({
             />
           </div>
           <span className="tag-manager-count">{tags.length} 个标签 · {unusedCount} 个未使用</span>
+          <button className="tag-ai-config-button" type="button" onClick={() => setAiConfigOpen(true)}>
+            <KeyRound size={13} />AI 服务配置
+          </button>
           <button className="tag-cleanup-button" type="button" disabled={busy || !unusedCount} onClick={() => void cleanupUnused()}>
             <Trash2 size={13} />清理未使用
           </button>
@@ -269,5 +275,7 @@ export function TagManager({
         ) : null}
       </section>
     </div>
+      {aiConfigOpen ? <AiConfigModal onClose={() => setAiConfigOpen(false)} /> : null}
+    </>
   );
 }

@@ -130,7 +130,7 @@ Metadata 字段：
 ### 3.7 AI 自动打标签
 
 - 素材详情页（全局库与项目两处抽屉共用）的“全局标签”区提供“AI 打标”按钮，一次只对当前打开的素材打标。
-- AI 服务不内置：通过 OpenAI 兼容接口调用。侧栏“AI 服务配置”页可填写接口地址、API key 与模型名并提交到服务端保存；key 只存服务端、页面只显示尾号掩码，配置页提供“测试连接”与“查看可用模型”按钮。环境变量 `AI_BASE_URL`、`AI_API_KEY`、`AI_MODEL` 优先于页面配置生效；配置文件默认与数据库同目录（开发 `app/data/ai-config.json`，生产 `/var/lib/artdatabase/ai-config.json`），可用 `AI_CONFIG_PATH` 覆盖，生产环境另可写入 `/etc/artdatabase/env`。未配置时触发按钮返回明确错误提示。
+- AI 服务不内置：通过 OpenAI 兼容接口调用。“标签管理”面板内的“AI 服务配置”入口可填写接口地址、API key 与模型名并提交到服务端保存；key 只存服务端、页面只显示尾号掩码，配置页提供“测试连接”与“查看可用模型”按钮。环境变量 `AI_BASE_URL`、`AI_API_KEY`、`AI_MODEL` 优先于页面配置生效；配置文件默认与数据库同目录（开发 `app/data/ai-config.json`，生产 `/var/lib/artdatabase/ai-config.json`），可用 `AI_CONFIG_PATH` 覆盖，生产环境另可写入 `/etc/artdatabase/env`。未配置时触发按钮返回明确错误提示。
 - 服务端同步执行，前端只有“等待中 / 成功 / 失败”三种状态（无进度轮询）：等待中按钮 loading，成功以 toast 提示复用/新建数量，失败 toast 展示原因并可重试。
 - 打标链路：
   1. 取原图（本地文件直接读取，远程 URL 由服务端下载），压缩到最长边 ≤1024 后以 base64 发送；
