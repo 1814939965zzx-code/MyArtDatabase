@@ -91,6 +91,14 @@ export function AllAssetsView({
     [assets],
   );
 
+  // 筛选按钮排序：已选中的标签排最前，其余按拼音顺序
+  const sortedGlobalTags = useMemo(
+    () => [...globalTags].sort((a, b) => (
+      Number(selectedTags.includes(b)) - Number(selectedTags.includes(a)) || a.localeCompare(b, "zh-CN")
+    )),
+    [globalTags, selectedTags],
+  );
+
   const availableTags = useMemo(
     () => tagDict.filter((tag) => tag.usageCount > 0).map((tag) => tag.name).sort((a, b) => a.localeCompare(b, "zh-CN")),
     [tagDict],
@@ -258,7 +266,7 @@ export function AllAssetsView({
         <div className="global-tag-area">
           <div ref={tagFilterRef} className={`global-tag-filter library-tag-filter ${tagsExpanded ? "expanded" : ""}`} aria-label="按全局标签筛选">
             <strong>全局标签</strong>
-            {globalTags.map((tag) => (
+            {sortedGlobalTags.map((tag) => (
               <button type="button" className={selectedTags.includes(tag) ? "active" : ""} key={tag} onClick={() => setSelectedTags((current) => current.includes(tag) ? current.filter((item) => item !== tag) : [...current, tag])}>
                 {tag}
               </button>
