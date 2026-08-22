@@ -154,6 +154,7 @@ export function ArtDatabaseApp() {
   const [tagDict, setTagDict] = useState<TagEntry[]>([]);
   const [aiTagBusy, setAiTagBusy] = useState(false);
   const [tagManagerOpen, setTagManagerOpen] = useState(false);
+  const [projectTagManagerOpen, setProjectTagManagerOpen] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const metadataEditorRef = useRef<AssetMetadataEditorHandle>(null);
   const dimensionEditorRef = useRef<DimensionControlsEditorHandle>(null);
@@ -769,9 +770,12 @@ export function ArtDatabaseApp() {
 
             {surface === "assets" ? <><div className="content-toolbar">
               <div><h2>项目素材</h2><p>{search || projectTagFilter.length ? `找到 ${filteredAssets.length} 项` : "按维度整理与比较你的视觉参考"}</p></div>
-              <div className="view-toggle" aria-label="显示方式">
-                <button type="button" className={view === "grid" ? "active" : ""} onClick={() => setView("grid")} aria-label="网格显示"><LayoutGrid size={16} /></button>
-                <button type="button" className={view === "list" ? "active" : ""} onClick={() => setView("list")} aria-label="列表显示"><List size={17} /></button>
+              <div className="content-toolbar-actions">
+                <button className="tag-manager-open-button" type="button" onClick={() => setProjectTagManagerOpen(true)}><Tags size={14} />标签管理</button>
+                <div className="view-toggle" aria-label="显示方式">
+                  <button type="button" className={view === "grid" ? "active" : ""} onClick={() => setView("grid")} aria-label="网格显示"><LayoutGrid size={16} /></button>
+                  <button type="button" className={view === "list" ? "active" : ""} onClick={() => setView("list")} aria-label="列表显示"><List size={17} /></button>
+                </div>
               </div>
             </div>
 
@@ -874,6 +878,15 @@ export function ArtDatabaseApp() {
         <TagManager
           onClose={() => setTagManagerOpen(false)}
           onChanged={() => { void loadLibrary(); void loadTagDict(); }}
+        />
+      ) : null}
+
+      {projectTagManagerOpen && workspace ? (
+        <TagManager
+          mode="project"
+          projectTags={projectTags}
+          onClose={() => setProjectTagManagerOpen(false)}
+          onChanged={() => { void loadWorkspace(workspace.project.id); void loadLibrary(); void loadTagDict(); }}
         />
       ) : null}
 

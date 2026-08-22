@@ -24,11 +24,17 @@ async function request<T>(url: string, init?: RequestInit): Promise<T> {
 export function TagManager({
   onClose,
   onChanged,
+  mode = "global",
+  projectTags,
 }: {
   onClose: () => void;
   /** 标签字典或关联关系变化后回调（父组件刷新素材列表与联想词）。 */
   onChanged: () => void;
+  /** global：完整字典管理；project：只展示该项目使用的标签，无合并/清理/AI 配置。 */
+  mode?: "global" | "project";
+  projectTags?: string[];
 }) {
+  const isProject = mode === "project";
   const [tags, setTags] = useState<TagEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
@@ -43,13 +49,16 @@ export function TagManager({
   const load = useCallback(async () => {
     try {
       const data = await request<{ tags: TagEntry[] }>("/api/tags");
-      setTags(data.tags);
+      const visible = isProject && projectTags
+        ? data.tags.filter((tag) => projectTags.includes(tag.name))
+        : data.tags;
+      setTags(visible);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "标签载入失败");
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [isProject, projectTags]);
 
   useEffect(() => {
     void load();
@@ -174,7 +183,7 @@ export function TagManager({
           <div>
             <p className="eyebrow">TAG DICTIONARY</p>
             <h2 id="tag-manager-title">标签管理</h2>
-            <p>重命名、合并或删除全局标签；变更会同步影响所有项目引用。</p>
+            <p>{isProject ? "管理当前项目使用的标签；重命名或删除会同步影响所有项目引用。" : "重命名、合并或删除全局标签；变更会同步影响所有项目引用。"}</p>
           </div>
           <button className="icon-button" type="button" onClick={onClose} aria-label="关闭"><X size={18} /></button>
         </div>
@@ -189,13 +198,17 @@ export function TagManager({
               aria-label="搜索标签"
             />
           </div>
-          <span className="tag-manager-count">{tags.length} 个标签 · {unusedCount} 个未使用</span>
-          <button className="tag-ai-config-button" type="button" onClick={() => setAiConfigOpen(true)}>
-            <KeyRound size={13} />AI 服务配置
-          </button>
-          <button className="tag-cleanup-button" type="button" disabled={busy || !unusedCount} onClick={() => void cleanupUnused()}>
-            <Trash2 size={13} />清理未使用
-          </button>
+          <span className="tag-manager-count">{isProject ? `${tags.length} 个标签` : `${tags.length} 个标签 · ${unusedCount} 个未使用`}</span>
+          {!isProject ? (
+            <button className="tag-ai-config-button" type="button" onClick={() => setAiConfigOpen(true)}>
+              <KeyRound size={13} />AI 服务配置
+            </button>
+          ) : null}
+          {!isProject ? (
+            <button className="tag-cleanup-button" type="button" disabled={busy || !unusedCount} onClick={() => void cleanupUnused()}>
+              <Trash2 size={13} />清理未使用
+            </button>
+          ) : null}
         </div>
         {loading ? (
           <div className="tag-manager-loading"><LoaderCircle className="spin" size={18} /> 正在载入标签…</div>
@@ -249,7 +262,9 @@ export function TagManager({
                   ) : (
                     <div className="tag-manager-actions">
                       <button type="button" disabled={busy || isMergeMode} onClick={() => startRename(tag)} aria-label={`重命名 ${tag.name}`}><Pencil size={13} /></button>
-                      <button type="button" disabled={busy} onClick={() => toggleMergeSelection(tag)} aria-label={`选择 ${tag.name} 参与合并`}><Merge size={13} /></button>
+                      {!isProject ? (
+                        <button type="button" disabled={busy} onClick={() => toggleMergeSelection(tag)} aria-label={`选择 ${tag.name} 参与合并`}><Merge size={13} /></button>
+                      ) : null}
                       <button className="tag-delete-button" type="button" disabled={busy || isMergeMode} onClick={() => void removeTag(tag)} aria-label={`删除 ${tag.name}`}><Trash2 size={13} /></button>
                     </div>
                   )}
@@ -258,7 +273,7 @@ export function TagManager({
             })}
           </div>
         ) : (
-          <div className="tag-manager-loading">{keyword ? "没有匹配的标签" : "标签字典还是空的"}</div>
+          <div className="tag-manager-loading">{keyword ? "没有匹配的标签" : isProject ? "该项目还没有标签" : "标签字典还是空的"}</div>
         )}
         {mergeSourceId ? (
           <div className="tag-merge-bar">

@@ -47,7 +47,7 @@
 | `app/server/tags.js` | 标签字典与素材-标签关联的共享读写 |
 | `app/server/ai.js` | AI 打标：配置读取、OpenAI 兼容调用、两轮标签复用裁决 |
 | `app/server/storage.js` | 原图和缩略图存储 |
-| `app/src/TagManager.tsx` | 全局标签管理面板（重命名/合并/删除/清理） |
+| `app/src/TagManager.tsx` | 标签管理面板（全局：重命名/合并/删除/清理/AI 配置；项目：该项目标签，重命名/删除） |
 | `app/test/api-smoke.mjs` | API 全链路冒烟测试 |
 | `scripts/deploy.sh` | 服务器部署与版本校验 |
 | `scripts/setup-server.sh` | 首次安装、旧数据安全迁移与 systemd 初始化 |

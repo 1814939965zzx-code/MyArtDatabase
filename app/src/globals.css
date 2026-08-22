@@ -105,6 +105,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible {
 .dimension-limit { color: #8f938d; font-size: 12px; }
 
 .content-toolbar { padding: 34px 42px 18px; display: flex; justify-content: space-between; align-items: flex-end; }
+.content-toolbar-actions { display: flex; align-items: center; gap: 10px; }
 .content-toolbar h2 { margin: 0; font-size: 15px; }
 .content-toolbar p { margin: 5px 0 0; color: var(--muted); font-size: 12px; }
 .library-filter-bar { margin: 26px 42px 18px; padding: 13px 14px; border: 1px solid var(--line); background: var(--surface); display: flex; align-items: flex-start; justify-content: space-between; gap: 18px; }
