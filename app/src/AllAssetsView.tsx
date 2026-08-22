@@ -9,12 +9,14 @@ import {
   LayoutGrid,
   List,
   LoaderCircle,
+  Tags,
   Trash2,
   X,
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { AssetMetadataEditor, type AssetMetadataEditorHandle, type AssetMetadataUpdate } from "./AssetMetadataEditor";
 import { AssetImageReplacement } from "./AssetImageReplacement";
+import { TagManager, type TagEntry } from "./TagManager";
 import { useProgressiveImage } from "./useProgressiveImage";
 
 export type LibraryProject = {
@@ -78,12 +80,33 @@ export function AllAssetsView({
   const [selectedTags, setSelectedTags] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [tagDict, setTagDict] = useState<TagEntry[]>([]);
+  const [aiTagBusy, setAiTagBusy] = useState(false);
+  const [tagManagerOpen, setTagManagerOpen] = useState(false);
   const metadataEditorRef = useRef<AssetMetadataEditorHandle>(null);
 
   const globalTags = useMemo(
     () => [...new Set(assets.flatMap((asset) => asset.tags))].sort((a, b) => a.localeCompare(b, "zh-CN")),
     [assets],
   );
+
+  const availableTags = useMemo(
+    () => tagDict.filter((tag) => tag.usageCount > 0).map((tag) => tag.name).sort((a, b) => a.localeCompare(b, "zh-CN")),
+    [tagDict],
+  );
+
+  async function loadTagDict() {
+    try {
+      const data = await request<{ tags: TagEntry[] }>("/api/tags");
+      setTagDict(data.tags);
+    } catch {
+      // 联想词载入失败不阻塞素材浏览
+    }
+  }
+
+  useEffect(() => {
+    void loadTagDict();
+  }, []);
 
   useEffect(() => {
     setSelectedTags((current) => {
@@ -176,7 +199,7 @@ export function AllAssetsView({
         method: "PATCH",
         body: JSON.stringify({ ...update, id: asset.id, tags: update.tags.join(",") }),
       });
-      await onRefresh();
+      await Promise.all([onRefresh(), loadTagDict()]);
       onMessage("素材信息已保存");
     } catch (reason) {
       const message = reason instanceof Error ? reason.message : "保存失败";
@@ -185,6 +208,30 @@ export function AllAssetsView({
       throw reason;
     } finally {
       setBusy(false);
+    }
+  }
+
+  async function runAiTag() {
+    if (!selectedAsset) return;
+    const saved = await metadataEditorRef.current?.save();
+    if (saved === false) {
+      onMessage("AI 打标未执行：素材信息校验或保存失败");
+      return;
+    }
+    setAiTagBusy(true);
+    try {
+      const data = await request<{ reused: number; created: number; dropped: number }>("/api/assets/ai-tags", {
+        method: "POST",
+        body: JSON.stringify({ id: selectedAsset.id }),
+      });
+      await Promise.all([onRefresh(), loadTagDict()]);
+      const parts = [`复用 ${data.reused} 个`, `新建 ${data.created} 个`];
+      if (data.dropped) parts.push(`超出上限丢弃 ${data.dropped} 个`);
+      onMessage(`AI 打标完成：${parts.join("，")}`);
+    } catch (reason) {
+      onMessage(`AI 打标失败：${reason instanceof Error ? reason.message : "未知错误"}`);
+    } finally {
+      setAiTagBusy(false);
     }
   }
 
@@ -206,6 +253,7 @@ export function AllAssetsView({
         </div>
         <div className="library-filter-actions">
           {(search || selectedTags.length) ? <span>找到 {filteredAssets.length} 项</span> : null}
+          <button className="tag-manager-open-button" type="button" onClick={() => setTagManagerOpen(true)}><Tags size={14} />标签管理</button>
           <div className="view-toggle" aria-label="显示方式">
             <button type="button" className={view === "grid" ? "active" : ""} onClick={() => onViewChange("grid")} aria-label="网格显示"><LayoutGrid size={16} /></button>
             <button type="button" className={view === "list" ? "active" : ""} onClick={() => onViewChange("list")} aria-label="列表显示"><List size={17} /></button>
@@ -252,7 +300,9 @@ export function AllAssetsView({
                 ref={metadataEditorRef}
                 asset={selectedAsset}
                 busy={busy}
-                availableTags={globalTags}
+                availableTags={availableTags}
+                aiTagBusy={aiTagBusy}
+                onAiTag={() => void runAiTag()}
                 onSave={(update) => saveAssetMetadata(selectedAsset, update)}
               />
               <div className="drawer-section-title"><Images size={16} /><strong>已引用项目</strong><em>{selectedAsset.projects.length}</em></div>
@@ -285,6 +335,12 @@ export function AllAssetsView({
             <div className="modal-actions"><button className="secondary-button" type="button" onClick={() => setAssignAssetId(null)}>取消</button><button className="primary-button" type="button" disabled={busy || !selectedProjectIds.length} onClick={() => void assignToProjects()}>{busy ? "添加中…" : `添加到 ${selectedProjectIds.length || 0} 个项目`}</button></div>
           </section>
         </div>
+      ) : null}
+      {tagManagerOpen ? (
+        <TagManager
+          onClose={() => setTagManagerOpen(false)}
+          onChanged={() => { void onRefresh(); void loadTagDict(); }}
+        />
       ) : null}
     </>
   );

@@ -23,6 +23,7 @@ import {
 } from "lucide-react";
 import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { AllAssetsView, type LibraryAsset } from "./AllAssetsView";
+import { AiConfigModal } from "./AiConfigModal";
 import { AssetMetadataEditor, type AssetMetadataEditorHandle, type AssetMetadataUpdate } from "./AssetMetadataEditor";
 import { AssetImageReplacement } from "./AssetImageReplacement";
 import { BoardView } from "./BoardView";
@@ -30,6 +31,7 @@ import { DeletionToast } from "./DeletionToast";
 import { DimensionControlsEditor, type DimensionControlsEditorHandle } from "./DimensionControlsEditor";
 import { DimensionEditorModal } from "./DimensionEditorModal";
 import { DimensionPreview } from "./DimensionPreview";
+import type { TagEntry } from "./TagManager";
 import { TrashView, type TrashedAsset } from "./TrashView";
 import { UploadModal } from "./UploadModal";
 import { useProgressiveImage } from "./useProgressiveImage";
@@ -148,12 +150,15 @@ export function ArtDatabaseApp() {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [uploadFile, setUploadFile] = useState<File | null>(null);
   const [dragActive, setDragActive] = useState(false);
+  const [tagDict, setTagDict] = useState<TagEntry[]>([]);
+  const [aiTagBusy, setAiTagBusy] = useState(false);
+  const [aiConfigOpen, setAiConfigOpen] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const metadataEditorRef = useRef<AssetMetadataEditorHandle>(null);
   const dimensionEditorRef = useRef<DimensionControlsEditorHandle>(null);
   const availableTags = useMemo(
-    () => [...new Set(libraryAssets.flatMap((asset) => asset.tags))].sort((a, b) => a.localeCompare(b, "zh-CN")),
-    [libraryAssets],
+    () => tagDict.filter((tag) => tag.usageCount > 0).map((tag) => tag.name).sort((a, b) => a.localeCompare(b, "zh-CN")),
+    [tagDict],
   );
   const projectTags = useMemo(
     () => [...new Set((workspace?.assets ?? []).flatMap((asset) => asset.tags))].sort((a, b) => a.localeCompare(b, "zh-CN")),
@@ -210,10 +215,19 @@ export function ArtDatabaseApp() {
     }
   }
 
+  async function loadTagDict() {
+    try {
+      const data = await api<{ tags: TagEntry[] }>("/api/tags");
+      setTagDict(data.tags);
+    } catch {
+      // 联想词载入失败不阻塞页面
+    }
+  }
+
   useEffect(() => {
     // The state updates happen after the initial API request resolves.
     // eslint-disable-next-line react-hooks/set-state-in-effect
-    Promise.all([loadProjects(), loadLibrary(), loadTrash()]).catch((error) => {
+    Promise.all([loadProjects(), loadLibrary(), loadTrash(), loadTagDict()]).catch((error) => {
       setMessage(error instanceof Error ? error.message : "项目载入失败");
       setLoading(false);
       setLibraryLoading(false);
@@ -526,13 +540,38 @@ export function ArtDatabaseApp() {
         method: "PATCH",
         body: JSON.stringify({ ...update, id: asset.id, tags: update.tags.join(",") }),
       });
-      await Promise.all([loadWorkspace(workspace.project.id), loadLibrary()]);
+      await Promise.all([loadWorkspace(workspace.project.id), loadLibrary(), loadTagDict()]);
       setMessage("素材信息已保存");
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "保存失败");
       throw error;
     } finally {
       setBusy(false);
+    }
+  }
+
+  async function runAiTag(asset: Asset) {
+    if (!workspace) return;
+    const projectId = workspace.project.id;
+    const saved = await metadataEditorRef.current?.save();
+    if (saved === false) {
+      setMessage("AI 打标未执行：素材信息校验或保存失败");
+      return;
+    }
+    setAiTagBusy(true);
+    try {
+      const data = await api<{ reused: number; created: number; dropped: number }>("/api/assets/ai-tags", {
+        method: "POST",
+        body: JSON.stringify({ id: asset.id }),
+      });
+      await Promise.all([loadWorkspace(projectId), loadLibrary(), loadTagDict()]);
+      const parts = [`复用 ${data.reused} 个`, `新建 ${data.created} 个`];
+      if (data.dropped) parts.push(`超出上限丢弃 ${data.dropped} 个`);
+      setMessage(`AI 打标完成：${parts.join("，")}`);
+    } catch (error) {
+      setMessage(`AI 打标失败：${error instanceof Error ? error.message : "未知错误"}`);
+    } finally {
+      setAiTagBusy(false);
     }
   }
 
@@ -639,6 +678,14 @@ export function ArtDatabaseApp() {
         </nav>
         <button className="new-project-button" type="button" onClick={() => setCreateOpen(true)}>
           <Plus size={17} /> 新建项目
+        </button>
+        <button
+          className={`ai-config-nav-item ${aiConfigOpen ? "active" : ""}`}
+          type="button"
+          onClick={() => setAiConfigOpen(true)}
+        >
+          <span className="project-icon"><Settings2 size={16} /></span>
+          <span className="project-copy"><strong>AI 服务配置</strong><small>OpenAI 兼容接口</small></span>
         </button>
         <button
           className={`trash-nav-item ${activeArea === "trash" ? "active" : ""}`}
@@ -787,6 +834,8 @@ export function ArtDatabaseApp() {
                 asset={selectedAsset}
                 busy={busy}
                 availableTags={availableTags}
+                aiTagBusy={aiTagBusy}
+                onAiTag={() => void runAiTag(selectedAsset)}
                 onSave={(update) => saveAssetMetadata(selectedAsset, update)}
               />
               <div className="drawer-section-title"><Settings2 size={16} /><strong>维度位置</strong></div>
@@ -827,6 +876,8 @@ export function ArtDatabaseApp() {
         : null; })() : null}
 
       {activeArea === "project" && uploadFile && workspace ? <UploadModal file={uploadFile} projectId={workspace.project.id} dimensions={workspace.dimensions} onClose={() => setUploadFile(null)} onComplete={async () => { await Promise.all([loadProjects(workspace.project.id), loadWorkspace(workspace.project.id), loadLibrary()]); }} onMessage={setMessage} /> : null}
+
+      {aiConfigOpen ? <AiConfigModal onClose={() => setAiConfigOpen(false)} /> : null}
 
       {message ? <div className="toast" role="status">{message}</div> : null}
       {pendingDeletion ? (

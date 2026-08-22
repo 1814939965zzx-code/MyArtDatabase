@@ -40,9 +40,13 @@
 | `app/src/BoardView.tsx` | 自由画板 |
 | `app/src/UploadModal.tsx` | 上传与重复素材处理 |
 | `app/src/AssetMetadataEditor.tsx` | 素材详情与 Metadata 编辑 |
+| `app/src/AiConfigModal.tsx` | AI 服务配置页（key 服务端保存、测试连接） |
 | `app/server/routes.js` | 全部 `/api/*` 路由 |
-| `app/server/db.js` | SQLite 表结构与示例数据 |
+| `app/server/db.js` | SQLite 表结构、迁移与示例数据 |
+| `app/server/tags.js` | 标签字典与素材-标签关联的共享读写 |
+| `app/server/ai.js` | AI 打标：配置读取、OpenAI 兼容调用、两轮标签复用裁决 |
 | `app/server/storage.js` | 原图和缩略图存储 |
+| `app/src/TagManager.tsx` | 全局标签管理面板（重命名/合并/删除/清理） |
 | `app/test/api-smoke.mjs` | API 全链路冒烟测试 |
 | `scripts/deploy.sh` | 服务器部署与版本校验 |
 | `scripts/setup-server.sh` | 首次安装、旧数据安全迁移与 systemd 初始化 |
@@ -77,6 +81,7 @@ npm run build
 - 示例数据只在开发模式（`--dev`）或显式设置 `SEED_DEMO=1` 时写入；生产环境空库启动即为空库，不得为“看起来有数据”而重新开启示例数据写入。
 - 素材文件与项目相互独立；项目只保存素材引用，不复制图片。
 - 全局 Metadata 修改会影响该素材在所有项目中的展示。
+- 标签存于 `tags`/`asset_tags` 标签字典（`assets.tags` 旧列已随迁移删除）；单素材标签上限 50 个（人工与 AI 统一），AI 单次最多返回 30 个。
 - 项目维度数量不限；一次维度预览最多选择三个维度。
 - 维度值以整数 `0～1000` 存储，对应界面上的 `0.00～10.00`。
 - 软删除只更新 `deleted_at`；只有彻底删除才能移除磁盘文件。

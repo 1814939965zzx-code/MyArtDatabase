@@ -168,7 +168,7 @@ export function UploadModal({
             <div className="upload-fields">
               <div className="upload-scroll">
                 <label>素材名称<input name="name" maxLength={120} defaultValue={baseName} /></label>
-                <label>全局标签<input name="tags" maxLength={800} placeholder="用逗号分隔，例如：建筑, 暖色, 户外" /></label>
+                <label>全局标签<input name="tags" maxLength={4000} placeholder="用逗号分隔，例如：建筑, 暖色, 户外" /></label>
                 <label>描述<textarea name="description" rows={2} maxLength={2000} placeholder="描述图片内容或使用方向" /></label>
                 <div className="upload-two-fields"><label>来源链接<input name="sourceUrl" type="url" maxLength={1000} placeholder="https://" /></label><label>备注<input name="notes" maxLength={2000} placeholder="团队内部备注" /></label></div>
                 <div className="upload-dimensions">

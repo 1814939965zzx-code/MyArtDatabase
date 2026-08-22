@@ -1,7 +1,9 @@
 "use client";
 
-import { Check, ExternalLink, Pencil, Plus, RotateCcw, X } from "lucide-react";
+import { Check, ExternalLink, LoaderCircle, Pencil, Plus, RotateCcw, Sparkles, X } from "lucide-react";
 import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState } from "react";
+
+const MAX_TAGS = 50;
 
 export type EditableAssetMetadata = {
   id: string;
@@ -31,11 +33,15 @@ export const AssetMetadataEditor = forwardRef<AssetMetadataEditorHandle, {
   asset: EditableAssetMetadata;
   busy: boolean;
   availableTags?: string[];
+  aiTagBusy?: boolean;
+  onAiTag?: () => void;
   onSave: (update: AssetMetadataUpdate) => Promise<void>;
 }>(function AssetMetadataEditor({
   asset,
   busy,
   availableTags = [],
+  aiTagBusy = false,
+  onAiTag,
   onSave,
 }, ref) {
   const formRef = useRef<HTMLFormElement>(null);
@@ -66,7 +72,7 @@ export const AssetMetadataEditor = forwardRef<AssetMetadataEditorHandle, {
       .map((tag) => tag.trim())
       .filter(Boolean)
       .filter((tag) => !pendingDeleteTags.includes(tag)))]
-      .slice(0, 20);
+      .slice(0, MAX_TAGS);
     return {
       name: name.trim(),
       tags: normalizedTags,
@@ -77,7 +83,7 @@ export const AssetMetadataEditor = forwardRef<AssetMetadataEditorHandle, {
   }
 
   function hasChanges(update: AssetMetadataUpdate) {
-    const originalTags = [...new Set(asset.tags.map((tag) => tag.trim()).filter(Boolean))].slice(0, 20);
+    const originalTags = [...new Set(asset.tags.map((tag) => tag.trim()).filter(Boolean))].slice(0, MAX_TAGS);
     return update.name !== asset.name
       || update.description !== asset.description
       || update.notes !== asset.notes
@@ -128,7 +134,7 @@ export const AssetMetadataEditor = forwardRef<AssetMetadataEditorHandle, {
       setHighlightIndex(-1);
       return;
     }
-    if (tags.includes(tag) || tags.length >= 20) return;
+    if (tags.includes(tag) || tags.length >= MAX_TAGS) return;
     setTags((current) => [...current, tag]);
     setTagQuery("");
     setHighlightIndex(-1);
@@ -174,6 +180,17 @@ export const AssetMetadataEditor = forwardRef<AssetMetadataEditorHandle, {
 
       <fieldset className="asset-tag-editor">
         <legend>全局标签</legend>
+        {onAiTag ? (
+          <button
+            className="ai-tag-button"
+            type="button"
+            disabled={busy || aiTagBusy}
+            onClick={onAiTag}
+            title="调用 AI 观察这张图片并自动补充标签"
+          >
+            {aiTagBusy ? <><LoaderCircle className="spin" size={12} />AI 打标中…</> : <><Sparkles size={12} />AI 打标</>}
+          </button>
+        ) : null}
         {tags.length ? <div className="asset-tag-badges">
           {tags.map((tag) => {
             const pendingDelete = pendingDeleteTags.includes(tag);
@@ -197,8 +214,8 @@ export const AssetMetadataEditor = forwardRef<AssetMetadataEditorHandle, {
               aria-label="添加全局标签"
               value={tagQuery}
               maxLength={40}
-              placeholder={tags.length >= 20 ? "最多添加 20 个标签" : "输入标签，可匹配已有标签"}
-              disabled={tags.length >= 20}
+              placeholder={tags.length >= MAX_TAGS ? `最多添加 ${MAX_TAGS} 个标签` : "输入标签，可匹配已有标签"}
+              disabled={tags.length >= MAX_TAGS}
               onCompositionStart={() => { composingRef.current = true; }}
               onCompositionEnd={() => { composingRef.current = false; }}
               onChange={(event) => { setTagQuery(event.target.value); setHighlightIndex(-1); }}
@@ -234,7 +251,7 @@ export const AssetMetadataEditor = forwardRef<AssetMetadataEditorHandle, {
                 }
               }}
             />
-            <button type="button" aria-label="添加标签" disabled={!tagQuery.trim() || tags.length >= 20} onClick={() => addTag()}>
+            <button type="button" aria-label="添加标签" disabled={!tagQuery.trim() || tags.length >= MAX_TAGS} onClick={() => addTag()}>
               <Plus size={13} />
             </button>
           </div>
