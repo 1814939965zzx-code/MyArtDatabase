@@ -1,5 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { Readable } from "node:stream";
+import { AiError, listAiModels, readAiConfigDetails, saveAiConfig, tagAssetWithAi, testAiConnection } from "./ai.js";
+import { findTagByName, listTags, mergeTags, replaceAssetTags } from "./tags.js";
 
 const ALLOWED_TYPES = new Set(["image/jpeg", "image/png", "image/webp"]);
 
@@ -30,6 +32,25 @@ function transaction(db, fn) {
 
 function errorMessage(error, fallback) {
   return error instanceof Error ? error.message : fallback;
+}
+
+/** 按素材行批量装配 tags 字符串数组（标签字典读取，按 position 排序）。 */
+function attachTagArrays(db, assets) {
+  if (!assets.length) return assets;
+  const placeholders = assets.map(() => "?").join(",");
+  const links = db.prepare(`
+    SELECT at.asset_id AS assetId, t.name FROM asset_tags at
+    INNER JOIN tags t ON t.id = at.tag_id
+    WHERE at.asset_id IN (${placeholders})
+    ORDER BY at.position, at.created_at, t.name
+  `).all(...assets.map((asset) => asset.id));
+  const map = new Map();
+  for (const link of links) {
+    const list = map.get(link.assetId) ?? [];
+    list.push(link.name);
+    map.set(link.assetId, list);
+  }
+  return assets.map((asset) => ({ ...asset, tags: map.get(asset.id) ?? [] }));
 }
 
 // ---- 项目 ----
@@ -180,7 +201,7 @@ function workspace(request, { db }) {
       THEN '/api/media?id=' || a.id || '&variant=thumbnail&v=' || COALESCE(a.thumbnail_key, a.storage_key) ELSE a.thumbnail_url END AS thumbnailUrl,
     CASE WHEN a.storage_key IS NOT NULL
       THEN '/api/media?id=' || a.id || '&variant=original&v=' || a.storage_key ELSE a.thumbnail_url END AS originalUrl,
-    a.tags, a.description, a.notes, a.source_url AS sourceUrl,
+    a.description, a.notes, a.source_url AS sourceUrl,
     a.file_size AS fileSize, a.width, a.height, a.mime_type AS mimeType,
     a.created_at AS createdAt
     FROM assets a
@@ -197,9 +218,8 @@ function workspace(request, { db }) {
   return Response.json({
     project,
     dimensions,
-    assets: assets.map((asset) => ({
+    assets: attachTagArrays(db, assets).map((asset) => ({
       ...asset,
-      tags: asset.tags ? asset.tags.split(",") : [],
       dimensionValues: valueMap.get(asset.id) ?? {},
     })),
   });
@@ -239,7 +259,7 @@ async function upload(request, { db, store }) {
     const description = cleanText(form.get("description"), 2000);
     const notes = cleanText(form.get("notes"), 2000);
     const sourceUrl = cleanText(form.get("sourceUrl"), 1000);
-    const tags = cleanText(form.get("tags"), 800).split(",").map((t) => t.trim()).filter(Boolean).slice(0, 20).join(",");
+    const tags = cleanText(form.get("tags"), 4000).split(",").map((t) => t.trim()).filter(Boolean);
     const allowDuplicate = form.get("allowDuplicate") === "true";
     const rawDimensionValues = cleanText(form.get("dimensionValues"), 4000);
     const dimensionValues = rawDimensionValues ? JSON.parse(rawDimensionValues) : {};
@@ -262,9 +282,10 @@ async function upload(request, { db, store }) {
     const dimensions = db.prepare("SELECT id FROM project_dimensions WHERE project_id = ? ORDER BY sort_order").all(projectId);
     try {
       transaction(db, () => {
-        db.prepare(`INSERT INTO assets (id, name, file_name, sha256, file_size, width, height, mime_type, tags, description, notes, source_url, storage_key, thumbnail_key)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-          .run(id, name, file.name, sha256, file.size, stored.width, stored.height, file.type, tags, description, notes, sourceUrl, stored.id, stored.id);
+        db.prepare(`INSERT INTO assets (id, name, file_name, sha256, file_size, width, height, mime_type, description, notes, source_url, storage_key, thumbnail_key)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+          .run(id, name, file.name, sha256, file.size, stored.width, stored.height, file.type, description, notes, sourceUrl, stored.id, stored.id);
+        replaceAssetTags(db, id, tags, { source: "manual", inTransaction: true });
         db.prepare("INSERT INTO project_assets (project_id, asset_id) VALUES (?, ?)").run(projectId, id);
         const insertValue = db.prepare("INSERT INTO asset_dimension_values (project_id, asset_id, dimension_id, value) VALUES (?, ?, ?, ?)");
         for (const { id: dimensionId } of dimensions) {
@@ -365,23 +386,23 @@ async function updateAsset(request, { db }) {
   const payload = await request.json();
   const id = cleanText(payload.id, 80);
   if (!id) return Response.json({ error: "缺少素材 ID" }, { status: 400 });
-  const existing = db.prepare("SELECT tags FROM assets WHERE id = ? AND deleted_at IS NULL").get(id);
+  const existing = db.prepare("SELECT id FROM assets WHERE id = ? AND deleted_at IS NULL").get(id);
   if (!existing) return Response.json({ error: "素材不存在" }, { status: 404 });
   const deleteTag = cleanText(payload.deleteTag, 800);
   if (deleteTag) {
-    const tags = existing.tags.split(",").map((tag) => tag.trim()).filter((tag) => tag && tag !== deleteTag).join(",");
-    db.prepare("UPDATE assets SET tags = ? WHERE id = ? AND deleted_at IS NULL").run(tags, id);
+    db.prepare("DELETE FROM asset_tags WHERE asset_id = ? AND tag_id = (SELECT id FROM tags WHERE name = ?)").run(id, deleteTag);
     return Response.json({ ok: true, deletedTag: deleteTag });
   }
   const name = cleanText(payload.name, 120);
   if (!name) return Response.json({ error: "素材名称不能为空" }, { status: 400 });
-  const tags = cleanText(payload.tags, 800).split(",").map((t) => t.trim()).filter(Boolean).slice(0, 20).join(",");
+  const tags = cleanText(payload.tags, 4000).split(",").map((t) => t.trim()).filter(Boolean);
   const description = cleanText(payload.description, 2000);
   const notes = cleanText(payload.notes, 2000);
   const sourceUrl = cleanText(payload.sourceUrl, 1000);
-  const result = db.prepare("UPDATE assets SET name = ?, tags = ?, description = ?, notes = ?, source_url = ? WHERE id = ? AND deleted_at IS NULL")
-    .run(name, tags, description, notes, sourceUrl, id);
+  const result = db.prepare("UPDATE assets SET name = ?, description = ?, notes = ?, source_url = ? WHERE id = ? AND deleted_at IS NULL")
+    .run(name, description, notes, sourceUrl, id);
   if (!result.changes) return Response.json({ error: "素材不存在" }, { status: 404 });
+  replaceAssetTags(db, id, tags, { source: "manual" });
   return Response.json({ ok: true });
 }
 
@@ -426,7 +447,7 @@ function library({ db }) {
       THEN '/api/media?id=' || a.id || '&variant=thumbnail&v=' || COALESCE(a.thumbnail_key, a.storage_key) ELSE a.thumbnail_url END AS thumbnailUrl,
     CASE WHEN a.storage_key IS NOT NULL
       THEN '/api/media?id=' || a.id || '&variant=original&v=' || a.storage_key ELSE a.thumbnail_url END AS originalUrl,
-    a.tags, a.description, a.notes, a.source_url AS sourceUrl,
+    a.description, a.notes, a.source_url AS sourceUrl,
     a.file_size AS fileSize, a.width, a.height, a.mime_type AS mimeType,
     a.created_at AS createdAt
     FROM assets a
@@ -445,9 +466,8 @@ function library({ db }) {
     projectMap.set(reference.assetId, current);
   }
   return Response.json({
-    assets: assets.map((asset) => ({
+    assets: attachTagArrays(db, assets).map((asset) => ({
       ...asset,
-      tags: asset.tags ? asset.tags.split(",") : [],
       projects: projectMap.get(asset.id) ?? [],
     })),
   });
@@ -458,7 +478,7 @@ function trash({ db }) {
   const assets = db.prepare(`SELECT a.id, a.name, a.file_name AS fileName,
     CASE WHEN a.thumbnail_key IS NOT NULL OR a.storage_key IS NOT NULL
       THEN '/api/media?id=' || a.id || '&variant=thumbnail&v=' || COALESCE(a.thumbnail_key, a.storage_key) ELSE a.thumbnail_url END AS thumbnailUrl,
-    a.tags, a.file_size AS fileSize, a.width, a.height, a.mime_type AS mimeType,
+    a.file_size AS fileSize, a.width, a.height, a.mime_type AS mimeType,
     a.deleted_at AS deletedAt
     FROM assets a
     WHERE a.deleted_at IS NOT NULL
@@ -476,9 +496,8 @@ function trash({ db }) {
     projectMap.set(reference.assetId, current);
   }
   return Response.json({
-    assets: assets.map((asset) => ({
+    assets: attachTagArrays(db, assets).map((asset) => ({
       ...asset,
-      tags: asset.tags ? asset.tags.split(",") : [],
       projects: projectMap.get(asset.id) ?? [],
     })),
   });
@@ -642,6 +661,107 @@ function deleteCanvasItem(request, { db }) {
   return Response.json({ ok: true, revision });
 }
 
+// ---- AI 打标 ----
+async function aiTagAsset(request, { db, store }) {
+  try {
+    const payload = await request.json();
+    const id = cleanText(payload.id, 80);
+    if (!id) return Response.json({ error: "缺少素材 ID" }, { status: 400 });
+    const result = await tagAssetWithAi(db, store, id);
+    return Response.json({ ok: true, ...result });
+  } catch (error) {
+    const status = error instanceof AiError ? error.status : 500;
+    return Response.json({ error: errorMessage(error, "AI 打标失败") }, { status });
+  }
+}
+
+// ---- AI 服务配置 ----
+function aiConfigStatus() {
+  return Response.json(readAiConfigDetails());
+}
+
+async function saveAiConfigEndpoint(request) {
+  const payload = await request.json();
+  const baseUrl = cleanText(payload.baseUrl, 500);
+  const model = cleanText(payload.model, 100);
+  if (!baseUrl || !model) return Response.json({ error: "接口地址和模型名不能为空" }, { status: 400 });
+  const apiKey = cleanText(payload.apiKey, 500);
+  saveAiConfig({ baseUrl, apiKey, model });
+  const details = readAiConfigDetails();
+  return Response.json({
+    ok: true,
+    envOverride: details.envOverride,
+    apiKeyLast4: details.apiKeyLast4,
+    configured: details.configured,
+  });
+}
+
+async function testAiConfigEndpoint() {
+  try {
+    const reply = await testAiConnection();
+    return Response.json({ ok: true, reply: reply.slice(0, 100) });
+  } catch (error) {
+    const status = error instanceof AiError ? error.status : 502;
+    return Response.json({ error: errorMessage(error, "连接测试失败") }, { status });
+  }
+}
+
+async function listAiModelsEndpoint() {
+  try {
+    const models = await listAiModels();
+    return Response.json({ ok: true, models });
+  } catch (error) {
+    const status = error instanceof AiError ? error.status : 502;
+    return Response.json({ error: errorMessage(error, "获取模型列表失败") }, { status });
+  }
+}
+
+// ---- 标签字典管理 ----
+function listTagDictionary({ db }) {
+  return Response.json({ tags: listTags(db) });
+}
+
+async function renameOrMergeTag(request, { db }) {
+  const payload = await request.json();
+  const id = cleanText(payload.id, 80);
+  const name = cleanText(payload.name, 40);
+  if (!id || !name) return Response.json({ error: "参数不完整" }, { status: 400 });
+  const tag = db.prepare("SELECT id, name FROM tags WHERE id = ?").get(id);
+  if (!tag) return Response.json({ error: "标签不存在" }, { status: 404 });
+  const target = findTagByName(db, name);
+  if (target && target.id !== id) {
+    mergeTags(db, id, target.id);
+    return Response.json({ ok: true, merged: true, tag: { id: target.id, name: target.name } });
+  }
+  if (target?.id === id) return Response.json({ ok: true, tag: { id, name: tag.name } });
+  db.prepare("UPDATE tags SET name = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(name, id);
+  return Response.json({ ok: true, tag: { id, name } });
+}
+
+async function mergeTwoTags(request, { db }) {
+  const payload = await request.json();
+  const sourceId = cleanText(payload.sourceId, 80);
+  const targetId = cleanText(payload.targetId, 80);
+  if (!sourceId || !targetId) return Response.json({ error: "参数不完整" }, { status: 400 });
+  if (sourceId === targetId) return Response.json({ error: "不能合并同一个标签" }, { status: 400 });
+  const result = mergeTags(db, sourceId, targetId);
+  return Response.json({ ok: true, ...result });
+}
+
+function deleteTag(request, { db }) {
+  const id = cleanId(new URL(request.url).searchParams.get("id"));
+  if (!id) return Response.json({ error: "缺少标签 ID" }, { status: 400 });
+  const tag = db.prepare("SELECT id FROM tags WHERE id = ?").get(id);
+  if (!tag) return Response.json({ error: "标签不存在" }, { status: 404 });
+  db.prepare("DELETE FROM tags WHERE id = ?").run(id);
+  return Response.json({ ok: true });
+}
+
+function cleanupUnusedTags({ db }) {
+  const result = db.prepare("DELETE FROM tags WHERE NOT EXISTS (SELECT 1 FROM asset_tags WHERE asset_tags.tag_id = tags.id)").run();
+  return Response.json({ ok: true, removed: result.changes });
+}
+
 // ---- 路由分发 ----
 export async function handleApi(request, ctx) {
   const url = new URL(request.url);
@@ -669,8 +789,19 @@ export async function handleApi(request, ctx) {
 
     if (pathname === "/api/assets/restore" && method === "POST") return await restoreAsset(request, ctx);
     if (pathname === "/api/assets/image" && method === "POST") return await replaceAssetImage(request, ctx);
+    if (pathname === "/api/assets/ai-tags" && method === "POST") return await aiTagAsset(request, ctx);
+    if (pathname === "/api/ai-config/test" && method === "POST") return await testAiConfigEndpoint();
+    if (pathname === "/api/ai-config/models" && method === "POST") return await listAiModelsEndpoint();
+    if (pathname === "/api/ai-config" && method === "GET") return aiConfigStatus();
+    if (pathname === "/api/ai-config" && method === "POST") return await saveAiConfigEndpoint(request);
     if (pathname === "/api/assets" && method === "PATCH") return await updateAsset(request, ctx);
     if (pathname === "/api/assets" && method === "DELETE") return await deleteAsset(request, ctx);
+
+    if (pathname === "/api/tags/merge" && method === "POST") return await mergeTwoTags(request, ctx);
+    if (pathname === "/api/tags/cleanup" && method === "POST") return cleanupUnusedTags(ctx);
+    if (pathname === "/api/tags" && method === "GET") return listTagDictionary(ctx);
+    if (pathname === "/api/tags" && method === "PATCH") return await renameOrMergeTag(request, ctx);
+    if (pathname === "/api/tags" && method === "DELETE") return deleteTag(request, ctx);
 
     if (pathname === "/api/library" && method === "GET") return library(ctx);
     if (pathname === "/api/trash" && method === "GET") return trash(ctx);

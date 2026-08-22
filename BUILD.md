@@ -67,6 +67,24 @@ npm ci + typecheck + test + build
 
 端口默认 `3000`，可在初始化时指定：`sudo ./scripts/setup-server.sh --port=8080`。
 
+### AI 打标服务（可选）
+
+单图“AI 打标”通过 OpenAI 兼容接口调用外部视觉大模型，模型不内置。两种配置方式：
+
+1. **界面配置（推荐）**：侧栏“AI 服务配置”填写接口地址、API key 与模型名并保存。key 写入服务端配置文件、页面只显示尾号掩码，提供“测试连接”按钮。
+2. **环境变量**：`AI_BASE_URL` / `AI_API_KEY` / `AI_MODEL`，逐项优先于界面配置。
+
+| 变量 | 说明 |
+| --- | --- |
+| `AI_BASE_URL` | 兼容接口根地址，如 `https://dashscope.aliyuncs.com/compatible-mode/v1` |
+| `AI_API_KEY` | API key，仅存服务端，前端不回显 |
+| `AI_MODEL` | 模型名，如 `qwen-vl-plus` |
+| `AI_CONFIG_PATH` | 配置文件路径；默认 `app/data/ai-config.json`（JSON：`{"baseUrl": "...", "apiKey": "...", "model": "..."}`，该文件已被 Git 忽略） |
+
+生产环境建议在 `/etc/artdatabase/env` 写入三项变量（systemd `EnvironmentFile` 自动加载）；或只写 `AI_CONFIG_PATH=/var/lib/artdatabase/ai-config.json` 让界面配置直接落到数据目录（服务用户可写）。未配置时点击“AI 打标”会得到明确错误提示，不影响其他功能。
+
+> 注意：打标会把图片（压缩到长边 ≤1024）上传到所配置的第三方 AI 服务，开启前请确认素材保密要求；敏感素材不要执行 AI 打标。
+
 ## 禁止事项
 
 - 禁止 `git clean -fdx`、`rm -rf` 仓库或仓库内目录、重新 `git clone`（会删除仓库内数据；生产数据在 `/var/lib/artdatabase/` 不受影响，但旧库可能仍在仓库内）；
