@@ -306,7 +306,7 @@ export function TagManager({
         {mergeMode ? (
           <div className="tag-merge-bar">
             <div className="tag-merge-summary">
-              <span>最终保留的标签：<strong>{keptTag ? keptTag.name : ""}</strong></span>
+              <span>最终保留的标签：{keptTag ? <strong>{keptTag.name}</strong> : <em className="tag-merge-hint">点击下方标签选择一个最终保留的标签</em>}</span>
               <span>删除的标签：<em>{deletedTags.length ? deletedTags.map((tag) => tag.name).join("、") : ""}</em></span>
             </div>
             <div className="tag-merge-chips" role="listbox" aria-label="选择最终保留的标签">

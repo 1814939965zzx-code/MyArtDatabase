@@ -700,6 +700,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible {
 .tag-merge-summary span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #6f6a5c; font-size: 12px; }
 .tag-merge-summary strong { color: #4e6549; font-weight: 650; }
 .tag-merge-summary em { color: #9a624d; font-style: normal; }
+.tag-merge-summary em.tag-merge-hint { color: #9a968a; }
 .tag-merge-chips { display: flex; flex-wrap: wrap; align-items: center; gap: 7px; }
 .tag-merge-chips button { min-height: 28px; padding: 0 10px; border: 1px solid #d7d8d2; border-radius: 999px; background: #f1f0ea; color: #686d66; font-size: 11px; cursor: pointer; }
 .tag-merge-chips button:hover { border-color: #919b8c; color: #3f4d3b; }
