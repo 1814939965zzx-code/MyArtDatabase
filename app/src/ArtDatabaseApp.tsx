@@ -17,6 +17,7 @@ import {
   Settings2,
   SlidersHorizontal,
   Sparkles,
+  Tags,
   Trash2,
   Upload,
   X,
@@ -30,7 +31,7 @@ import { DeletionToast } from "./DeletionToast";
 import { DimensionControlsEditor, type DimensionControlsEditorHandle } from "./DimensionControlsEditor";
 import { DimensionEditorModal } from "./DimensionEditorModal";
 import { DimensionPreview } from "./DimensionPreview";
-import type { TagEntry } from "./TagManager";
+import { TagManager, type TagEntry } from "./TagManager";
 import { TrashView, type TrashedAsset } from "./TrashView";
 import { UploadModal } from "./UploadModal";
 import { useProgressiveImage } from "./useProgressiveImage";
@@ -151,6 +152,7 @@ export function ArtDatabaseApp() {
   const [dragActive, setDragActive] = useState(false);
   const [tagDict, setTagDict] = useState<TagEntry[]>([]);
   const [aiTagBusy, setAiTagBusy] = useState(false);
+  const [tagManagerOpen, setTagManagerOpen] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const metadataEditorRef = useRef<AssetMetadataEditorHandle>(null);
   const dimensionEditorRef = useRef<DimensionControlsEditorHandle>(null);
@@ -726,6 +728,7 @@ export function ArtDatabaseApp() {
             ) : null}
           </div>
           <div className="topbar-actions">
+            {activeArea === "library" ? <button className="tag-manager-open-button" type="button" onClick={() => setTagManagerOpen(true)}><Tags size={14} />标签管理</button> : null}
             <div className="search-box"><Search size={17} /><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="搜索名称、文件或标签" aria-label="搜索素材" /></div>
             {activeArea === "project" && workspace ? <button className="upload-button" type="button" onClick={() => fileInputRef.current?.click()}><Upload size={15} />上传图片</button> : null}
           </div>
@@ -866,6 +869,13 @@ export function ArtDatabaseApp() {
         : null; })() : null}
 
       {activeArea === "project" && uploadFile && workspace ? <UploadModal file={uploadFile} projectId={workspace.project.id} dimensions={workspace.dimensions} onClose={() => setUploadFile(null)} onComplete={async () => { await Promise.all([loadProjects(workspace.project.id), loadWorkspace(workspace.project.id), loadLibrary()]); }} onMessage={setMessage} /> : null}
+
+      {tagManagerOpen ? (
+        <TagManager
+          onClose={() => setTagManagerOpen(false)}
+          onChanged={() => { void loadLibrary(); void loadTagDict(); }}
+        />
+      ) : null}
 
       {message ? <div className="toast" role="status">{message}</div> : null}
       {pendingDeletion ? (

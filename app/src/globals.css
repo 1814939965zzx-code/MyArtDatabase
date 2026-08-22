@@ -110,6 +110,13 @@ button:focus-visible, input:focus-visible, textarea:focus-visible {
 .library-filter-bar { margin: 26px 42px 18px; padding: 13px 14px; border: 1px solid var(--line); background: var(--surface); display: flex; align-items: flex-start; justify-content: space-between; gap: 18px; }
 .project-tag-filter { margin-top: 0; }
 .global-tag-filter { min-width: 0; display: flex; align-items: center; flex-wrap: wrap; gap: 7px; }
+.global-tag-area { min-width: 0; flex: 1 1 auto; display: flex; flex-direction: column; align-items: flex-start; gap: 5px; }
+/* 全部素材页：标签默认只展示 2 行，超出隐藏，可展开 */
+.library-tag-filter { max-height: 63px; overflow: hidden; }
+.library-tag-filter.expanded { max-height: none; overflow: visible; }
+.tag-filter-expand { min-height: 22px; padding: 0 5px; border: 0; border-radius: 4px; background: transparent; color: #577052; display: inline-flex; align-items: center; gap: 4px; font-size: 11px; cursor: pointer; }
+.tag-filter-expand:hover { background: #eef2ec; color: #3f593a; }
+.library-view-bar { margin: 0 42px 18px; display: flex; justify-content: flex-end; }
 .global-tag-filter > strong { margin-right: 3px; color: #4f554e; font-size: 12px; }
 .global-tag-filter > span { color: var(--muted); font-size: 12px; }
 .global-tag-filter button { min-height: 28px; padding: 0 9px; border: 1px solid #d7d8d2; border-radius: 999px; background: #f1f0ea; color: #686d66; font-size: 11px; cursor: pointer; }
@@ -582,7 +589,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible {
   .menu-button { display: inline-grid !important; }
   .topbar { padding: 10px 20px; gap: 12px; }
   .project-header { padding: 34px 24px 25px; }
-  .dimension-strip, .asset-collection, .empty-state, .library-callout, .library-filter-bar { margin-left: 24px; margin-right: 24px; }
+  .dimension-strip, .asset-collection, .empty-state, .library-callout, .library-filter-bar, .library-view-bar { margin-left: 24px; margin-right: 24px; }
   .content-toolbar { padding-left: 24px; padding-right: 24px; }
   .surface-tabs { margin-left: 24px; margin-right: 24px; }
   .drop-overlay { left: 22px; }

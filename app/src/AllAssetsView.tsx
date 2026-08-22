@@ -9,14 +9,13 @@ import {
   LayoutGrid,
   List,
   LoaderCircle,
-  Tags,
   Trash2,
   X,
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { AssetMetadataEditor, type AssetMetadataEditorHandle, type AssetMetadataUpdate } from "./AssetMetadataEditor";
 import { AssetImageReplacement } from "./AssetImageReplacement";
-import { TagManager, type TagEntry } from "./TagManager";
+import type { TagEntry } from "./TagManager";
 import { useProgressiveImage } from "./useProgressiveImage";
 
 export type LibraryProject = {
@@ -82,8 +81,10 @@ export function AllAssetsView({
   const [error, setError] = useState("");
   const [tagDict, setTagDict] = useState<TagEntry[]>([]);
   const [aiTagBusy, setAiTagBusy] = useState(false);
-  const [tagManagerOpen, setTagManagerOpen] = useState(false);
+  const [tagsOverflow, setTagsOverflow] = useState(false);
+  const [tagsExpanded, setTagsExpanded] = useState(false);
   const metadataEditorRef = useRef<AssetMetadataEditorHandle>(null);
+  const tagFilterRef = useRef<HTMLDivElement>(null);
 
   const globalTags = useMemo(
     () => [...new Set(assets.flatMap((asset) => asset.tags))].sort((a, b) => a.localeCompare(b, "zh-CN")),
@@ -114,6 +115,18 @@ export function AllAssetsView({
       return next.length === current.length ? current : next;
     });
   }, [globalTags]);
+
+  // 全局标签默认只展示 2 行：仅在折叠态测量内容是否溢出，溢出时给出展开/收起入口
+  useEffect(() => {
+    if (tagsExpanded) return;
+    const element = tagFilterRef.current;
+    if (!element) return;
+    const update = () => setTagsOverflow(element.scrollHeight > element.clientHeight + 1);
+    update();
+    const observer = new ResizeObserver(update);
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, [globalTags, tagsExpanded]);
 
   const filteredAssets = useMemo(() => {
     const keyword = search.trim().toLowerCase();
@@ -242,22 +255,31 @@ export function AllAssetsView({
   return (
     <>
       <div className="library-filter-bar">
-        <div className="global-tag-filter" aria-label="按全局标签筛选">
-          <strong>全局标签</strong>
-          {globalTags.map((tag) => (
-            <button type="button" className={selectedTags.includes(tag) ? "active" : ""} key={tag} onClick={() => setSelectedTags((current) => current.includes(tag) ? current.filter((item) => item !== tag) : [...current, tag])}>
-              {tag}
+        <div className="global-tag-area">
+          <div ref={tagFilterRef} className={`global-tag-filter library-tag-filter ${tagsExpanded ? "expanded" : ""}`} aria-label="按全局标签筛选">
+            <strong>全局标签</strong>
+            {globalTags.map((tag) => (
+              <button type="button" className={selectedTags.includes(tag) ? "active" : ""} key={tag} onClick={() => setSelectedTags((current) => current.includes(tag) ? current.filter((item) => item !== tag) : [...current, tag])}>
+                {tag}
+              </button>
+            ))}
+            {!globalTags.length ? <span>暂无标签</span> : null}
+          </div>
+          {(tagsOverflow || tagsExpanded) ? (
+            <button className="tag-filter-expand" type="button" onClick={() => setTagsExpanded((current) => !current)}>
+              {tagsExpanded ? "收起全部标签" : "展开全部标签"}
             </button>
-          ))}
-          {!globalTags.length ? <span>暂无标签</span> : null}
+          ) : null}
         </div>
         <div className="library-filter-actions">
           {(search || selectedTags.length) ? <span>找到 {filteredAssets.length} 项</span> : null}
-          <button className="tag-manager-open-button" type="button" onClick={() => setTagManagerOpen(true)}><Tags size={14} />标签管理</button>
-          <div className="view-toggle" aria-label="显示方式">
-            <button type="button" className={view === "grid" ? "active" : ""} onClick={() => onViewChange("grid")} aria-label="网格显示"><LayoutGrid size={16} /></button>
-            <button type="button" className={view === "list" ? "active" : ""} onClick={() => onViewChange("list")} aria-label="列表显示"><List size={17} /></button>
-          </div>
+        </div>
+      </div>
+
+      <div className="library-view-bar">
+        <div className="view-toggle" aria-label="显示方式">
+          <button type="button" className={view === "grid" ? "active" : ""} onClick={() => onViewChange("grid")} aria-label="网格显示"><LayoutGrid size={16} /></button>
+          <button type="button" className={view === "list" ? "active" : ""} onClick={() => onViewChange("list")} aria-label="列表显示"><List size={17} /></button>
         </div>
       </div>
 
@@ -335,12 +357,6 @@ export function AllAssetsView({
             <div className="modal-actions"><button className="secondary-button" type="button" onClick={() => setAssignAssetId(null)}>取消</button><button className="primary-button" type="button" disabled={busy || !selectedProjectIds.length} onClick={() => void assignToProjects()}>{busy ? "添加中…" : `添加到 ${selectedProjectIds.length || 0} 个项目`}</button></div>
           </section>
         </div>
-      ) : null}
-      {tagManagerOpen ? (
-        <TagManager
-          onClose={() => setTagManagerOpen(false)}
-          onChanged={() => { void onRefresh(); void loadTagDict(); }}
-        />
       ) : null}
     </>
   );
