@@ -269,7 +269,8 @@ button:focus-visible, input:focus-visible, textarea:focus-visible {
 .asset-tag-combobox { position: relative; }
 .asset-tag-input { display: flex; align-items: center; }
 .asset-tag-input input { width: 100%; min-width: 0; height: 34px; padding: 0 9px; border: 1px solid #d5d6d0; border-radius: 5px 0 0 5px; background: white; color: var(--ink); font-size: 12px; }
-.asset-tag-input button { width: 34px; height: 34px; flex: none; padding: 0; border: 1px solid #d5d6d0; border-left: 0; border-radius: 0 5px 5px 0; background: #f6f5f1; color: #90948d; display: grid; place-items: center; cursor: pointer; }
+.asset-tag-input button { width: 34px; height: 34px; flex: none; padding: 0; border: 1px solid #d5d6d0; border-left: 0; border-radius: 0; background: #f6f5f1; color: #90948d; display: grid; place-items: center; cursor: pointer; }
+.asset-tag-input button:last-child { border-radius: 0 5px 5px 0; }
 .asset-tag-input button:hover { background: #fff0eb; color: var(--accent); }
 .asset-tag-input button:disabled { opacity: .45; cursor: wait; }
 .asset-tag-suggestions { position: absolute; z-index: 3; top: calc(100% + 4px); left: 0; right: 0; padding: 4px; border: 1px solid #d5d6d0; border-radius: 5px; background: white; box-shadow: 0 10px 28px rgba(35, 40, 35, .12); display: flex; flex-direction: column; }
@@ -639,10 +640,9 @@ button:focus-visible, input:focus-visible, textarea:focus-visible {
 }
 
 /* ---- AI 打标与标签管理 ---- */
-.asset-tag-editor { position: relative; }
-.ai-tag-button { position: absolute; top: -1px; right: 0; min-height: 23px; padding: 0 9px; border: 1px solid #d8b8a4; border-radius: 999px; background: #fbf1e9; color: #a34d2a; display: inline-flex; align-items: center; gap: 5px; font-size: 11px; cursor: pointer; }
-.ai-tag-button:hover { border-color: var(--accent); background: #fbe7db; color: var(--accent-dark); }
-.ai-tag-button:disabled { opacity: .55; cursor: wait; }
+.asset-tag-input button.ai-tag-button { width: auto; height: 34px; padding: 0 11px; border: 1px solid #d5d6d0; border-left: 0; border-radius: 0 5px 5px 0; background: #fbf1e9; color: #a34d2a; display: inline-flex; align-items: center; justify-content: center; gap: 5px; font-size: 11px; white-space: nowrap; }
+.asset-tag-input button.ai-tag-button:hover { border-color: #d9a892; background: #fbe7db; color: var(--accent-dark); }
+.asset-tag-input button.ai-tag-button:disabled { opacity: .55; cursor: wait; }
 
 .tag-manager-open-button { height: 33px; padding: 0 12px; border: 1px solid #d5d6d0; border-radius: 6px; background: white; color: #5f645e; display: inline-flex; align-items: center; justify-content: center; gap: 6px; font-size: 12px; cursor: pointer; transition: background .16s ease, color .16s ease, border-color .16s ease; }
 .tag-manager-open-button:hover { border-color: #919b8c; background: #f1f4ef; color: #3f4d3b; }

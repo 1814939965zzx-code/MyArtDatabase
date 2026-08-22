@@ -180,17 +180,6 @@ export const AssetMetadataEditor = forwardRef<AssetMetadataEditorHandle, {
 
       <fieldset className="asset-tag-editor">
         <legend>全局标签</legend>
-        {onAiTag ? (
-          <button
-            className="ai-tag-button"
-            type="button"
-            disabled={busy || aiTagBusy}
-            onClick={onAiTag}
-            title="调用 AI 观察这张图片并自动补充标签"
-          >
-            {aiTagBusy ? <><LoaderCircle className="spin" size={12} />AI 打标中…</> : <><Sparkles size={12} />AI 打标</>}
-          </button>
-        ) : null}
         {tags.length ? <div className="asset-tag-badges">
           {tags.map((tag) => {
             const pendingDelete = pendingDeleteTags.includes(tag);
@@ -254,6 +243,17 @@ export const AssetMetadataEditor = forwardRef<AssetMetadataEditorHandle, {
             <button type="button" aria-label="添加标签" disabled={!tagQuery.trim() || tags.length >= MAX_TAGS} onClick={() => addTag()}>
               <Plus size={13} />
             </button>
+            {onAiTag ? (
+              <button
+                className="ai-tag-button"
+                type="button"
+                disabled={busy || aiTagBusy}
+                onClick={onAiTag}
+                title="调用 AI 观察这张图片并自动补充标签"
+              >
+                {aiTagBusy ? <><LoaderCircle className="spin" size={12} />AI 打标中…</> : <><Sparkles size={12} />AI 打标</>}
+              </button>
+            ) : null}
           </div>
           {suggestions.length ? <div className="asset-tag-suggestions" role="listbox" aria-label="匹配的已有标签">
             {suggestions.map(({ tag }, index) => (
