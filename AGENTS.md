@@ -93,5 +93,6 @@ npm run build
 - 产品规则发生变化：直接更新 `requirements/CURRENT.md`。
 - 完成一次有意义的需求变更：在 `requirements/CHANGELOG.md` 顶部增加一行摘要；只有需要保留完整决策过程时才新增 archive 文档。
 - 不要把实现日志、测试过程或已失效规则写回 `CURRENT.md`。
+- 调研类文档统一放入 `requirements/research/`，文件名按“日期_主题”命名（如 `2026-08-18_AI识图打标签服务调研.md`）；用户要求调查某事时按此格式新增或更新该目录下的文档。
 - 架构、命令或入口变化时，同步更新本文件；部署流程变化时同步更新 `BUILD.md`。
 - 根 `README.md` 只作为快速入口，不复制完整需求或部署说明。
