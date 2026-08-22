@@ -42,8 +42,9 @@ export function TagManager({
   const [keyword, setKeyword] = useState("");
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editingName, setEditingName] = useState("");
-  const [mergeSourceId, setMergeSourceId] = useState<string | null>(null);
-  const [mergeTargetId, setMergeTargetId] = useState<string | null>(null);
+  const [mergeMode, setMergeMode] = useState(false);
+  const [mergeSelected, setMergeSelected] = useState<string[]>([]);
+  const [mergeKeptId, setMergeKeptId] = useState<string | null>(null);
   const [aiConfigOpen, setAiConfigOpen] = useState(false);
 
   const load = useCallback(async () => {
@@ -105,37 +106,61 @@ export function TagManager({
     }
   }
 
-  function toggleMergeSelection(tag: TagEntry) {
+  function enterMergeMode() {
     setError("");
     setEditingId(null);
-    if (!mergeSourceId) {
-      setMergeSourceId(tag.id);
-      setMergeTargetId(null);
+    setMergeSelected([]);
+    setMergeKeptId(null);
+    setMergeMode(true);
+  }
+
+  function exitMergeMode() {
+    setMergeMode(false);
+    setMergeSelected([]);
+    setMergeKeptId(null);
+  }
+
+  /**
+   * 合并模式下的列表点击：
+   * - 未选中 → 加入选择（尚无保留标签时自动指定为最终保留）；
+   * - 已选中且非保留 → 指定为最终保留；
+   * - 已选中且是保留 → 从选择中移除。
+   */
+  function toggleMergeRow(tag: TagEntry) {
+    setError("");
+    setEditingId(null);
+    const selected = mergeSelected.includes(tag.id);
+    if (!selected) {
+      setMergeKeptId((current) => current ?? tag.id);
+      setMergeSelected((current) => [...current, tag.id]);
       return;
     }
-    if (tag.id === mergeSourceId) {
-      setMergeSourceId(null);
+    if (mergeKeptId === tag.id) {
+      setMergeKeptId(null);
+      setMergeSelected((current) => current.filter((id) => id !== tag.id));
       return;
     }
-    setMergeTargetId(tag.id);
+    setMergeKeptId(tag.id);
   }
 
   async function confirmMerge() {
-    if (!mergeSourceId || !mergeTargetId) return;
-    const source = tags.find((tag) => tag.id === mergeSourceId);
-    const target = tags.find((tag) => tag.id === mergeTargetId);
+    if (!mergeKeptId) return;
+    const sources = mergeSelected.filter((id) => id !== mergeKeptId);
+    if (!sources.length) return;
+    const kept = tags.find((tag) => tag.id === mergeKeptId);
     setBusy(true);
     setError("");
     try {
-      await request("/api/tags/merge", {
-        method: "POST",
-        body: JSON.stringify({ sourceId: mergeSourceId, targetId: mergeTargetId }),
-      });
-      setMergeSourceId(null);
-      setMergeTargetId(null);
+      for (const sourceId of sources) {
+        await request("/api/tags/merge", {
+          method: "POST",
+          body: JSON.stringify({ sourceId, targetId: mergeKeptId }),
+        });
+      }
+      exitMergeMode();
       await load();
       onChanged();
-      setError(source && target ? `已把“${source.name}”并入“${target.name}”` : "标签已合并");
+      setError(kept ? `已把 ${sources.length} 个标签并入“${kept.name}”` : `已合并 ${sources.length} 个标签`);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "合并失败");
     } finally {
@@ -174,6 +199,9 @@ export function TagManager({
       setBusy(false);
     }
   }
+
+  const keptTag = mergeKeptId ? tags.find((tag) => tag.id === mergeKeptId) ?? null : null;
+  const deletedTags = tags.filter((tag) => mergeSelected.includes(tag.id) && tag.id !== mergeKeptId);
 
   return (
     <>
@@ -215,12 +243,11 @@ export function TagManager({
         ) : filtered.length ? (
           <div className="tag-manager-list" role="list">
             {filtered.map((tag) => {
-              const isMergeMode = mergeSourceId !== null;
-              const isSource = mergeSourceId === tag.id;
-              const isTarget = mergeTargetId === tag.id;
+              const selected = mergeSelected.includes(tag.id);
+              const isKept = mergeMode && mergeKeptId === tag.id;
               return (
                 <div
-                  className={`tag-manager-row ${isMergeMode ? "merge-selectable" : ""} ${isSource ? "merge-source" : ""} ${isTarget ? "merge-target" : ""}`}
+                  className={`tag-manager-row ${mergeMode ? "merge-selectable" : ""} ${mergeMode && selected ? (isKept ? "merge-kept" : "merge-selected") : ""}`}
                   key={tag.id}
                   role="listitem"
                 >
@@ -243,29 +270,28 @@ export function TagManager({
                         className="tag-manager-name"
                         type="button"
                         disabled={busy}
-                        onClick={() => (isMergeMode ? toggleMergeSelection(tag) : startRename(tag))}
-                        title={isMergeMode ? "点击选择要合并的标签" : "点击重命名"}
+                        onClick={() => (mergeMode ? toggleMergeRow(tag) : startRename(tag))}
+                        title={mergeMode ? "点击选择要合并的标签；点击已选中的标签指定为最终保留" : "点击重命名"}
                       >
                         {tag.name}
                       </button>
                     )}
                     <span className="tag-usage-badge">{tag.usageCount} 次</span>
                     <span className={`tag-source-badge ${tag.source === "ai" ? "ai" : ""}`}>{tag.source === "ai" ? "AI" : "人工"}</span>
-                    {isSource ? <span className="tag-merge-mark">源</span> : null}
-                    {isTarget ? <span className="tag-merge-mark target">目标</span> : null}
+                    {isKept ? <span className="tag-merge-mark">保留</span> : null}
                   </div>
                   {editingId === tag.id ? (
                     <div className="tag-manager-actions">
                       <button type="button" disabled={busy || !editingName.trim()} onClick={() => void submitRename(tag)} aria-label="保存重命名"><Check size={14} /></button>
                       <button type="button" disabled={busy} onClick={() => setEditingId(null)} aria-label="取消重命名"><X size={14} /></button>
                     </div>
-                  ) : (
+                  ) : mergeMode ? null : (
                     <div className="tag-manager-actions">
-                      <button type="button" disabled={busy || isMergeMode} onClick={() => startRename(tag)} aria-label={`重命名 ${tag.name}`}><Pencil size={13} /></button>
+                      <button type="button" disabled={busy} onClick={() => startRename(tag)} aria-label={`重命名 ${tag.name}`}><Pencil size={13} /></button>
                       {!isProject ? (
-                        <button type="button" disabled={busy} onClick={() => toggleMergeSelection(tag)} aria-label={`选择 ${tag.name} 参与合并`}><Merge size={13} /></button>
+                        <button type="button" disabled={busy} onClick={enterMergeMode} aria-label={`选择 ${tag.name} 参与合并`}><Merge size={13} /></button>
                       ) : null}
-                      <button className="tag-delete-button" type="button" disabled={busy || isMergeMode} onClick={() => void removeTag(tag)} aria-label={`删除 ${tag.name}`}><Trash2 size={13} /></button>
+                      <button className="tag-delete-button" type="button" disabled={busy} onClick={() => void removeTag(tag)} aria-label={`删除 ${tag.name}`}><Trash2 size={13} /></button>
                     </div>
                   )}
                 </div>
@@ -275,16 +301,15 @@ export function TagManager({
         ) : (
           <div className="tag-manager-loading">{keyword ? "没有匹配的标签" : isProject ? "该项目还没有标签" : "标签字典还是空的"}</div>
         )}
-        {mergeSourceId ? (
+        {mergeMode ? (
           <div className="tag-merge-bar">
-            <span>
-              {mergeTargetId
-                ? <>把 <strong>源标签</strong> 的全部素材关联并入 <strong>目标标签</strong>，源标签将从字典删除。</>
-                : <>已选择源标签，请再点击一个标签作为合并目标。</>}
-            </span>
+            <div className="tag-merge-summary">
+              <span>最终保留的标签：<strong>{keptTag ? keptTag.name : "点击列表中的标签指定"}</strong></span>
+              <span>合并后删掉的标签：<em>{deletedTags.length ? deletedTags.map((tag) => tag.name).join("、") : "—"}</em></span>
+            </div>
             <div className="tag-merge-bar-actions">
-              <button className="secondary-button" type="button" disabled={busy} onClick={() => { setMergeSourceId(null); setMergeTargetId(null); }}>取消</button>
-              <button className="primary-button" type="button" disabled={busy || !mergeTargetId} onClick={() => void confirmMerge()}>{busy ? "合并中…" : "确认合并"}</button>
+              <button className="secondary-button" type="button" disabled={busy} onClick={exitMergeMode}>取消</button>
+              <button className="primary-button" type="button" disabled={busy || !keptTag || !deletedTags.length} onClick={() => void confirmMerge()}>{busy ? "合并中…" : "确认合并"}</button>
             </div>
           </div>
         ) : null}
