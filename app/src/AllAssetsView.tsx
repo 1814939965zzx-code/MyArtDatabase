@@ -15,6 +15,7 @@ import {
 import { useEffect, useMemo, useRef, useState } from "react";
 import { AssetMetadataEditor, type AssetMetadataEditorHandle, type AssetMetadataUpdate } from "./AssetMetadataEditor";
 import { AssetImageReplacement } from "./AssetImageReplacement";
+import { TagFilterBar } from "./TagFilterBar";
 import type { TagEntry } from "./TagManager";
 import { useProgressiveImage } from "./useProgressiveImage";
 
@@ -81,22 +82,11 @@ export function AllAssetsView({
   const [error, setError] = useState("");
   const [tagDict, setTagDict] = useState<TagEntry[]>([]);
   const [aiTagBusy, setAiTagBusy] = useState(false);
-  const [tagsOverflow, setTagsOverflow] = useState(false);
-  const [tagsExpanded, setTagsExpanded] = useState(false);
   const metadataEditorRef = useRef<AssetMetadataEditorHandle>(null);
-  const tagFilterRef = useRef<HTMLDivElement>(null);
 
   const globalTags = useMemo(
     () => [...new Set(assets.flatMap((asset) => asset.tags))].sort((a, b) => a.localeCompare(b, "zh-CN")),
     [assets],
-  );
-
-  // 筛选按钮排序：已选中的标签排最前，其余按拼音顺序
-  const sortedGlobalTags = useMemo(
-    () => [...globalTags].sort((a, b) => (
-      Number(selectedTags.includes(b)) - Number(selectedTags.includes(a)) || a.localeCompare(b, "zh-CN")
-    )),
-    [globalTags, selectedTags],
   );
 
   const availableTags = useMemo(
@@ -123,18 +113,6 @@ export function AllAssetsView({
       return next.length === current.length ? current : next;
     });
   }, [globalTags]);
-
-  // 全局标签默认只展示 2 行：仅在折叠态测量内容是否溢出，溢出时给出展开/收起入口
-  useEffect(() => {
-    if (tagsExpanded) return;
-    const element = tagFilterRef.current;
-    if (!element) return;
-    const update = () => setTagsOverflow(element.scrollHeight > element.clientHeight + 1);
-    update();
-    const observer = new ResizeObserver(update);
-    observer.observe(element);
-    return () => observer.disconnect();
-  }, [globalTags, tagsExpanded]);
 
   const filteredAssets = useMemo(() => {
     const keyword = search.trim().toLowerCase();
@@ -263,22 +241,12 @@ export function AllAssetsView({
   return (
     <>
       <div className="library-filter-bar">
-        <div className="global-tag-area">
-          <div ref={tagFilterRef} className={`global-tag-filter library-tag-filter ${tagsExpanded ? "expanded" : ""}`} aria-label="按全局标签筛选">
-            <strong>全局标签</strong>
-            {sortedGlobalTags.map((tag) => (
-              <button type="button" className={selectedTags.includes(tag) ? "active" : ""} key={tag} onClick={() => setSelectedTags((current) => current.includes(tag) ? current.filter((item) => item !== tag) : [...current, tag])}>
-                {tag}
-              </button>
-            ))}
-            {!globalTags.length ? <span>暂无标签</span> : null}
-          </div>
-          {(tagsOverflow || tagsExpanded) ? (
-            <button className="tag-filter-expand" type="button" onClick={() => setTagsExpanded((current) => !current)}>
-              {tagsExpanded ? "收起全部标签" : "展开全部标签"}
-            </button>
-          ) : null}
-        </div>
+        <TagFilterBar
+          tags={globalTags}
+          selected={selectedTags}
+          label="全局标签"
+          onToggle={(tag) => setSelectedTags((current) => current.includes(tag) ? current.filter((item) => item !== tag) : [...current, tag])}
+        />
         <div className="library-filter-actions">
           {(search || selectedTags.length) ? <span>找到 {filteredAssets.length} 项</span> : null}
         </div>

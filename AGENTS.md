@@ -40,6 +40,7 @@
 | `app/src/BoardView.tsx` | 自由画板 |
 | `app/src/UploadModal.tsx` | 上传与重复素材处理 |
 | `app/src/AssetMetadataEditor.tsx` | 素材详情与 Metadata 编辑 |
+| `app/src/TagFilterBar.tsx` | 素材标签筛选模块（全部素材页与项目素材页共用） |
 | `app/src/AiConfigModal.tsx` | AI 服务配置页（key 服务端保存、测试连接） |
 | `app/server/routes.js` | 全部 `/api/*` 路由 |
 | `app/server/db.js` | SQLite 表结构、迁移与示例数据 |

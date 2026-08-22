@@ -31,6 +31,7 @@ import { DeletionToast } from "./DeletionToast";
 import { DimensionControlsEditor, type DimensionControlsEditorHandle } from "./DimensionControlsEditor";
 import { DimensionEditorModal } from "./DimensionEditorModal";
 import { DimensionPreview } from "./DimensionPreview";
+import { TagFilterBar } from "./TagFilterBar";
 import { TagManager, type TagEntry } from "./TagManager";
 import { TrashView, type TrashedAsset } from "./TrashView";
 import { UploadModal } from "./UploadModal";
@@ -775,13 +776,12 @@ export function ArtDatabaseApp() {
             </div>
 
             <div className="library-filter-bar project-tag-filter">
-              <div className="global-tag-filter" aria-label="按标签筛选">
-                <strong>标签</strong>
-                {projectTags.map((tag) => (
-                  <button type="button" className={projectTagFilter.includes(tag) ? "active" : ""} key={tag} onClick={() => setProjectTagFilter((current) => current.includes(tag) ? current.filter((item) => item !== tag) : [...current, tag])}>{tag}</button>
-                ))}
-                {!projectTags.length ? <span>暂无标签</span> : null}
-              </div>
+              <TagFilterBar
+                tags={projectTags}
+                selected={projectTagFilter}
+                label="标签"
+                onToggle={(tag) => setProjectTagFilter((current) => current.includes(tag) ? current.filter((item) => item !== tag) : [...current, tag])}
+              />
             </div>
 
             {filteredAssets.length ? (
