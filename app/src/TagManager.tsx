@@ -121,26 +121,16 @@ export function TagManager({
   }
 
   /**
-   * 合并模式下的列表点击：
-   * - 未选中 → 加入选择（尚无保留标签时自动指定为最终保留）；
-   * - 已选中且非保留 → 指定为最终保留；
-   * - 已选中且是保留 → 从选择中移除。
+   * 合并模式下的列表点击：只负责把标签加入/移出选择；
+   * 最终保留的标签由底部标签组件指定。
    */
   function toggleMergeRow(tag: TagEntry) {
     setError("");
     setEditingId(null);
-    const selected = mergeSelected.includes(tag.id);
-    if (!selected) {
-      setMergeKeptId((current) => current ?? tag.id);
-      setMergeSelected((current) => [...current, tag.id]);
-      return;
-    }
-    if (mergeKeptId === tag.id) {
-      setMergeKeptId(null);
-      setMergeSelected((current) => current.filter((id) => id !== tag.id));
-      return;
-    }
-    setMergeKeptId(tag.id);
+    setMergeSelected((current) => current.includes(tag.id)
+      ? current.filter((id) => id !== tag.id)
+      : [...current, tag.id]);
+    setMergeKeptId((current) => (current === tag.id ? null : current));
   }
 
   async function confirmMerge() {
@@ -202,6 +192,9 @@ export function TagManager({
 
   const keptTag = mergeKeptId ? tags.find((tag) => tag.id === mergeKeptId) ?? null : null;
   const deletedTags = tags.filter((tag) => mergeSelected.includes(tag.id) && tag.id !== mergeKeptId);
+  const selectedMergeTags = mergeSelected
+    .map((id) => tags.find((tag) => tag.id === id))
+    .filter((tag): tag is TagEntry => Boolean(tag));
 
   return (
     <>
@@ -244,10 +237,9 @@ export function TagManager({
           <div className="tag-manager-list" role="list">
             {filtered.map((tag) => {
               const selected = mergeSelected.includes(tag.id);
-              const isKept = mergeMode && mergeKeptId === tag.id;
               return (
                 <div
-                  className={`tag-manager-row ${mergeMode ? "merge-selectable" : ""} ${mergeMode && selected ? (isKept ? "merge-kept" : "merge-selected") : ""}`}
+                  className={`tag-manager-row ${mergeMode ? "merge-selectable" : ""} ${mergeMode && selected ? "merge-selected" : ""}`}
                   key={tag.id}
                   role="listitem"
                 >
@@ -271,14 +263,13 @@ export function TagManager({
                         type="button"
                         disabled={busy}
                         onClick={() => (mergeMode ? toggleMergeRow(tag) : startRename(tag))}
-                        title={mergeMode ? "点击选择要合并的标签；点击已选中的标签指定为最终保留" : "点击重命名"}
+                        title={mergeMode ? "点击选择或取消选择要合并的标签" : "点击重命名"}
                       >
                         {tag.name}
                       </button>
                     )}
                     <span className="tag-usage-badge">{tag.usageCount} 次</span>
                     <span className={`tag-source-badge ${tag.source === "ai" ? "ai" : ""}`}>{tag.source === "ai" ? "AI" : "人工"}</span>
-                    {isKept ? <span className="tag-merge-mark">保留</span> : null}
                   </div>
                   {editingId === tag.id ? (
                     <div className="tag-manager-actions">
@@ -304,8 +295,16 @@ export function TagManager({
         {mergeMode ? (
           <div className="tag-merge-bar">
             <div className="tag-merge-summary">
-              <span>最终保留的标签：<strong>{keptTag ? keptTag.name : "点击列表中的标签指定"}</strong></span>
-              <span>合并后删掉的标签：<em>{deletedTags.length ? deletedTags.map((tag) => tag.name).join("、") : "—"}</em></span>
+              <span>最终保留的标签：<strong>{keptTag ? keptTag.name : ""}</strong></span>
+              <span>删除的标签：<em>{deletedTags.length ? deletedTags.map((tag) => tag.name).join("、") : ""}</em></span>
+            </div>
+            <div className="tag-merge-chips" role="listbox" aria-label="选择最终保留的标签">
+              {selectedMergeTags.map((tag) => (
+                <button type="button" role="option" aria-selected={tag.id === mergeKeptId} className={tag.id === mergeKeptId ? "active" : ""} key={tag.id} onClick={() => setMergeKeptId(tag.id)}>
+                  {tag.name}
+                </button>
+              ))}
+              {!selectedMergeTags.length ? <span>尚未选择标签，请在上方列表中点击选择</span> : null}
             </div>
             <div className="tag-merge-bar-actions">
               <button className="secondary-button" type="button" disabled={busy} onClick={exitMergeMode}>取消</button>

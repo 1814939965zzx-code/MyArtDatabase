@@ -682,7 +682,6 @@ button:focus-visible, input:focus-visible, textarea:focus-visible {
 .tag-manager-row.merge-selectable { cursor: pointer; }
 .tag-manager-row.merge-selectable:hover { background: #f6f4ec; }
 .tag-manager-row.merge-selected { background: #fdf6ec; box-shadow: inset 3px 0 0 #d9a25e; }
-.tag-manager-row.merge-kept { background: #eef4ec; box-shadow: inset 3px 0 0 var(--sage); }
 .tag-manager-main { min-width: 0; display: flex; align-items: center; gap: 7px; }
 .tag-manager-name { min-width: 0; max-width: 300px; padding: 4px 5px; border: 0; border-radius: 4px; background: transparent; color: var(--ink); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; font-weight: 560; cursor: pointer; }
 .tag-manager-name:hover { background: #f0efe8; }
@@ -690,15 +689,19 @@ button:focus-visible, input:focus-visible, textarea:focus-visible {
 .tag-usage-badge { flex: none; padding: 2px 7px; border-radius: 999px; background: #eceae2; color: #71766f; font-size: 10px; }
 .tag-source-badge { flex: none; padding: 2px 6px; border-radius: 999px; background: #e4e8f0; color: #56647e; font-size: 10px; }
 .tag-source-badge.ai { background: #fbe9dc; color: #a34d2a; }
-.tag-merge-mark { flex: none; padding: 2px 6px; border-radius: 999px; background: var(--sage); color: white; font-size: 10px; }
 .tag-manager-actions { flex: none; display: flex; gap: 4px; }
 .tag-manager-actions button { width: 28px; height: 28px; padding: 0; border: 1px solid transparent; border-radius: 5px; background: transparent; color: #84897f; display: grid; place-items: center; cursor: pointer; }
 .tag-manager-actions button:hover { border-color: #d5d6d0; background: #f3f2ec; color: var(--ink); }
 .tag-manager-actions button:disabled { opacity: .45; cursor: default; }
 .tag-manager-actions .tag-delete-button:hover { border-color: #e6b7ab; background: #fbf1ee; color: #b34127; }
-.tag-merge-bar { margin-top: 12px; padding: 11px 13px; border: 1px solid #d8cdb2; border-radius: 6px; background: #faf6ec; display: flex; align-items: center; justify-content: space-between; gap: 14px; }
+.tag-merge-bar { margin-top: 12px; padding: 11px 13px; border: 1px solid #d8cdb2; border-radius: 6px; background: #faf6ec; display: flex; flex-direction: column; gap: 10px; }
 .tag-merge-summary { min-width: 0; display: flex; flex-direction: column; gap: 4px; }
 .tag-merge-summary span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #6f6a5c; font-size: 12px; }
 .tag-merge-summary strong { color: #4e6549; font-weight: 650; }
 .tag-merge-summary em { color: #9a624d; font-style: normal; }
-.tag-merge-bar-actions { flex: none; display: flex; gap: 8px; }
+.tag-merge-chips { display: flex; flex-wrap: wrap; align-items: center; gap: 7px; }
+.tag-merge-chips button { min-height: 28px; padding: 0 10px; border: 1px solid #d7d8d2; border-radius: 999px; background: #f1f0ea; color: #686d66; font-size: 11px; cursor: pointer; }
+.tag-merge-chips button:hover { border-color: #919b8c; color: #3f4d3b; }
+.tag-merge-chips button.active { border-color: var(--sage); background: var(--sage); color: white; }
+.tag-merge-chips > span { color: #9a968a; font-size: 11px; }
+.tag-merge-bar-actions { flex: none; display: flex; justify-content: flex-end; gap: 8px; }
