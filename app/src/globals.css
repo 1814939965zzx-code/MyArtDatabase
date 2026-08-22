@@ -652,7 +652,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible {
 .tag-manager-open-button { height: 33px; padding: 0 12px; border: 1px solid #d5d6d0; border-radius: 6px; background: white; color: #5f645e; display: inline-flex; align-items: center; justify-content: center; gap: 6px; font-size: 12px; cursor: pointer; transition: background .16s ease, color .16s ease, border-color .16s ease; }
 .tag-manager-open-button:hover { border-color: #919b8c; background: #f1f4ef; color: #3f4d3b; }
 
-.tag-manager-card { width: min(680px, 100%); display: flex; flex-direction: column; max-height: min(760px, calc(100dvh - 40px)); }
+.tag-manager-card { width: min(680px, 100%); height: min(760px, calc(100dvh - 40px)); display: flex; flex-direction: column; }
 .tag-manager-message { margin-bottom: 12px; padding: 9px 11px; border: 1px solid #d8cdb2; background: #faf6ec; color: #6f6a5c; display: flex; align-items: center; gap: 7px; font-size: 12px; }
 .ai-config-message { margin-bottom: 14px; padding: 9px 11px; border: 1px solid #b8ccb3; background: #f1f7ef; color: #4c6b47; display: flex; align-items: center; gap: 7px; font-size: 12px; }
 .ai-config-message.error { border-color: #e6b8aa; background: #fff1ed; color: #a33d25; }
@@ -676,7 +676,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible {
 .tag-ai-config-button { flex: none; height: 33px; padding: 0 11px; border: 1px solid #d5d6d0; border-radius: 6px; background: white; color: #5f645e; display: inline-flex; align-items: center; gap: 5px; font-size: 12px; cursor: pointer; }
 .tag-ai-config-button:hover { border-color: #919b8c; background: #f1f4ef; color: #3f4d3b; }
 .tag-manager-loading { min-height: 140px; display: flex; align-items: center; justify-content: center; gap: 8px; color: var(--muted); font-size: 13px; }
-.tag-manager-list { min-height: 0; max-height: min(440px, 54vh); overflow-y: auto; border: 1px solid var(--soft-line); background: white; display: flex; flex-direction: column; }
+.tag-manager-list { min-height: 0; flex: 1 1 auto; overflow-y: auto; border: 1px solid var(--soft-line); background: white; display: flex; flex-direction: column; }
 .tag-manager-row { min-height: 42px; padding: 5px 8px 5px 12px; border-bottom: 1px solid var(--soft-line); display: flex; align-items: center; justify-content: space-between; gap: 10px; }
 .tag-manager-row:last-child { border-bottom: 0; }
 .tag-manager-row.merge-selectable { cursor: pointer; }
