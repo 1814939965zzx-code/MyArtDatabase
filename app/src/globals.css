@@ -653,6 +653,21 @@ button:focus-visible, input:focus-visible, textarea:focus-visible {
 .tag-manager-open-button:hover { border-color: #919b8c; background: #f1f4ef; color: #3f4d3b; }
 
 .tag-manager-card { width: min(680px, 100%); height: min(760px, calc(100dvh - 40px)); display: flex; flex-direction: column; }
+.tag-manager-card.merge-active { width: min(1120px, 100%); }
+.tag-manager-body { min-height: 0; flex: 1 1 auto; display: flex; gap: 12px; }
+.tag-manager-body .tag-manager-list { min-width: 0; flex: 1 1 auto; }
+.tag-manager-body > .tag-manager-loading { min-height: 0; flex: 1 1 auto; }
+.tag-manager-body.merge-layout .tag-manager-list { flex: 1 1 33%; }
+.tag-merge-preview { flex: 2 1 67%; min-width: 0; min-height: 0; padding: 10px 12px; border: 1px solid var(--soft-line); background: white; display: flex; flex-direction: column; gap: 9px; }
+.tag-merge-preview-heading { flex: none; color: #555a54; font-size: 12px; font-weight: 620; }
+.tag-merge-preview-grid { min-height: 0; flex: 1; display: grid; grid-template-rows: repeat(2, minmax(0, 1fr)); grid-auto-flow: column; grid-auto-columns: 152px; gap: 8px; overflow-x: auto; overflow-y: hidden; padding-bottom: 4px; }
+.tag-merge-preview-card { margin: 0; min-width: 0; display: flex; flex-direction: column; border: 1px solid var(--soft-line); background: #fbfaf7; overflow: hidden; }
+.tag-merge-preview-card img { width: 100%; height: auto; max-height: 96px; object-fit: cover; background: #e4e3dd; display: block; }
+.tag-merge-preview-fallback { height: 60px; display: grid; place-items: center; background: #e4e3dd; color: #9a9d96; font-size: 11px; }
+.tag-merge-preview-card figcaption { min-width: 0; padding: 5px 7px 6px; display: flex; flex-direction: column; gap: 2px; }
+.tag-merge-preview-card strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; font-weight: 620; }
+.tag-merge-preview-card span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #7c6b5f; font-size: 10px; }
+.tag-merge-preview-empty { flex: 1; display: grid; place-items: center; color: #9a968a; font-size: 12px; }
 .tag-manager-message { margin-bottom: 12px; padding: 9px 11px; border: 1px solid #d8cdb2; background: #faf6ec; color: #6f6a5c; display: flex; align-items: center; gap: 7px; font-size: 12px; }
 .ai-config-message { margin-bottom: 14px; padding: 9px 11px; border: 1px solid #b8ccb3; background: #f1f7ef; color: #4c6b47; display: flex; align-items: center; gap: 7px; font-size: 12px; }
 .ai-config-message.error { border-color: #e6b8aa; background: #fff1ed; color: #a33d25; }

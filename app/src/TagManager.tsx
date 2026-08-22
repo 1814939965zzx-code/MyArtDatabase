@@ -11,6 +11,13 @@ export type TagEntry = {
   usageCount: number;
 };
 
+type MergeAsset = {
+  id: string;
+  name: string;
+  thumbnailUrl: string | null;
+  tags: string[];
+};
+
 async function request<T>(url: string, init?: RequestInit): Promise<T> {
   const response = await fetch(url, {
     ...init,
@@ -45,6 +52,7 @@ export function TagManager({
   const [mergeMode, setMergeMode] = useState(false);
   const [mergeSelected, setMergeSelected] = useState<string[]>([]);
   const [mergeKeptId, setMergeKeptId] = useState<string | null>(null);
+  const [mergeAssets, setMergeAssets] = useState<MergeAsset[] | null>(null);
   const [aiConfigOpen, setAiConfigOpen] = useState(false);
 
   const load = useCallback(async () => {
@@ -106,18 +114,29 @@ export function TagManager({
     }
   }
 
+  async function loadMergeAssets() {
+    try {
+      const data = await request<{ assets: MergeAsset[] }>("/api/library");
+      setMergeAssets(data.assets);
+    } catch {
+      setMergeAssets([]);
+    }
+  }
+
   function enterMergeMode(tag: TagEntry) {
     setError("");
     setEditingId(null);
     setMergeSelected([tag.id]); // 触发合并的那个标签默认进入备选，一次点击即可
     setMergeKeptId(null);
     setMergeMode(true);
+    void loadMergeAssets();
   }
 
   function exitMergeMode() {
     setMergeMode(false);
     setMergeSelected([]);
     setMergeKeptId(null);
+    setMergeAssets(null);
   }
 
   /**
@@ -195,11 +214,14 @@ export function TagManager({
   const selectedMergeTags = mergeSelected
     .map((id) => tags.find((tag) => tag.id === id))
     .filter((tag): tag is TagEntry => Boolean(tag));
+  const selectedTagNames = new Set(selectedMergeTags.map((tag) => tag.name));
+  const mergePreviewAssets = (mergeAssets ?? [])
+    .filter((asset) => asset.tags.some((tag) => selectedTagNames.has(tag)));
 
   return (
     <>
     <div className="modal-backdrop">
-      <section className="modal-card tag-manager-card" role="dialog" aria-modal="true" aria-labelledby="tag-manager-title">
+      <section className={`modal-card tag-manager-card ${mergeMode ? "merge-active" : ""}`} role="dialog" aria-modal="true" aria-labelledby="tag-manager-title">
         <div className="modal-heading">
           <div>
             <p className="eyebrow">TAG DICTIONARY</p>
@@ -233,7 +255,9 @@ export function TagManager({
         </div>
         {loading ? (
           <div className="tag-manager-loading"><LoaderCircle className="spin" size={18} /> 正在载入标签…</div>
-        ) : filtered.length ? (
+        ) : (
+          <div className={`tag-manager-body ${mergeMode ? "merge-layout" : ""}`}>
+          {filtered.length ? (
           <div className="tag-manager-list" role="list">
             {filtered.map((tag) => {
               const selected = mergeSelected.includes(tag.id);
@@ -300,8 +324,30 @@ export function TagManager({
               );
             })}
           </div>
-        ) : (
+          ) : (
           <div className="tag-manager-loading">{keyword ? "没有匹配的标签" : isProject ? "该项目还没有标签" : "标签字典还是空的"}</div>
+          )}
+          {mergeMode ? (
+            <div className="tag-merge-preview">
+              <div className="tag-merge-preview-heading">包含所选标签的素材 · {mergePreviewAssets.length}</div>
+              {mergePreviewAssets.length ? (
+                <div className="tag-merge-preview-grid">
+                  {mergePreviewAssets.map((asset) => {
+                    const shownTags = asset.tags.filter((tag) => selectedTagNames.has(tag));
+                    return (
+                      <figure className="tag-merge-preview-card" key={asset.id}>
+                        {asset.thumbnailUrl ? <img src={asset.thumbnailUrl} alt="" loading="lazy" /> : <span className="tag-merge-preview-fallback">无图</span>}
+                        <figcaption><strong>{asset.name}</strong><span>{shownTags.join("、")}</span></figcaption>
+                      </figure>
+                    );
+                  })}
+                </div>
+              ) : (
+                <div className="tag-merge-preview-empty">{mergeSelected.length ? "没有素材包含所选标签" : "在上方列表选择标签后，这里展示包含所选标签的素材"}</div>
+              )}
+            </div>
+          ) : null}
+          </div>
         )}
         {mergeMode ? (
           <div className="tag-merge-bar">
