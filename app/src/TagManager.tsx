@@ -241,7 +241,17 @@ export function TagManager({
                 <div
                   className={`tag-manager-row ${mergeMode ? "merge-selectable" : ""} ${mergeMode && selected ? "merge-selected" : ""}`}
                   key={tag.id}
-                  role="listitem"
+                  role={mergeMode ? "button" : "listitem"}
+                  tabIndex={mergeMode ? 0 : undefined}
+                  aria-pressed={mergeMode ? selected : undefined}
+                  onClick={() => { if (mergeMode && !busy && editingId !== tag.id) toggleMergeRow(tag); }}
+                  onKeyDown={(event) => {
+                    if (!mergeMode || busy || editingId !== tag.id) return;
+                    if (event.key === "Enter" || event.key === " ") {
+                      event.preventDefault();
+                      toggleMergeRow(tag);
+                    }
+                  }}
                 >
                   <div className="tag-manager-main">
                     {editingId === tag.id ? (
@@ -262,7 +272,8 @@ export function TagManager({
                         className="tag-manager-name"
                         type="button"
                         disabled={busy}
-                        onClick={() => (mergeMode ? toggleMergeRow(tag) : startRename(tag))}
+                        tabIndex={mergeMode ? -1 : undefined}
+                        onClick={mergeMode ? undefined : () => startRename(tag)}
                         title={mergeMode ? "点击选择或取消选择要合并的标签" : "点击重命名"}
                       >
                         {tag.name}

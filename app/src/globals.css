@@ -681,6 +681,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible {
 .tag-manager-row:last-child { border-bottom: 0; }
 .tag-manager-row.merge-selectable { cursor: pointer; }
 .tag-manager-row.merge-selectable:hover { background: #f6f4ec; }
+.tag-manager-row.merge-selectable:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 .tag-manager-row.merge-selected { background: #fdf6ec; box-shadow: inset 3px 0 0 #d9a25e; }
 .tag-manager-main { min-width: 0; display: flex; align-items: center; gap: 7px; }
 .tag-manager-name { min-width: 0; max-width: 300px; padding: 4px 5px; border: 0; border-radius: 4px; background: transparent; color: var(--ink); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; font-weight: 560; cursor: pointer; }
