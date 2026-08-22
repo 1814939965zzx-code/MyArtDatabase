@@ -106,10 +106,10 @@ export function TagManager({
     }
   }
 
-  function enterMergeMode() {
+  function enterMergeMode(tag: TagEntry) {
     setError("");
     setEditingId(null);
-    setMergeSelected([]);
+    setMergeSelected([tag.id]); // 触发合并的那个标签默认进入备选，一次点击即可
     setMergeKeptId(null);
     setMergeMode(true);
   }
@@ -291,7 +291,7 @@ export function TagManager({
                     <div className="tag-manager-actions">
                       <button type="button" disabled={busy} onClick={() => startRename(tag)} aria-label={`重命名 ${tag.name}`}><Pencil size={13} /></button>
                       {!isProject ? (
-                        <button type="button" disabled={busy} onClick={enterMergeMode} aria-label={`选择 ${tag.name} 参与合并`}><Merge size={13} /></button>
+                        <button type="button" disabled={busy} onClick={() => enterMergeMode(tag)} aria-label={`选择 ${tag.name} 参与合并`}><Merge size={13} /></button>
                       ) : null}
                       <button className="tag-delete-button" type="button" disabled={busy} onClick={() => void removeTag(tag)} aria-label={`删除 ${tag.name}`}><Trash2 size={13} /></button>
                     </div>
