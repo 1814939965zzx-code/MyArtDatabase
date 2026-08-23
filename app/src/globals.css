@@ -414,10 +414,13 @@ button:focus-visible, input:focus-visible, textarea:focus-visible {
 .preview-zoom { height: 29px; display: flex; align-items: center; border: 1px solid var(--line); background: white; }
 .preview-zoom button { width: 27px; height: 27px; border: 0; background: transparent; display: grid; place-items: center; cursor: pointer; }
 .preview-zoom span { min-width: 42px; text-align: center; color: var(--muted); font-size: 10px; }
+.preview-asset-scale { height: 29px; padding: 0 9px; display: flex; align-items: center; gap: 6px; border: 1px solid var(--line); background: white; color: var(--muted); }
+.preview-asset-scale input[type="range"] { width: 76px; height: 3px; margin: 0; accent-color: var(--sage); cursor: pointer; }
+.preview-asset-scale span { min-width: 34px; text-align: center; color: var(--muted); font-size: 10px; }
 .fullscreen-button { width: 31px; height: 29px; padding: 0; border: 1px solid var(--line); background: white; color: var(--muted); display: grid; place-items: center; cursor: pointer; }
 .fullscreen-button:hover { color: var(--ink); }
 .fullscreen-button.dof-active { border-color: #5d7b56; background: #eef4ec; color: #4f624a; }
-.dimension-scene { --preview-hover-duration: .18s; flex: 1; min-height: 0; padding: 38px; position: relative; overflow: auto; background: #efeee8; }
+.dimension-scene { --preview-hover-duration: .18s; flex: 1; min-height: 0; padding: 38px; position: relative; overflow: auto; background: #efeee8; user-select: none; }
 .scene-viewport { width: 100%; min-width: 620px; min-height: 520px; height: 100%; position: relative; container-type: size; perspective: 2200px; overflow: hidden; touch-action: none; overscroll-behavior: contain; }
 .workspace.preview-active .scene-viewport { min-width: 0; min-height: 0; }
 .preview-layout.focus-mode .scene-viewport { min-width: 0; min-height: 0; }
@@ -505,7 +508,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible {
 .stack-plane { position: absolute; z-index: 2000; padding: 20px 28px 14px; box-sizing: border-box; background: transparent; }
 .stack-plane-surface { position: relative; width: 100%; height: 100%; }
 /* 卡片从中心位移到各自矩阵位置的展开过渡 */
-.stack-plane-card { position: absolute; top: 50%; left: 50%; width: 90px; height: 90px; padding: 0; border: 0; background: transparent; cursor: grab; touch-action: none; user-select: none; transform: translate(calc(-50% + var(--card-offset-x, 0px)), calc(-50% + var(--card-offset-y, 0px))); animation: stack-card-in .18s ease-out; }
+.stack-plane-card { position: absolute; top: 50%; left: 50%; width: var(--plane-card-size, 90px); height: var(--plane-card-size, 90px); padding: 0; border: 0; background: transparent; cursor: grab; touch-action: none; user-select: none; transform: translate(calc(-50% + var(--card-offset-x, 0px)), calc(-50% + var(--card-offset-y, 0px))); animation: stack-card-in .18s ease-out; }
 @keyframes stack-card-in { from { transform: translate(-50%, -50%); } to { transform: translate(calc(-50% + var(--card-offset-x, 0px)), calc(-50% + var(--card-offset-y, 0px))); } }
 /* 退出 hover：卡片向中心收拢，收拢后再消失 */
 .stack-plane.closing { pointer-events: none; }
