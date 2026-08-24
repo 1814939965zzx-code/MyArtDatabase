@@ -1,5 +1,18 @@
 import { createHash, randomUUID } from "node:crypto";
 import { Readable } from "node:stream";
+import {
+  backfillLegacyAssets,
+  clearSessionCookieHeader,
+  createSession,
+  createUser,
+  destroySession,
+  hashPassword,
+  logLogin,
+  resolveUser,
+  sessionCookieHeader,
+  sessionTokenFromRequest,
+  verifyPassword,
+} from "./auth.js";
 import { AiError, listAiModels, readAiConfigDetails, saveAiConfig, tagAssetWithAi, testAiConnection } from "./ai.js";
 import { findTagByName, listTags, mergeTags, replaceAssetTags } from "./tags.js";
 
@@ -203,7 +216,7 @@ function workspace(request, { db }) {
       THEN '/api/media?id=' || a.id || '&variant=original&v=' || a.storage_key ELSE a.thumbnail_url END AS originalUrl,
     a.description, a.notes, a.source_url AS sourceUrl,
     a.file_size AS fileSize, a.width, a.height, a.mime_type AS mimeType,
-    a.created_at AS createdAt
+    a.created_at AS createdAt, a.created_by_name AS createdByName
     FROM assets a
     INNER JOIN project_assets pa ON pa.asset_id = a.id
     WHERE pa.project_id = ? AND a.deleted_at IS NULL ORDER BY pa.created_at DESC, a.id`).all(projectId);
@@ -243,7 +256,7 @@ async function checkUpload(request, { db }) {
   return Response.json({ duplicates });
 }
 
-async function upload(request, { db, store }) {
+async function upload(request, { db, store, user }) {
   let storedId = "";
   try {
     const form = await request.formData();
@@ -282,9 +295,9 @@ async function upload(request, { db, store }) {
     const dimensions = db.prepare("SELECT id FROM project_dimensions WHERE project_id = ? ORDER BY sort_order").all(projectId);
     try {
       transaction(db, () => {
-        db.prepare(`INSERT INTO assets (id, name, file_name, sha256, file_size, width, height, mime_type, description, notes, source_url, storage_key, thumbnail_key)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-          .run(id, name, file.name, sha256, file.size, stored.width, stored.height, file.type, description, notes, sourceUrl, stored.id, stored.id);
+        db.prepare(`INSERT INTO assets (id, name, file_name, sha256, file_size, width, height, mime_type, description, notes, source_url, storage_key, thumbnail_key, created_by, created_by_name)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+          .run(id, name, file.name, sha256, file.size, stored.width, stored.height, file.type, description, notes, sourceUrl, stored.id, stored.id, user?.id ?? null, user?.displayName ?? "");
         replaceAssetTags(db, id, tags, { source: "manual", inTransaction: true });
         db.prepare("INSERT INTO project_assets (project_id, asset_id) VALUES (?, ?)").run(projectId, id);
         const insertValue = db.prepare("INSERT INTO asset_dimension_values (project_id, asset_id, dimension_id, value) VALUES (?, ?, ?, ?)");
@@ -449,7 +462,7 @@ function library({ db }) {
       THEN '/api/media?id=' || a.id || '&variant=original&v=' || a.storage_key ELSE a.thumbnail_url END AS originalUrl,
     a.description, a.notes, a.source_url AS sourceUrl,
     a.file_size AS fileSize, a.width, a.height, a.mime_type AS mimeType,
-    a.created_at AS createdAt
+    a.created_at AS createdAt, a.created_by_name AS createdByName
     FROM assets a
     WHERE a.deleted_at IS NULL
     ORDER BY a.created_at DESC, a.id`).all();
@@ -479,7 +492,7 @@ function trash({ db }) {
     CASE WHEN a.thumbnail_key IS NOT NULL OR a.storage_key IS NOT NULL
       THEN '/api/media?id=' || a.id || '&variant=thumbnail&v=' || COALESCE(a.thumbnail_key, a.storage_key) ELSE a.thumbnail_url END AS thumbnailUrl,
     a.file_size AS fileSize, a.width, a.height, a.mime_type AS mimeType,
-    a.deleted_at AS deletedAt
+    a.deleted_at AS deletedAt, a.created_by_name AS createdByName
     FROM assets a
     WHERE a.deleted_at IS NOT NULL
     ORDER BY a.deleted_at DESC, a.id`).all();
@@ -762,6 +775,266 @@ function cleanupUnusedTags({ db }) {
   return Response.json({ ok: true, removed: result.changes });
 }
 
+// ---- 账号系统 ----
+const USERNAME_PATTERN = /^[A-Za-z0-9._-]{2,50}$/;
+
+function validPassword(password) {
+  return typeof password === "string" && password.length >= 8;
+}
+
+function toUserPayload(row) {
+  return {
+    id: row.id,
+    username: row.username,
+    displayName: row.displayName || row.display_name || row.username,
+    role: row.role,
+    active: Boolean(row.active),
+  };
+}
+
+/** 账号状态：是否首次需要初始化管理员，以及当前登录用户（未登录为 null）。 */
+function authStatus(request, { db }) {
+  const user = resolveUser(db, request);
+  const { count } = db.prepare("SELECT COUNT(*) AS count FROM users").get();
+  return Response.json({ needsSetup: count === 0, user: user ? { ...user, role: user.role } : null });
+}
+
+/** 首次初始化：数据库没有任何用户时创建管理员并直接登录。 */
+async function setupAdmin(request, { db }) {
+  const { count } = db.prepare("SELECT COUNT(*) AS count FROM users").get();
+  if (count > 0) return Response.json({ error: "系统已完成初始化，请直接登录" }, { status: 409 });
+  const payload = await request.json();
+  const username = cleanText(payload.username, 50);
+  const displayName = cleanText(payload.displayName, 50);
+  const password = typeof payload.password === "string" ? payload.password : "";
+  if (!USERNAME_PATTERN.test(username)) {
+    return Response.json({ error: "用户名只能包含字母、数字、点、下划线和连字符（2-50 位）" }, { status: 400 });
+  }
+  if (!validPassword(password)) return Response.json({ error: "密码至少 8 位" }, { status: 400 });
+  const user = createUser(db, { username, displayName, password, role: "admin" });
+  // 存量数据整体挂到默认管理员名下，不做追溯
+  backfillLegacyAssets(db, user.id, user.displayName);
+  const session = createSession(db, user.id, true);
+  return Response.json({ user: toUserPayload({ ...user, active: true }) }, {
+    status: 201,
+    headers: { "set-cookie": sessionCookieHeader(session.token, session.maxAge) },
+  });
+}
+
+/** 登录：校验密码、写入审计、创建会话。 */
+async function login(request, { db, clientIp }) {
+  const payload = await request.json();
+  const username = cleanText(payload.username, 50);
+  const password = typeof payload.password === "string" ? payload.password : "";
+  const remember = payload.remember === true;
+  const userAgent = request.headers.get("user-agent") || "";
+  const audit = (success, message) => logLogin(db, { username, success, ip: clientIp, userAgent, message });
+
+  if (!username || !password) {
+    audit(false, "缺少用户名或密码");
+    return Response.json({ error: "请输入用户名和密码" }, { status: 400 });
+  }
+  const row = db.prepare("SELECT id, username, display_name AS displayName, role, active, password_hash AS passwordHash FROM users WHERE username = ?").get(username);
+  if (!row || !verifyPassword(password, row.passwordHash)) {
+    audit(false, "用户名或密码错误");
+    return Response.json({ error: "用户名或密码错误" }, { status: 401 });
+  }
+  if (!row.active) {
+    audit(false, "账号已停用");
+    return Response.json({ error: "账号已停用，请联系管理员" }, { status: 403 });
+  }
+  db.prepare("UPDATE users SET last_login_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(row.id);
+  const session = createSession(db, row.id, remember);
+  audit(true, "登录成功");
+  return Response.json({ user: { id: row.id, username: row.username, displayName: row.displayName, role: row.role, active: true } }, {
+    headers: { "set-cookie": sessionCookieHeader(session.token, session.maxAge) },
+  });
+}
+
+/** 退出登录：删除会话并清 cookie。 */
+function logout(request, { db }) {
+  destroySession(db, request);
+  return Response.json({ ok: true }, { headers: { "set-cookie": clearSessionCookieHeader() } });
+}
+
+/** 当前用户信息。 */
+function me({ user }) {
+  return Response.json({ user });
+}
+
+/** 修改自己的显示名 / 密码。 */
+async function updateMe(request, { db, user }) {
+  const payload = await request.json();
+  const displayName = cleanText(payload.displayName, 50);
+  const currentPassword = typeof payload.currentPassword === "string" ? payload.currentPassword : "";
+  const newPassword = typeof payload.newPassword === "string" ? payload.newPassword : "";
+  const hasDisplayName = payload.displayName !== undefined;
+  const hasPassword = Boolean(newPassword);
+
+  if (hasDisplayName && !displayName) return Response.json({ error: "显示名不能为空" }, { status: 400 });
+  if (hasPassword && !validPassword(newPassword)) return Response.json({ error: "新密码至少 8 位" }, { status: 400 });
+  if (hasPassword) {
+    const row = db.prepare("SELECT password_hash AS passwordHash FROM users WHERE id = ?").get(user.id);
+    if (!row || !verifyPassword(currentPassword, row.passwordHash)) {
+      return Response.json({ error: "当前密码不正确" }, { status: 400 });
+    }
+    db.prepare("UPDATE users SET password_hash = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(hashPassword(newPassword), user.id);
+    // 改密后使其他会话失效，保留当前会话
+    db.prepare("DELETE FROM sessions WHERE user_id = ? AND token != ?").run(user.id, sessionTokenFromRequest(request));
+  }
+  if (hasDisplayName) {
+    db.prepare("UPDATE users SET display_name = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(displayName, user.id);
+  }
+  const fresh = db.prepare("SELECT id, username, display_name AS displayName, role, active FROM users WHERE id = ?").get(user.id);
+  return Response.json({ user: toUserPayload(fresh) });
+}
+
+// ---- 登录页公告 ----
+const ANNOUNCEMENT_TEXT_MAX = 2000;
+
+/** 登录页公告：公开读取（登录页在未登录时展示）。 */
+function getAnnouncement({ db }) {
+  const read = (key) => db.prepare("SELECT value FROM app_settings WHERE key = ?").get(key)?.value ?? "";
+  const row = db.prepare("SELECT updated_at AS updatedAt FROM app_settings WHERE key = 'announcement.text'").get();
+  return Response.json({
+    text: read("announcement.text"),
+    enabled: read("announcement.enabled") === "1",
+    updatedAt: row?.updatedAt ?? null,
+  });
+}
+
+/** 更新登录页公告：仅管理员。 */
+async function updateAnnouncement(request, { db }) {
+  const payload = await request.json();
+  const text = cleanText(payload.text, ANNOUNCEMENT_TEXT_MAX);
+  const enabled = payload.enabled === true;
+  const upsert = db.prepare(`
+    INSERT INTO app_settings (key, value, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP)
+    ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = CURRENT_TIMESTAMP
+  `);
+  transaction(db, () => {
+    upsert.run("announcement.text", text);
+    upsert.run("announcement.enabled", enabled ? "1" : "0");
+  });
+  return Response.json({ ok: true });
+}
+
+// ---- 用户管理（仅管理员） ----
+function requireAdmin({ user }) {
+  if (user?.role !== "admin") return Response.json({ error: "需要管理员权限" }, { status: 403 });
+  return null;
+}
+
+function listUsers({ db }) {
+  const users = db.prepare(`
+    SELECT u.id, u.username, u.display_name AS displayName, u.role, u.active,
+      u.created_at AS createdAt, u.last_login_at AS lastLoginAt,
+      (SELECT COUNT(*) FROM assets a WHERE a.created_by = u.id AND a.deleted_at IS NULL) AS assetCount
+    FROM users u ORDER BY u.created_at, u.username
+  `).all().map(toUserPayload);
+  return Response.json({ users });
+}
+
+async function createMember(request, { db }) {
+  const payload = await request.json();
+  const username = cleanText(payload.username, 50);
+  const displayName = cleanText(payload.displayName, 50);
+  const password = typeof payload.password === "string" ? payload.password : "";
+  const role = payload.role === "admin" ? "admin" : "member";
+  if (!USERNAME_PATTERN.test(username)) {
+    return Response.json({ error: "用户名只能包含字母、数字、点、下划线和连字符（2-50 位）" }, { status: 400 });
+  }
+  if (!validPassword(password)) return Response.json({ error: "密码至少 8 位" }, { status: 400 });
+  const exists = db.prepare("SELECT id FROM users WHERE username = ?").get(username);
+  if (exists) return Response.json({ error: "用户名已存在" }, { status: 409 });
+  const user = createUser(db, { username, displayName, password, role });
+  return Response.json({ user: toUserPayload({ ...user, active: true }) }, { status: 201 });
+}
+
+async function updateMember(request, { db, user: me }) {
+  const payload = await request.json();
+  const id = cleanId(payload.id);
+  if (!id) return Response.json({ error: "缺少用户 ID" }, { status: 400 });
+  const row = db.prepare("SELECT id, username, display_name AS displayName, role, active FROM users WHERE id = ?").get(id);
+  if (!row) return Response.json({ error: "用户不存在" }, { status: 404 });
+
+  const isSelf = row.id === me.id;
+  const updates = [];
+
+  if (payload.displayName !== undefined) {
+    const displayName = cleanText(payload.displayName, 50);
+    if (!displayName) return Response.json({ error: "显示名不能为空" }, { status: 400 });
+    updates.push(["display_name = ?", displayName]);
+  }
+  if (payload.role !== undefined) {
+    const role = payload.role === "admin" ? "admin" : "member";
+    if (isSelf) return Response.json({ error: "不能修改自己的角色" }, { status: 400 });
+    if (row.role === "admin" && role !== "admin") {
+      const adminCount = db.prepare("SELECT COUNT(*) AS count FROM users WHERE role = 'admin' AND active = 1").get().count;
+      if (adminCount <= 1) return Response.json({ error: "系统必须保留至少一名启用的管理员" }, { status: 400 });
+    }
+    updates.push(["role = ?", role]);
+  }
+  if (payload.active !== undefined) {
+    const active = payload.active ? 1 : 0;
+    if (isSelf && !active) return Response.json({ error: "不能停用自己的账号" }, { status: 400 });
+    if (row.role === "admin" && row.active && !active) {
+      const adminCount = db.prepare("SELECT COUNT(*) AS count FROM users WHERE role = 'admin' AND active = 1").get().count;
+      if (adminCount <= 1) return Response.json({ error: "系统必须保留至少一名启用的管理员" }, { status: 400 });
+    }
+    updates.push(["active = ?", active]);
+    if (!active) db.prepare("DELETE FROM sessions WHERE user_id = ?").run(id); // 停用立即踢下线
+  }
+  if (payload.password !== undefined && payload.password !== null) {
+    const password = typeof payload.password === "string" ? payload.password : "";
+    if (!validPassword(password)) return Response.json({ error: "密码至少 8 位" }, { status: 400 });
+    updates.push(["password_hash = ?", hashPassword(password)]);
+    // 管理员重置密码后使该用户全部会话失效（含自身，避免旧会话继续使用）
+    db.prepare("DELETE FROM sessions WHERE user_id = ?").run(id);
+  }
+
+  if (updates.length) {
+    const sets = updates.map(([expr]) => expr).join(", ");
+    const values = updates.map(([, value]) => value);
+    db.prepare(`UPDATE users SET ${sets}, updated_at = CURRENT_TIMESTAMP WHERE id = ?`).run(...values, id);
+  }
+  const fresh = db.prepare("SELECT id, username, display_name AS displayName, role, active FROM users WHERE id = ?").get(id);
+  return Response.json({ user: toUserPayload(fresh) });
+}
+
+async function deleteMember(request, { db, user: me }) {
+  const id = cleanId(new URL(request.url).searchParams.get("id"));
+  if (!id) return Response.json({ error: "缺少用户 ID" }, { status: 400 });
+  if (id === me.id) return Response.json({ error: "不能删除自己的账号" }, { status: 400 });
+  const row = db.prepare("SELECT id, role FROM users WHERE id = ?").get(id);
+  if (!row) return Response.json({ error: "用户不存在" }, { status: 404 });
+  if (row.role === "admin") {
+    const adminCount = db.prepare("SELECT COUNT(*) AS count FROM users WHERE role = 'admin'").get().count;
+    if (adminCount <= 1) return Response.json({ error: "系统必须保留至少一名管理员" }, { status: 400 });
+  }
+  db.exec("BEGIN");
+  try {
+    // 素材保留：上传者置为「已删除用户」快照
+    db.prepare("UPDATE assets SET created_by = NULL, created_by_name = '已删除用户' WHERE created_by = ?").run(id);
+    db.prepare("DELETE FROM sessions WHERE user_id = ?").run(id);
+    db.prepare("DELETE FROM users WHERE id = ?").run(id);
+    db.exec("COMMIT");
+  } catch (error) {
+    db.exec("ROLLBACK");
+    throw error;
+  }
+  return Response.json({ ok: true });
+}
+
+/** 登录审计（仅管理员）：最近 100 条。 */
+function listLoginLogs({ db }) {
+  const logs = db.prepare(`
+    SELECT id, username, success, ip, user_agent AS userAgent, message, created_at AS createdAt
+    FROM login_logs ORDER BY id DESC LIMIT 100
+  `).all();
+  return Response.json({ logs });
+}
+
 // ---- 路由分发 ----
 export async function handleApi(request, ctx) {
   const url = new URL(request.url);
@@ -769,6 +1042,47 @@ export async function handleApi(request, ctx) {
   const method = request.method;
 
   try {
+    // 健康检查：部署脚本与运维巡检使用，无需登录
+    if (pathname === "/api/health" && method === "GET") return Response.json({ ok: true });
+
+    // 登录页公告：未登录即可读取（登录页展示用）
+    if (pathname === "/api/announcement" && method === "GET") return getAnnouncement(ctx);
+
+    // 公开的账号接口
+    if (pathname === "/api/auth/status" && method === "GET") return authStatus(request, ctx);
+    if (pathname === "/api/auth/setup" && method === "POST") return await setupAdmin(request, ctx);
+    if (pathname === "/api/auth/login" && method === "POST") return await login(request, ctx);
+
+    // 其余所有接口都必须登录
+    const user = resolveUser(ctx.db, request);
+    if (!user) return Response.json({ error: "请先登录" }, { status: 401 });
+    ctx.user = user;
+
+    if (pathname === "/api/auth/me" && method === "GET") return me(ctx);
+    if (pathname === "/api/auth/me" && method === "PATCH") return await updateMe(request, ctx);
+    if (pathname === "/api/auth/logout" && method === "POST") return logout(request, ctx);
+
+    // 管理员专属：用户管理、登录审计、AI 服务配置、登录页公告
+    if (pathname.startsWith("/api/users") || pathname === "/api/login-logs" || (pathname === "/api/announcement" && method === "PUT")) {
+      const denied = requireAdmin(ctx);
+      if (denied) return denied;
+      if (pathname === "/api/users" && method === "GET") return listUsers(ctx);
+      if (pathname === "/api/users" && method === "POST") return await createMember(request, ctx);
+      if (pathname === "/api/users" && method === "PATCH") return await updateMember(request, ctx);
+      if (pathname === "/api/users" && method === "DELETE") return deleteMember(request, ctx);
+      if (pathname === "/api/login-logs" && method === "GET") return listLoginLogs(ctx);
+      if (pathname === "/api/announcement" && method === "PUT") return await updateAnnouncement(request, ctx);
+    }
+
+    if (pathname.startsWith("/api/ai-config")) {
+      const denied = requireAdmin(ctx);
+      if (denied) return denied;
+      if (pathname === "/api/ai-config/test" && method === "POST") return await testAiConfigEndpoint();
+      if (pathname === "/api/ai-config/models" && method === "POST") return await listAiModelsEndpoint();
+      if (pathname === "/api/ai-config" && method === "GET") return aiConfigStatus();
+      if (pathname === "/api/ai-config" && method === "POST") return await saveAiConfigEndpoint(request);
+    }
+
     if (pathname === "/api/projects" && method === "GET") return listProjects(ctx);
     if (pathname === "/api/projects" && method === "POST") return await createProject(request, ctx);
     if (pathname === "/api/projects" && method === "PATCH") return await updateProject(request, ctx);
@@ -790,10 +1104,6 @@ export async function handleApi(request, ctx) {
     if (pathname === "/api/assets/restore" && method === "POST") return await restoreAsset(request, ctx);
     if (pathname === "/api/assets/image" && method === "POST") return await replaceAssetImage(request, ctx);
     if (pathname === "/api/assets/ai-tags" && method === "POST") return await aiTagAsset(request, ctx);
-    if (pathname === "/api/ai-config/test" && method === "POST") return await testAiConfigEndpoint();
-    if (pathname === "/api/ai-config/models" && method === "POST") return await listAiModelsEndpoint();
-    if (pathname === "/api/ai-config" && method === "GET") return aiConfigStatus();
-    if (pathname === "/api/ai-config" && method === "POST") return await saveAiConfigEndpoint(request);
     if (pathname === "/api/assets" && method === "PATCH") return await updateAsset(request, ctx);
     if (pathname === "/api/assets" && method === "DELETE") return await deleteAsset(request, ctx);
 

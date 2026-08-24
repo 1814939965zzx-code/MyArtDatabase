@@ -106,7 +106,7 @@ const base = `http://127.0.0.1:${testPort}`;
 const json = (r) => r.json();
 const post = (url, body) => fetch(url, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
 const rawGet = (requestPath) => new Promise((resolve, reject) => {
-  const req = httpRequest({ hostname: "127.0.0.1", port: testPort, path: requestPath, method: "GET" }, (res) => {
+  const req = httpRequest({ hostname: "127.0.0.1", port: testPort, path: requestPath, method: "GET", headers: sessionCookie ? { cookie: sessionCookie } : {} }, (res) => {
     const chunks = [];
     res.on("data", (chunk) => chunks.push(chunk));
     res.on("end", () => resolve({ status: res.statusCode, body: Buffer.concat(chunks).toString("utf8") }));
@@ -114,6 +114,46 @@ const rawGet = (requestPath) => new Promise((resolve, reject) => {
   req.on("error", reject);
   req.end();
 });
+
+// ---- 账号系统：未登录拦截 / 健康检查 / 首次初始化 ----
+let sessionCookie = "";
+const originalFetch = globalThis.fetch;
+globalThis.fetch = async (input, init = {}) => {
+  const headers = new Headers(init.headers || {});
+  if (sessionCookie) headers.set("cookie", sessionCookie);
+  const response = await originalFetch(input, { ...init, headers });
+  const setCookie = response.headers.get("set-cookie");
+  if (setCookie) sessionCookie = setCookie.split(";")[0];
+  return response;
+};
+
+assert.equal((await fetch(`${base}/api/projects`)).status, 401, "未登录访问业务接口应 401");
+assert.equal((await fetch(`${base}/api/media?id=asset-01`)).status, 401, "未登录访问媒体应 401");
+assert.deepEqual(await json(await fetch(`${base}/api/health`)), { ok: true }, "健康检查无需登录");
+const authStatusBefore = await json(await fetch(`${base}/api/auth/status`));
+assert.equal(authStatusBefore.needsSetup, true, "无用户时应提示首次初始化");
+assert.equal(authStatusBefore.user, null);
+
+const setupRes = await post(`${base}/api/auth/setup`, { username: "admin", displayName: "管理员", password: "admin1234" });
+assert.equal(setupRes.status, 201, "首次初始化应创建管理员并登录");
+assert.ok(sessionCookie, "初始化后应下发会话 cookie");
+const setupUser = (await setupRes.json()).user;
+assert.equal(setupUser.role, "admin");
+assert.equal((await post(`${base}/api/auth/setup`, { username: "x", password: "12345678" })).status, 409, "重复初始化应拒绝");
+
+// 存量种子素材应整体挂到管理员名下
+{
+  const checkDb = new DatabaseSync(path.join(tmp, "app.db"));
+  const count = checkDb.prepare("SELECT COUNT(*) AS count FROM assets WHERE created_by IS NULL").get().count;
+  assert.equal(count, 0, "初始化后存量素材应全部归属默认管理员");
+  checkDb.close();
+}
+
+// 错误密码登录：应 401 并记录失败审计
+const badLogin = await post(`${base}/api/auth/login`, { username: "admin", password: "wrong-password" });
+assert.equal(badLogin.status, 401, "密码错误应 401");
+const goodLogin = await post(`${base}/api/auth/login`, { username: "admin", password: "admin1234", remember: true });
+assert.equal(goodLogin.status, 200, "正确密码应登录成功");
 
 // 0) 安全边界：编码路径穿越不得读取系统文件或导致进程崩溃
 const traversal = await rawGet("/%2e%2e%2f%2e%2e%2f%2e%2e%2f%2e%2e%2fetc%2fpasswd");
@@ -431,5 +471,146 @@ trash = await json(await fetch(`${base}/api/trash`));
 assert.ok(!trash.assets.some((item) => item.id === asset.id), "彻底删除后回收站不应包含该素材");
 assert.equal((await fetch(`${base}/api/media?id=${asset.id}&variant=thumbnail`)).status, 404, "删除后缩略图应 404");
 
-console.log("✓ 全部通过：项目 / 工作区 / 上传 / 缩略图 / 原图 / 去重 / 改元数据 / 改维度名称 / 画板迁移与重复实例 / 安全替换图片 / 旧库标签迁移 / AI 打标(复用·裁决·降级) / 标签管理(重命名·合并·删除·清理) / AI 服务配置(状态·保存·掩码·测试连接·模型列表·环境变量覆盖) / 回收站(软删-列出-恢复-彻底删)");
+// 14) 账号系统：成员创建 / 登录 / 权限隔离 / 停用踢下线 / 重置密码 / 删除成员保留素材
+assert.equal((await post(`${base}/api/users`, { username: "member1", password: "member123" })).status, 201, "管理员应能创建成员");
+assert.equal((await post(`${base}/api/users`, { username: "member1", password: "member123" })).status, 409, "重复用户名应拒绝");
+assert.equal((await post(`${base}/api/users`, { username: "含中文", password: "12345678" })).status, 400, "用户名规则校验");
+assert.equal((await post(`${base}/api/users`, { username: "member2", password: "123" })).status, 400, "密码过短应拒绝");
+
+const usersList = await json(await fetch(`${base}/api/users`));
+assert.equal(usersList.users.length, 2, "用户列表应包含管理员与成员");
+const member1 = usersList.users.find((u) => u.username === "member1");
+assert.equal(member1.role, "member");
+assert.equal(member1.active, true);
+
+// 成员登录后：可访问业务接口，但不可访问用户管理与 AI 配置
+const memberLogin = await post(`${base}/api/auth/login`, { username: "member1", password: "member123" });
+assert.equal(memberLogin.status, 200);
+const memberCookie = sessionCookie.split(";")[0];
+// 恢复管理员会话（此时管理员密码仍为初始值 admin1234，改密发生在下方）
+await post(`${base}/api/auth/login`, { username: "admin", password: "admin1234" });
+const memberFetch = (url, init) => originalFetch(url, { ...init, headers: { ...(init?.headers || {}), cookie: memberCookie } });
+assert.equal((await memberFetch(`${base}/api/projects`)).status, 200, "成员应能访问业务接口");
+assert.equal((await memberFetch(`${base}/api/users`)).status, 403, "成员访问用户管理应 403");
+assert.equal((await memberFetch(`${base}/api/login-logs`)).status, 403, "成员访问登录审计应 403");
+assert.equal((await memberFetch(`${base}/api/ai-config`)).status, 403, "成员访问 AI 配置应 403");
+assert.equal((await memberFetch(`${base}/api/tags`)).status, 200, "成员应能维护标签字典");
+assert.equal((await memberFetch(`${base}/api/assets?id=asset-01&mode=permanent`, { method: "DELETE" })).status, 409, "成员应能彻底删除素材（有引用时被拒）");
+
+// 14.5) 登录页公告：未登录可读 / 仅管理员可写 / 启用开关
+const anonAnnouncement = await json(await originalFetch(`${base}/api/announcement`));
+assert.deepEqual(anonAnnouncement, { text: "", enabled: false, updatedAt: null }, "未登录应能读取公告（初始为空）");
+assert.equal((await memberFetch(`${base}/api/announcement`, { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ text: "成员写的公告", enabled: true }) })).status, 403, "成员写公告应 403");
+const annSave = await fetch(`${base}/api/announcement`, { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ text: "周五维护公告", enabled: true }) });
+assert.equal(annSave.status, 200, "管理员应能保存公告");
+const annAfter = await json(await originalFetch(`${base}/api/announcement`));
+assert.equal(annAfter.text, "周五维护公告", "公开读取应回显公告内容");
+assert.equal(annAfter.enabled, true, "公开读取应回显启用状态");
+assert.ok(annAfter.updatedAt, "公告应记录更新时间");
+await fetch(`${base}/api/announcement`, { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ text: "周五维护公告", enabled: false }) });
+const annDisabled = await json(await originalFetch(`${base}/api/announcement`));
+assert.equal(annDisabled.enabled, false, "关闭后 enabled 应为 false");
+
+// 管理员修改自己的显示名与密码
+const selfPatch = await json(await fetch(`${base}/api/auth/me`, {
+  method: "PATCH",
+  headers: { "content-type": "application/json" },
+  body: JSON.stringify({ displayName: "大管理员" }),
+}));
+assert.equal(selfPatch.user.displayName, "大管理员", "管理员应能修改自己的显示名");
+assert.equal((await fetch(`${base}/api/auth/me`, {
+  method: "PATCH",
+  headers: { "content-type": "application/json" },
+  body: JSON.stringify({ currentPassword: "wrong", newPassword: "admin5678" }),
+})).status, 400, "改密必须验证当前密码");
+const selfPasswordPatch = await json(await fetch(`${base}/api/auth/me`, {
+  method: "PATCH",
+  headers: { "content-type": "application/json" },
+  body: JSON.stringify({ currentPassword: "admin1234", newPassword: "admin5678" }),
+}));
+assert.equal(selfPasswordPatch.user.displayName, "大管理员");
+assert.equal((await post(`${base}/api/auth/login`, { username: "admin", password: "admin1234" })).status, 401, "旧密码应失效");
+assert.equal((await post(`${base}/api/auth/login`, { username: "admin", password: "admin5678" })).status, 200, "新密码应可登录");
+
+// 管理员停用成员 → 立即踢下线且不能再登录
+const deactivate = await json(await fetch(`${base}/api/users`, {
+  method: "PATCH",
+  headers: { "content-type": "application/json" },
+  body: JSON.stringify({ id: member1.id, active: false }),
+}));
+assert.equal(deactivate.user.active, false);
+assert.equal((await memberFetch(`${base}/api/projects`)).status, 401, "停用后成员会话应立即失效");
+assert.equal((await post(`${base}/api/auth/login`, { username: "member1", password: "member123" })).status, 403, "停用后成员不能登录");
+
+// 重新启用 + 重置密码
+const reactivate = await json(await fetch(`${base}/api/users`, {
+  method: "PATCH",
+  headers: { "content-type": "application/json" },
+  body: JSON.stringify({ id: member1.id, active: true }),
+}));
+assert.equal(reactivate.user.active, true);
+const resetPwd = await json(await fetch(`${base}/api/users`, {
+  method: "PATCH",
+  headers: { "content-type": "application/json" },
+  body: JSON.stringify({ id: member1.id, password: "newpass456" }),
+}));
+assert.equal(resetPwd.user.active, true);
+assert.equal((await post(`${base}/api/auth/login`, { username: "member1", password: "member123" })).status, 401, "重置后旧密码应失效");
+const memberLogin2 = await post(`${base}/api/auth/login`, { username: "member1", password: "newpass456" });
+assert.equal(memberLogin2.status, 200, "重置后新密码应可登录");
+// 重新登录后拿到新的有效会话，同时恢复管理员会话
+const memberCookie2 = sessionCookie.split(";")[0];
+await post(`${base}/api/auth/login`, { username: "admin", password: "admin5678" });
+const memberFetch2 = (url, init) => originalFetch(url, { ...init, headers: { ...(init?.headers || {}), cookie: memberCookie2 } });
+
+// 成员上传素材记录上传者；删除成员后素材保留且上传者为「已删除用户」
+const memberBuffer = await sharp({ create: { width: 64, height: 64, channels: 3, background: { r: 90, g: 40, b: 160 } } }).png().toBuffer();
+const memberForm = new FormData();
+memberForm.set("file", new File([memberBuffer], "member-upload.png", { type: "image/png" }));
+memberForm.set("projectId", "project-visual-direction");
+memberForm.set("name", "成员上传素材");
+const memberUpload = await memberFetch2(`${base}/api/uploads`, { method: "POST", body: memberForm });
+assert.equal(memberUpload.status, 201, "成员应能上传素材");
+const memberAsset = (await memberUpload.json()).asset;
+const wsWithUploader = await json(await memberFetch2(`${base}/api/workspace?projectId=project-visual-direction`));
+assert.equal(wsWithUploader.assets.find((item) => item.id === memberAsset.id).createdByName, "member1", "素材应记录上传者显示名");
+
+// 成员不能删除账号；管理员删除成员后素材保留
+assert.equal((await memberFetch2(`${base}/api/users?id=${member1.id}`, { method: "DELETE" })).status, 403, "成员不能删除账号");
+const delMember = await fetch(`${base}/api/users?id=${member1.id}`, { method: "DELETE" });
+assert.equal(delMember.status, 200, "管理员应能删除成员");
+const usersAfterDelete = await json(await fetch(`${base}/api/users`));
+assert.equal(usersAfterDelete.users.length, 1, "删除后只剩管理员");
+const wsAfterMemberDelete = await json(await fetch(`${base}/api/workspace?projectId=project-visual-direction`));
+assert.equal(wsAfterMemberDelete.assets.find((item) => item.id === memberAsset.id).createdByName, "已删除用户", "删除成员后素材保留且上传者置为快照");
+const libraryWithUploader = await json(await fetch(`${base}/api/library`));
+assert.equal(libraryWithUploader.assets.find((item) => item.id === memberAsset.id).createdByName, "已删除用户", "全局库同样展示上传者快照");
+
+// 管理员自保：不能删除/停用自己，必须保留至少一名管理员
+assert.equal((await fetch(`${base}/api/users?id=${setupUser.id}`, { method: "DELETE" })).status, 400, "不能删除自己的账号");
+const adminSelfDeactivate = await fetch(`${base}/api/users`, {
+  method: "PATCH",
+  headers: { "content-type": "application/json" },
+  body: JSON.stringify({ id: setupUser.id, active: false }),
+});
+assert.equal(adminSelfDeactivate.status, 400, "不能停用自己的账号");
+
+// 登录审计：成功与失败均应记录
+const logs = await json(await fetch(`${base}/api/login-logs`));
+assert.ok(logs.logs.length >= 4, "登录审计应包含多条记录");
+const failureLog = logs.logs.find((entry) => entry.username === "admin" && !entry.success);
+assert.ok(failureLog, "错误密码登录应记录失败审计");
+assert.ok(failureLog.ip, "审计应记录客户端 IP");
+const successLog = logs.logs.find((entry) => entry.username === "member1" && entry.success);
+assert.ok(successLog, "成员成功登录应记录审计");
+
+// 退出登录后会话失效
+const logoutRes = await fetch(`${base}/api/auth/logout`, { method: "POST" });
+assert.equal(logoutRes.status, 200);
+sessionCookie = "";
+assert.equal((await fetch(`${base}/api/projects`)).status, 401, "退出后原会话应失效");
+const reLogin = await post(`${base}/api/auth/login`, { username: "admin", password: "admin5678" });
+assert.equal(reLogin.status, 200, "退出后可重新登录");
+
+console.log("✓ 全部通过：项目 / 工作区 / 上传 / 缩略图 / 原图 / 去重 / 改元数据 / 改维度名称 / 画板迁移与重复实例 / 安全替换图片 / 旧库标签迁移 / AI 打标(复用·裁决·降级) / 标签管理(重命名·合并·删除·清理) / AI 服务配置(状态·保存·掩码·测试连接·模型列表·环境变量覆盖) / 回收站(软删-列出-恢复-彻底删) / 登录页公告(公开读取·仅管理员可写·启用开关) / 账号系统(首次初始化·登录·权限隔离·成员管理·停用踢下线·重置密码·删除保留素材·登录审计·退出)");
 process.exit(0);

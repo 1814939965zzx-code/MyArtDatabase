@@ -15,6 +15,7 @@ import {
 import { useEffect, useMemo, useRef, useState } from "react";
 import { AssetMetadataEditor, type AssetMetadataEditorHandle, type AssetMetadataUpdate } from "./AssetMetadataEditor";
 import { AssetImageReplacement } from "./AssetImageReplacement";
+import { notifyUnauthorized } from "./api";
 import { TagFilterBar } from "./TagFilterBar";
 import type { TagEntry } from "./TagManager";
 import { useProgressiveImage } from "./useProgressiveImage";
@@ -50,6 +51,7 @@ async function request<T>(url: string, init?: RequestInit): Promise<T> {
     ...init,
     headers: { "Content-Type": "application/json", ...init?.headers },
   });
+  if (response.status === 401) notifyUnauthorized();
   const body = (await response.json()) as T & { error?: string };
   if (!response.ok) throw new Error(body.error || "请求失败");
   return body;

@@ -297,12 +297,12 @@ systemctl is-active --quiet "${SERVICE_NAME}" || {
 
 LOCAL_URL="http://127.0.0.1:${PORT}"
 for _ in {1..30}; do
-  if curl -fsS "${LOCAL_URL}/api/projects" >/dev/null 2>&1; then break; fi
+  if curl -fsS "${LOCAL_URL}/api/health" >/dev/null 2>&1; then break; fi
   sleep 1
 done
-curl -fsS "${LOCAL_URL}/api/projects" >/dev/null 2>&1 || {
+curl -fsS "${LOCAL_URL}/api/health" >/dev/null 2>&1 || {
   systemctl status "${SERVICE_NAME}" --no-pager || true
-  die "服务已启动但 API 健康检查失败：${LOCAL_URL}/api/projects"
+  die "服务已启动但 API 健康检查失败：${LOCAL_URL}/api/health"
 }
 
 ACTUAL_USER="$(systemctl show "${SERVICE_NAME}" --property User --value)"

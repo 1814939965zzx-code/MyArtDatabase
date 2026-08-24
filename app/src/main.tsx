@@ -1,5 +1,5 @@
 import { createRoot } from "react-dom/client";
-import { ArtDatabaseApp } from "./ArtDatabaseApp";
+import { AuthGate } from "./AuthGate";
 import "./globals.css";
 
-createRoot(document.getElementById("root")!).render(<ArtDatabaseApp />);
+createRoot(document.getElementById("root")!).render(<AuthGate />);

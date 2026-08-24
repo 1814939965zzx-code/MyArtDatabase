@@ -4,6 +4,7 @@
 
 import { ArrowDownToLine, ArrowUpToLine, Check, Frame, ImagePlus, LoaderCircle, Plus, RotateCw, Trash2 } from "lucide-react";
 import { KeyboardEvent, MouseEvent, PointerEvent, useEffect, useRef, useState } from "react";
+import { notifyUnauthorized } from "./api";
 
 type Asset = { id: string; name: string; thumbnailUrl: string | null };
 type CanvasSummary = { id: string; projectId: string; name: string; revision: number; itemCount: number };
@@ -40,6 +41,7 @@ const RESIZE_DIRECTIONS: ResizeDirection[] = ["nw", "n", "ne", "e", "se", "s", "
 
 async function json<T>(url: string, init?: RequestInit): Promise<T> {
   const response = await fetch(url, { ...init, headers: { "Content-Type": "application/json", ...init?.headers } });
+  if (response.status === 401) notifyUnauthorized();
   const data = await response.json() as T & { error?: string };
   if (!response.ok) throw new Error(data.error || "请求失败");
   return data;

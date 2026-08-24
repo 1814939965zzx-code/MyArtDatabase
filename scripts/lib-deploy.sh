@@ -320,14 +320,15 @@ fetch_homepage() {
 
 verify_api_json() {
   local local_url="$1"
-  curl -fsS "${local_url}/api/projects" 2>/dev/null | node -e '
+  curl -fsS "${local_url}/api/health" 2>/dev/null | node -e '
     let s = "";
     process.stdin.on("data", (d) => { s += d; });
     process.stdin.on("end", () => {
-      try { JSON.parse(s); } catch { process.exit(1); }
+      try { const parsed = JSON.parse(s); if (parsed.ok !== true) process.exit(1); }
+      catch { process.exit(1); }
     });
   ' || {
-    die "${local_url}/api/projects 返回的不是有效 JSON"
+    die "${local_url}/api/health 返回的不是有效健康 JSON"
   }
 }
 
@@ -356,14 +357,14 @@ verify_data_counts() {
   log "数据校验通过：${post_projects} 个项目 / ${post_assets} 个素材（与部署前一致）"
 }
 
-# API 项目数与数据库一致（check-production.sh 使用，只读）
+# 账号系统启用后，业务接口需要登录，项目数不再通过未授权接口暴露。
+# 该检查改为：API 健康可用（/api/health）+ 数据库计数可读，二者一致由
+# verify_service_runtime_config（进程 DB_PATH 与生产配置一致）保证。
 verify_api_counts_match_db() {
   local local_url="$1" db_path="$2"
-  local api_count db_count
-  api_count="$(curl -fsS "${local_url}/api/projects" 2>/dev/null | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{console.log((JSON.parse(s).projects||[]).length)}catch{console.log("?")}})')"
+  local db_count
+  curl -fsS "${local_url}/api/health" >/dev/null 2>&1 || die "API 健康检查失败：${local_url}/api/health"
   db_count="$(db_projects_count "${db_path}")"
-  [[ "${api_count}" == "${db_count}" && "${api_count}" != "?" ]] || {
-    die "API 项目数（${api_count}）与数据库（${db_count}）不一致"
-  }
-  log "API 与数据库一致：${db_count} 个项目"
+  [[ "${db_count}" != "?" ]] || die "数据库项目数不可读：${db_path}"
+  log "API 健康可用，数据库 ${db_count} 个项目"
 }

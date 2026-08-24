@@ -139,7 +139,11 @@ const server = createServer(async (req, res) => {
     const url = new URL(req.url, "http://localhost");
     if (url.pathname.startsWith("/api/")) {
       const request = await toWebRequest(req);
-      const response = await handleApi(request, { db, store });
+      const forwarded = req.headers["x-forwarded-for"];
+      const clientIp = typeof forwarded === "string" && forwarded.trim()
+        ? forwarded.split(",")[0].trim()
+        : req.socket.remoteAddress || "";
+      const response = await handleApi(request, { db, store, clientIp });
       sendResponse(res, response);
       return;
     }

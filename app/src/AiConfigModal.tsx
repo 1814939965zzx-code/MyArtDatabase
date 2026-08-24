@@ -2,6 +2,8 @@
 
 import { AlertTriangle, Check, KeyRound, LoaderCircle, X } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
+import { notifyUnauthorized } from "./api";
+import { PasswordInput } from "./PasswordInput";
 
 export type AiConfigStatus = {
   source: "env" | "file";
@@ -17,6 +19,7 @@ async function request<T>(url: string, init?: RequestInit): Promise<T> {
     ...init,
     headers: { "Content-Type": "application/json", ...init?.headers },
   });
+  if (response.status === 401) notifyUnauthorized();
   const body = (await response.json()) as T & { error?: string };
   if (!response.ok) throw new Error(body.error || "请求失败");
   return body;
@@ -138,8 +141,7 @@ export function AiConfigModal({ onClose }: { onClose: () => void }) {
           </label>
           <label>
             API Key
-            <input
-              type="password"
+            <PasswordInput
               value={apiKey}
               onChange={(event) => setApiKey(event.target.value)}
               maxLength={500}

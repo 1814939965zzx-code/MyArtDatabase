@@ -33,6 +33,7 @@ export function TagManager({
   onChanged,
   mode = "global",
   projectTags,
+  isAdmin = true,
 }: {
   onClose: () => void;
   /** 标签字典或关联关系变化后回调（父组件刷新素材列表与联想词）。 */
@@ -40,6 +41,8 @@ export function TagManager({
   /** global：完整字典管理；project：只展示该项目使用的标签，无合并/清理/AI 配置。 */
   mode?: "global" | "project";
   projectTags?: string[];
+  /** 当前用户是否为管理员；非管理员隐藏 AI 服务配置入口（服务端同时校验权限）。 */
+  isAdmin?: boolean;
 }) {
   const isProject = mode === "project";
   const [tags, setTags] = useState<TagEntry[]>([]);
@@ -242,7 +245,7 @@ export function TagManager({
             />
           </div>
           <span className="tag-manager-count">{isProject ? `${tags.length} 个标签` : `${tags.length} 个标签 · ${unusedCount} 个未使用`}</span>
-          {!isProject ? (
+          {!isProject && isAdmin ? (
             <button className="tag-ai-config-button" type="button" onClick={() => setAiConfigOpen(true)}>
               <KeyRound size={13} />AI 服务配置
             </button>

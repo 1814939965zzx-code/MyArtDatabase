@@ -25,6 +25,7 @@
 
 - 产品：团队使用的图片素材库，按项目引用全局素材，并通过项目维度和自由画板组织素材。
 - 运行时：单个原生 Node.js 进程，同时提供 React 页面、`/api/*` 接口、SQLite 数据库和本地图片存储。
+- 账号：两级角色（管理员/成员）；除健康检查与登录相关接口外，全部 `/api/*` 需要登录（HttpOnly Cookie Session）；首次启动在界面引导创建管理员。
 - 前端：React 19、TypeScript、Vite、Tailwind CSS v4。
 - 后端：`node:http`、Node 内置 `node:sqlite`、`sharp`。
 - 环境要求：Node.js `>=23.4.0`，建议 Node.js 24。
@@ -34,21 +35,25 @@
 
 | 位置 | 职责 |
 | --- | --- |
-| `app/src/ArtDatabaseApp.tsx` | 页面状态与主要应用流程 |
+| `app/src/AuthGate.tsx` | 登录页 / 首次设置管理员页、会话状态与 401 事件监听 |
+| `app/src/ArtDatabaseApp.tsx` | 页面状态与主要应用流程（顶部用户菜单、账号设置、成员管理入口） |
 | `app/src/AllAssetsView.tsx` | 全局素材库 |
 | `app/src/DimensionPreview.tsx` | 一维、二维、三维预览与拖动交互 |
 | `app/src/BoardView.tsx` | 自由画板 |
 | `app/src/UploadModal.tsx` | 上传与重复素材处理 |
 | `app/src/AssetMetadataEditor.tsx` | 素材详情与 Metadata 编辑 |
 | `app/src/TagFilterBar.tsx` | 素材标签筛选模块（全部素材页与项目素材页共用） |
-| `app/src/AiConfigModal.tsx` | AI 服务配置页（key 服务端保存、测试连接） |
-| `app/server/routes.js` | 全部 `/api/*` 路由 |
-| `app/server/db.js` | SQLite 表结构、迁移与示例数据 |
+| `app/src/AiConfigModal.tsx` | AI 服务配置页（key 服务端保存、测试连接；仅管理员可见入口） |
+| `app/src/UserManagerModal.tsx` | 成员管理面板（仅管理员：创建/停用/重置密码/删除/改角色/登录审计） |
+| `app/src/AccountSettingsModal.tsx` | 账号设置（改显示名/密码） |
+| `app/server/routes.js` | 全部 `/api/*` 路由（含登录、用户管理、权限校验） |
+| `app/server/auth.js` | 密码哈希（scrypt）、会话创建/解析、cookie 与登录审计 |
+| `app/server/db.js` | SQLite 表结构、迁移与示例数据（含 users/sessions/login_logs） |
 | `app/server/tags.js` | 标签字典与素材-标签关联的共享读写 |
 | `app/server/ai.js` | AI 打标：配置读取、OpenAI 兼容调用、两轮标签复用裁决 |
 | `app/server/storage.js` | 原图和缩略图存储 |
 | `app/src/TagManager.tsx` | 标签管理面板（全局：重命名/合并/删除/清理/AI 配置；项目：该项目标签，重命名/删除） |
-| `app/test/api-smoke.mjs` | API 全链路冒烟测试 |
+| `app/test/api-smoke.mjs` | API 全链路冒烟测试（含账号系统用例） |
 | `scripts/deploy.sh` | 服务器部署与版本校验 |
 | `scripts/setup-server.sh` | 首次安装、旧数据安全迁移与 systemd 初始化 |
 | `scripts/check-production.sh` | 只读生产环境巡检 |

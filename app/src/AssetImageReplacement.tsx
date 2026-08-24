@@ -2,6 +2,7 @@
 
 import { AlertTriangle, ClipboardPaste, ImagePlus, LoaderCircle, RotateCcw, Upload, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
+import { notifyUnauthorized } from "./api";
 
 const ALLOWED_IMAGE_TYPES = new Set(["image/jpeg", "image/png", "image/webp"]);
 const MAX_FILE_SIZE = 50 * 1024 * 1024;
@@ -106,6 +107,7 @@ export function AssetImageReplacement({
     setError("");
     try {
       const response = await fetch("/api/assets/image", { method: "POST", body: form });
+      if (response.status === 401) notifyUnauthorized();
       const data = await response.json() as { error?: string };
       if (!response.ok) throw new Error(data.error || "替换图片失败");
       await onComplete();

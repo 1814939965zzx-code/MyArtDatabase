@@ -217,8 +217,10 @@ mkdir -p "${TMP}/pc/media"
 DB_PATH="${TMP}/pc/app.db" STORE_ROOT="${TMP}/pc/media" PORT="${PC_PORT}" node "${REAL_REPO}/app/server/index.js" &
 PC_PID=$!
 PIDS+=("${PC_PID}")
-for _ in $(seq 1 20); do curl -fsS "http://127.0.0.1:${PC_PORT}/api/projects" >/dev/null 2>&1 && break; sleep 0.5; done
-curl -fsS -X POST "http://127.0.0.1:${PC_PORT}/api/projects" -H 'content-type: application/json' -d '{"name":"真实项目"}' >/dev/null
+for _ in $(seq 1 20); do curl -fsS "http://127.0.0.1:${PC_PORT}/api/health" >/dev/null 2>&1 && break; sleep 0.5; done
+PC_COOKIE_JAR="${TMP}/pc/cookies.txt"
+curl -fsS -c "${PC_COOKIE_JAR}" -X POST "http://127.0.0.1:${PC_PORT}/api/auth/setup" -H 'content-type: application/json' -d '{"username":"pcadmin","password":"pcadmin1234"}' >/dev/null
+curl -fsS -b "${PC_COOKIE_JAR}" -X POST "http://127.0.0.1:${PC_PORT}/api/projects" -H 'content-type: application/json' -d '{"name":"真实项目"}' >/dev/null
 
 cat >"${TMP}/pc/env" <<EOF
 PORT=${PC_PORT}
@@ -346,8 +348,10 @@ EOF
 DB_PATH="${TMP}/dep-data/app.db" STORE_ROOT="${TMP}/dep-data/media" PORT="${DEP_PORT}" node "${TMP}/dep-repo/app/server/index.js" &
 DEP_PID=$!
 PIDS+=("${DEP_PID}")
-for _ in $(seq 1 20); do curl -fsS "http://127.0.0.1:${DEP_PORT}/api/projects" >/dev/null 2>&1 && break; sleep 0.5; done
-curl -fsS -X POST "http://127.0.0.1:${DEP_PORT}/api/projects" -H 'content-type: application/json' -d '{"name":"生产项目"}' >/dev/null
+for _ in $(seq 1 20); do curl -fsS "http://127.0.0.1:${DEP_PORT}/api/health" >/dev/null 2>&1 && break; sleep 0.5; done
+DEP_COOKIE_JAR="${TMP}/dep/cookies.txt"
+curl -fsS -c "${DEP_COOKIE_JAR}" -X POST "http://127.0.0.1:${DEP_PORT}/api/auth/setup" -H 'content-type: application/json' -d '{"username":"depadmin","password":"depadmin1234"}' >/dev/null
+curl -fsS -b "${DEP_COOKIE_JAR}" -X POST "http://127.0.0.1:${DEP_PORT}/api/projects" -H 'content-type: application/json' -d '{"name":"生产项目"}' >/dev/null
 
 set +e
 DEP_OUT="$(PATH="${FAKEBIN}:${PATH}" FAKE_MAINPID="${DEP_PID}" FAKE_PS_ARGS="node ${TMP}/dep-repo/app/server/index.js" ENV_FILE="${TMP}/dep/env" REPO_DIR="${TMP}/dep-repo" bash "${TMP}/dep-repo/scripts/deploy.sh" 2>&1)"

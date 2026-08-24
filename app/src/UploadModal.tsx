@@ -4,6 +4,7 @@ import { AlertTriangle, Check, FileImage, LoaderCircle, Upload, X } from "lucide
 import { sha256 } from "@noble/hashes/sha2.js";
 import { bytesToHex } from "@noble/hashes/utils.js";
 import { FormEvent, useEffect, useState } from "react";
+import { notifyUnauthorized } from "./api";
 import { centeredRangeStyle, displayDimensionValue } from "./dimensionScale";
 
 type Dimension = { id: string; leftLabel: string; rightLabel: string };
@@ -31,6 +32,7 @@ async function prepareImage(file: File, projectId: string): Promise<PreparedFile
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ sha256: hash, projectId }),
   });
+  if (response.status === 401) notifyUnauthorized();
   const data = await response.json() as { duplicates?: Duplicate[]; error?: string };
   if (!response.ok) throw new Error(data.error || "重复检查失败");
   return {
@@ -94,6 +96,7 @@ export function UploadModal({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ projectId, assetId }),
       });
+      if (response.status === 401) notifyUnauthorized();
       const data = await response.json() as { error?: string };
       if (!response.ok) throw new Error(data.error || "引用失败");
       await onComplete();
@@ -130,6 +133,7 @@ export function UploadModal({
     setError("");
     try {
       const response = await fetch("/api/uploads", { method: "POST", body: form });
+      if (response.status === 401) notifyUnauthorized();
       const data = await response.json() as { error?: string };
       if (!response.ok) throw new Error(data.error || "上传失败");
       await onComplete();

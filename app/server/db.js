@@ -37,8 +37,39 @@ CREATE TABLE IF NOT EXISTS assets (
   notes TEXT NOT NULL DEFAULT '',
   source_url TEXT NOT NULL DEFAULT '',
   deleted_at TEXT,
+  created_by TEXT,
+  created_by_name TEXT NOT NULL DEFAULT '',
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+CREATE TABLE IF NOT EXISTS users (
+  id TEXT PRIMARY KEY NOT NULL,
+  username TEXT NOT NULL UNIQUE COLLATE NOCASE,
+  display_name TEXT NOT NULL DEFAULT '',
+  password_hash TEXT NOT NULL,
+  role TEXT NOT NULL DEFAULT 'member' CHECK (role IN ('admin', 'member')),
+  active INTEGER NOT NULL DEFAULT 1,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  last_login_at TEXT
+);
+CREATE TABLE IF NOT EXISTS sessions (
+  token TEXT PRIMARY KEY NOT NULL,
+  user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  expires_at TEXT NOT NULL,
+  remember INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE TABLE IF NOT EXISTS login_logs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  username TEXT NOT NULL,
+  success INTEGER NOT NULL DEFAULT 0,
+  ip TEXT NOT NULL DEFAULT '',
+  user_agent TEXT NOT NULL DEFAULT '',
+  message TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS sessions_user_idx ON sessions(user_id);
+CREATE INDEX IF NOT EXISTS login_logs_created_idx ON login_logs(created_at DESC);
 CREATE TABLE IF NOT EXISTS tags (
   id TEXT PRIMARY KEY NOT NULL,
   name TEXT NOT NULL UNIQUE COLLATE NOCASE,
@@ -92,6 +123,11 @@ CREATE INDEX IF NOT EXISTS assets_sha256_idx ON assets(sha256);
 CREATE INDEX IF NOT EXISTS asset_tags_tag_idx ON asset_tags(tag_id);
 CREATE INDEX IF NOT EXISTS canvases_project_idx ON canvases(project_id);
 CREATE INDEX IF NOT EXISTS canvas_items_canvas_idx ON canvas_items(canvas_id);
+CREATE TABLE IF NOT EXISTS app_settings (
+  key TEXT PRIMARY KEY NOT NULL,
+  value TEXT NOT NULL DEFAULT '',
+  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
 `;
 
 function allowRepeatedCanvasAssets(db) {
@@ -124,41 +160,53 @@ function allowRepeatedCanvasAssets(db) {
   }
 }
 
-const SCHEMA_VERSION = 1;
+const SCHEMA_VERSION = 3;
 
 /**
  * v1：把素材上的逗号分隔标签字符串迁入 tags/asset_tags 标签字典。
  * 迁移完成后删除 assets.tags 列，标签以新表为唯一事实来源；用 user_version 保证幂等。
+ * v2：为 assets 补充 created_by / created_by_name（上传者快照），兼容没有账号概念的旧库。
+ * v3：新增 app_settings 键值表（登录页公告等系统级设置），CREATE TABLE IF NOT EXISTS 已覆盖新旧库。
  */
 function migrateSchema(db) {
   const { user_version: version } = db.prepare("PRAGMA user_version").get();
-  if (version >= SCHEMA_VERSION) return;
-  const hasLegacyTags = db.prepare("PRAGMA table_info(assets)").all().some((column) => column.name === "tags");
-  if (hasLegacyTags) {
-    const rows = db.prepare("SELECT id, tags FROM assets").all();
-    const known = new Map(db.prepare("SELECT id, name FROM tags").all()
-      .map((row) => [normalizeTag(row.name), row.id]));
-    const insertTag = db.prepare("INSERT INTO tags (id, name, source) VALUES (?, ?, 'manual')");
-    const insertLink = db.prepare("INSERT OR IGNORE INTO asset_tags (asset_id, tag_id, position, source) VALUES (?, ?, ?, 'manual')");
-    db.exec("BEGIN");
-    try {
-      for (const row of rows) {
-        String(row.tags || "").split(",").map((tag) => tag.trim()).filter(Boolean).forEach((name, index) => {
-          const key = normalizeTag(name);
-          let tagId = known.get(key);
-          if (!tagId) {
-            tagId = randomUUID();
-            insertTag.run(tagId, name);
-            known.set(key, tagId);
-          }
-          insertLink.run(row.id, tagId, index);
-        });
+  if (version < 1) {
+    const hasLegacyTags = db.prepare("PRAGMA table_info(assets)").all().some((column) => column.name === "tags");
+    if (hasLegacyTags) {
+      const rows = db.prepare("SELECT id, tags FROM assets").all();
+      const known = new Map(db.prepare("SELECT id, name FROM tags").all()
+        .map((row) => [normalizeTag(row.name), row.id]));
+      const insertTag = db.prepare("INSERT INTO tags (id, name, source) VALUES (?, ?, 'manual')");
+      const insertLink = db.prepare("INSERT OR IGNORE INTO asset_tags (asset_id, tag_id, position, source) VALUES (?, ?, ?, 'manual')");
+      db.exec("BEGIN");
+      try {
+        for (const row of rows) {
+          String(row.tags || "").split(",").map((tag) => tag.trim()).filter(Boolean).forEach((name, index) => {
+            const key = normalizeTag(name);
+            let tagId = known.get(key);
+            if (!tagId) {
+              tagId = randomUUID();
+              insertTag.run(tagId, name);
+              known.set(key, tagId);
+            }
+            insertLink.run(row.id, tagId, index);
+          });
+        }
+        db.exec("ALTER TABLE assets DROP COLUMN tags");
+        db.exec("COMMIT");
+      } catch (error) {
+        db.exec("ROLLBACK");
+        throw error;
       }
-      db.exec("ALTER TABLE assets DROP COLUMN tags");
-      db.exec("COMMIT");
-    } catch (error) {
-      db.exec("ROLLBACK");
-      throw error;
+    }
+  }
+  if (version < 2) {
+    const assetColumns = db.prepare("PRAGMA table_info(assets)").all().map((column) => column.name);
+    if (!assetColumns.includes("created_by")) {
+      db.exec("ALTER TABLE assets ADD COLUMN created_by TEXT");
+    }
+    if (!assetColumns.includes("created_by_name")) {
+      db.exec("ALTER TABLE assets ADD COLUMN created_by_name TEXT NOT NULL DEFAULT ''");
     }
   }
   db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);

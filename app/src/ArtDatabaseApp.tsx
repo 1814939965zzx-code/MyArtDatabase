@@ -2,12 +2,15 @@
 
 import {
   Archive,
+  ChevronDown,
   Grid2X2,
   ImageIcon,
   ImagePlus,
   LayoutGrid,
   List,
   LoaderCircle,
+  LogOut,
+  Megaphone,
   Menu,
   PanelLeftClose,
   PanelLeftOpen,
@@ -20,10 +23,16 @@ import {
   Tags,
   Trash2,
   Upload,
+  UserCog,
+  Users,
   X,
 } from "lucide-react";
 import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
+import { apiFetch } from "./api";
+import type { SessionUser } from "./AuthGate";
+import { AccountSettingsModal } from "./AccountSettingsModal";
 import { AllAssetsView, type LibraryAsset } from "./AllAssetsView";
+import { AnnouncementModal } from "./AnnouncementModal";
 import { AssetMetadataEditor, type AssetMetadataEditorHandle, type AssetMetadataUpdate } from "./AssetMetadataEditor";
 import { AssetImageReplacement } from "./AssetImageReplacement";
 import { BoardView } from "./BoardView";
@@ -35,6 +44,7 @@ import { TagFilterBar } from "./TagFilterBar";
 import { TagManager, type TagEntry } from "./TagManager";
 import { TrashView, type TrashedAsset } from "./TrashView";
 import { UploadModal } from "./UploadModal";
+import { UserManagerModal } from "./UserManagerModal";
 import { useProgressiveImage } from "./useProgressiveImage";
 
 type Project = {
@@ -68,6 +78,7 @@ type Asset = {
   height: number;
   mimeType: string;
   createdAt: string;
+  createdByName?: string;
   dimensionValues: Record<string, number>;
 };
 
@@ -79,16 +90,6 @@ type Workspace = {
 
 type PendingDeletion =
   | { token: string; kind: "dimension"; projectId: string; dimension: Dimension; seconds: number };
-
-async function api<T>(url: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(url, {
-    ...init,
-    headers: { "Content-Type": "application/json", ...init?.headers },
-  });
-  const body = (await response.json()) as T & { error?: string };
-  if (!response.ok) throw new Error(body.error || "请求失败");
-  return body;
-}
 
 function Modal({
   title,
@@ -125,7 +126,7 @@ function Modal({
   );
 }
 
-export function ArtDatabaseApp() {
+export function ArtDatabaseApp({ user, onLogout }: { user: SessionUser; onLogout: () => void }) {
   const [projects, setProjects] = useState<Project[]>([]);
   const [libraryAssets, setLibraryAssets] = useState<LibraryAsset[]>([]);
   const [trashAssets, setTrashAssets] = useState<TrashedAsset[]>([]);
@@ -155,6 +156,12 @@ export function ArtDatabaseApp() {
   const [aiTagBusy, setAiTagBusy] = useState(false);
   const [tagManagerOpen, setTagManagerOpen] = useState(false);
   const [projectTagManagerOpen, setProjectTagManagerOpen] = useState(false);
+  const [userMenuOpen, setUserMenuOpen] = useState(false);
+  const [accountOpen, setAccountOpen] = useState(false);
+  const [userManagerOpen, setUserManagerOpen] = useState(false);
+  const [announcementOpen, setAnnouncementOpen] = useState(false);
+  const [currentUser, setCurrentUser] = useState<SessionUser>(user);
+  const userMenuRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const metadataEditorRef = useRef<AssetMetadataEditorHandle>(null);
   const dimensionEditorRef = useRef<DimensionControlsEditorHandle>(null);
@@ -168,7 +175,7 @@ export function ArtDatabaseApp() {
   );
 
   async function loadProjects(preferredId?: string) {
-    const data = await api<{ projects: Project[] }>("/api/projects");
+    const data = await apiFetch<{ projects: Project[] }>("/api/projects");
     setProjects(data.projects);
     setSelectedProjectId((current) => {
       const next = preferredId || current;
@@ -185,7 +192,7 @@ export function ArtDatabaseApp() {
     }
     setLoading(true);
     try {
-      const data = await api<Workspace>(`/api/workspace?projectId=${encodeURIComponent(projectId)}`);
+      const data = await apiFetch<Workspace>(`/api/workspace?projectId=${encodeURIComponent(projectId)}`);
       setWorkspace(data);
       setSelectedAssetId((current) =>
         current && data.assets.some((asset) => asset.id === current) ? current : null,
@@ -200,7 +207,7 @@ export function ArtDatabaseApp() {
   async function loadLibrary() {
     setLibraryLoading(true);
     try {
-      const data = await api<{ assets: LibraryAsset[] }>("/api/library");
+      const data = await apiFetch<{ assets: LibraryAsset[] }>("/api/library");
       setLibraryAssets(data.assets);
     } finally {
       setLibraryLoading(false);
@@ -210,7 +217,7 @@ export function ArtDatabaseApp() {
   async function loadTrash(quiet = false) {
     if (!quiet) setTrashLoading(true);
     try {
-      const data = await api<{ assets: TrashedAsset[] }>("/api/trash");
+      const data = await apiFetch<{ assets: TrashedAsset[] }>("/api/trash");
       setTrashAssets(data.assets);
     } finally {
       setTrashLoading(false);
@@ -219,7 +226,7 @@ export function ArtDatabaseApp() {
 
   async function loadTagDict() {
     try {
-      const data = await api<{ tags: TagEntry[] }>("/api/tags");
+      const data = await apiFetch<{ tags: TagEntry[] }>("/api/tags");
       setTagDict(data.tags);
     } catch {
       // 联想词载入失败不阻塞页面
@@ -248,6 +255,22 @@ export function ArtDatabaseApp() {
     const timer = window.setTimeout(() => setMessage(null), 3200);
     return () => window.clearTimeout(timer);
   }, [message]);
+
+  useEffect(() => {
+    if (!userMenuOpen) return;
+    const closeOnClick = (event: MouseEvent) => {
+      if (userMenuRef.current && !userMenuRef.current.contains(event.target as Node)) setUserMenuOpen(false);
+    };
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setUserMenuOpen(false);
+    };
+    window.addEventListener("mousedown", closeOnClick);
+    window.addEventListener("keydown", closeOnEscape);
+    return () => {
+      window.removeEventListener("mousedown", closeOnClick);
+      window.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [userMenuOpen]);
 
   useEffect(() => {
     if (!selectedAssetId) return;
@@ -320,7 +343,7 @@ export function ArtDatabaseApp() {
     const form = new FormData(event.currentTarget);
     setBusy(true);
     try {
-      const data = await api<{ project: Project }>("/api/projects", {
+      const data = await apiFetch<{ project: Project }>("/api/projects", {
         method: "POST",
         body: JSON.stringify({ name: form.get("name"), description: form.get("description") }),
       });
@@ -340,7 +363,7 @@ export function ArtDatabaseApp() {
     const form = new FormData(event.currentTarget);
     setBusy(true);
     try {
-      await api("/api/projects", {
+      await apiFetch("/api/projects", {
         method: "PATCH",
         body: JSON.stringify({
           id: workspace.project.id,
@@ -362,7 +385,7 @@ export function ArtDatabaseApp() {
     if (!workspace || !window.confirm(`确定删除“${workspace.project.name}”吗？项目中的分类数据会同时删除。`)) return;
     setBusy(true);
     try {
-      await api(`/api/projects?id=${encodeURIComponent(workspace.project.id)}`, { method: "DELETE" });
+      await apiFetch(`/api/projects?id=${encodeURIComponent(workspace.project.id)}`, { method: "DELETE" });
       setEditOpen(false);
       setWorkspace(null);
       setSelectedProjectId("");
@@ -381,7 +404,7 @@ export function ArtDatabaseApp() {
     const form = new FormData(event.currentTarget);
     setBusy(true);
     try {
-      await api("/api/dimensions", {
+      await apiFetch("/api/dimensions", {
         method: "POST",
         body: JSON.stringify({
           projectId: workspace.project.id,
@@ -418,7 +441,7 @@ export function ArtDatabaseApp() {
   async function commitDimensionDeletion(projectId: string, dimension: Dimension) {
     setBusy(true);
     try {
-      await api(
+      await apiFetch(
         `/api/dimensions?id=${encodeURIComponent(dimension.id)}&projectId=${encodeURIComponent(projectId)}`,
         { method: "DELETE" },
       );
@@ -453,7 +476,7 @@ export function ArtDatabaseApp() {
   async function saveDimensionValue(assetId: string, dimensionId: string, value: number) {
     if (!workspace) return;
     try {
-      await api("/api/asset-values", {
+      await apiFetch("/api/asset-values", {
         method: "PATCH",
         body: JSON.stringify({ projectId: workspace.project.id, assetId, dimensionId, value }),
       });
@@ -468,7 +491,7 @@ export function ArtDatabaseApp() {
     if (!workspace || !updates.length) return;
     setBusy(true);
     try {
-      await api("/api/dimensions", {
+      await apiFetch("/api/dimensions", {
         method: "PATCH",
         body: JSON.stringify({ projectId: workspace.project.id, dimensions: updates }),
       });
@@ -498,7 +521,7 @@ export function ArtDatabaseApp() {
         : asset),
     } : current);
     try {
-      await Promise.all(Object.entries(values).map(([dimensionId, value]) => api("/api/asset-values", {
+      await Promise.all(Object.entries(values).map(([dimensionId, value]) => apiFetch("/api/asset-values", {
         method: "PATCH",
         body: JSON.stringify({ projectId: workspace.project.id, assetId, dimensionId, value }),
       })));
@@ -525,7 +548,7 @@ export function ArtDatabaseApp() {
   async function removeAssetFromProject(asset: Asset) {
     if (!workspace || !window.confirm(`从当前项目移除“${asset.name}”？全局素材不会被删除。`)) return;
     try {
-      await api(`/api/project-assets?projectId=${encodeURIComponent(workspace.project.id)}&assetId=${encodeURIComponent(asset.id)}`, { method: "DELETE" });
+      await apiFetch(`/api/project-assets?projectId=${encodeURIComponent(workspace.project.id)}&assetId=${encodeURIComponent(asset.id)}`, { method: "DELETE" });
       setSelectedAssetId(null);
       await Promise.all([loadProjects(workspace.project.id), loadWorkspace(workspace.project.id)]);
       setMessage("素材已从当前项目移除");
@@ -538,7 +561,7 @@ export function ArtDatabaseApp() {
     if (!workspace) return;
     setBusy(true);
     try {
-      await api("/api/assets", {
+      await apiFetch("/api/assets", {
         method: "PATCH",
         body: JSON.stringify({ ...update, id: asset.id, tags: update.tags.join(",") }),
       });
@@ -562,7 +585,7 @@ export function ArtDatabaseApp() {
     }
     setAiTagBusy(true);
     try {
-      const data = await api<{ reused: number; created: number; dropped: number }>("/api/assets/ai-tags", {
+      const data = await apiFetch<{ reused: number; created: number; dropped: number }>("/api/assets/ai-tags", {
         method: "POST",
         body: JSON.stringify({ id: asset.id }),
       });
@@ -579,7 +602,7 @@ export function ArtDatabaseApp() {
 
   async function restoreTrashAsset(asset: TrashedAsset) {
     try {
-      await api("/api/assets/restore", {
+      await apiFetch("/api/assets/restore", {
         method: "POST",
         body: JSON.stringify({ id: asset.id }),
       });
@@ -595,7 +618,7 @@ export function ArtDatabaseApp() {
     setBusy(true);
     try {
       const results = await Promise.allSettled(assetsToRestore.map((asset) =>
-        api("/api/assets/restore", { method: "POST", body: JSON.stringify({ id: asset.id }) }),
+        apiFetch("/api/assets/restore", { method: "POST", body: JSON.stringify({ id: asset.id }) }),
       ));
       const ok = results.filter((result) => result.status === "fulfilled").length;
       const failed = results.length - ok;
@@ -615,7 +638,7 @@ export function ArtDatabaseApp() {
     if (!window.confirm(`永久删除“${asset.name}”？${referenceNote}\n\n此操作会删除原始图片文件和数据库记录，无法恢复。`)) return;
     setBusy(true);
     try {
-      await api(`/api/assets?id=${encodeURIComponent(asset.id)}&mode=permanent&force=true`, { method: "DELETE" });
+      await apiFetch(`/api/assets?id=${encodeURIComponent(asset.id)}&mode=permanent&force=true`, { method: "DELETE" });
       await Promise.all([loadTrash(true), loadLibrary(), loadProjects()]);
       setMessage("素材已永久删除");
     } catch (error) {
@@ -633,7 +656,7 @@ export function ArtDatabaseApp() {
     setBusy(true);
     try {
       const results = await Promise.allSettled(assetsToPurge.map((asset) =>
-        api(`/api/assets?id=${encodeURIComponent(asset.id)}&mode=permanent&force=true`, { method: "DELETE" }),
+        apiFetch(`/api/assets?id=${encodeURIComponent(asset.id)}&mode=permanent&force=true`, { method: "DELETE" }),
       ));
       const ok = results.filter((result) => result.status === "fulfilled").length;
       const failed = results.length - ok;
@@ -733,6 +756,29 @@ export function ArtDatabaseApp() {
             {activeArea === "library" ? <button className="tag-manager-open-button" type="button" onClick={() => setTagManagerOpen(true)}><Tags size={14} />标签管理</button> : null}
             <div className="search-box"><Search size={17} /><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="搜索名称、文件或标签" aria-label="搜索素材" /></div>
             {activeArea === "project" && workspace ? <button className="upload-button" type="button" onClick={() => fileInputRef.current?.click()}><Upload size={15} />上传图片</button> : null}
+            <div className="user-menu" ref={userMenuRef}>
+              <button className="user-menu-trigger" type="button" onClick={() => setUserMenuOpen((open) => !open)} aria-haspopup="menu" aria-expanded={userMenuOpen}>
+                <span className="user-avatar">{currentUser.displayName.slice(0, 1).toUpperCase()}</span>
+                <span className="user-menu-copy">
+                  <strong>{currentUser.displayName}</strong>
+                  <small>{currentUser.role === "admin" ? "管理员" : "成员"}</small>
+                </span>
+                <ChevronDown size={14} />
+              </button>
+              {userMenuOpen ? (
+                <div className="user-menu-dropdown" role="menu">
+                  <button type="button" role="menuitem" onClick={() => { setAccountOpen(true); setUserMenuOpen(false); }}><UserCog size={15} />账号设置</button>
+                  {currentUser.role === "admin" ? (
+                    <button type="button" role="menuitem" onClick={() => { setUserManagerOpen(true); setUserMenuOpen(false); }}><Users size={15} />成员管理</button>
+                  ) : null}
+                  {currentUser.role === "admin" ? (
+                    <button type="button" role="menuitem" onClick={() => { setAnnouncementOpen(true); setUserMenuOpen(false); }}><Megaphone size={15} />登录页公告</button>
+                  ) : null}
+                  <div className="user-menu-divider" />
+                  <button className="user-menu-logout" type="button" role="menuitem" onClick={() => { setUserMenuOpen(false); onLogout(); }}><LogOut size={15} />退出登录</button>
+                </div>
+              ) : null}
+            </div>
           </div>
         </header>
 
@@ -818,6 +864,7 @@ export function ArtDatabaseApp() {
             <div className="drawer-heading"><div><p className="eyebrow">ASSET DETAIL</p><h2>素材详情</h2></div><button className="icon-button" type="button" onClick={() => void closeAssetDetail()} aria-label="关闭素材详情"><X size={18} /></button></div>
             <div className="drawer-scroll">
               <div className="drawer-file"><small>文件名</small><span>{selectedAsset.fileName}</span></div>
+              {selectedAsset.createdByName ? <div className="drawer-file"><small>上传者</small><span>{selectedAsset.createdByName}</span></div> : null}
               {selectedAsset.width || selectedAsset.fileSize ? <div className="drawer-facts"><span>{selectedAsset.width && selectedAsset.height ? `${selectedAsset.width} × ${selectedAsset.height}` : "尺寸未知"}</span><span>{selectedAsset.fileSize ? `${(selectedAsset.fileSize / 1024 / 1024).toFixed(2)} MB` : "演示素材"}</span><span>{selectedAsset.mimeType || "image"}</span></div> : null}
               <AssetImageReplacement
                 asset={selectedAsset}
@@ -876,6 +923,7 @@ export function ArtDatabaseApp() {
 
       {tagManagerOpen ? (
         <TagManager
+          isAdmin={currentUser.role === "admin"}
           onClose={() => setTagManagerOpen(false)}
           onChanged={() => { void loadLibrary(); void loadTagDict(); }}
         />
@@ -888,6 +936,26 @@ export function ArtDatabaseApp() {
           onClose={() => setProjectTagManagerOpen(false)}
           onChanged={() => { void loadWorkspace(workspace.project.id); void loadLibrary(); void loadTagDict(); }}
         />
+      ) : null}
+
+      {accountOpen ? (
+        <AccountSettingsModal
+          user={currentUser}
+          onClose={() => setAccountOpen(false)}
+          onUserChange={(next) => { setCurrentUser(next); }}
+        />
+      ) : null}
+
+      {userManagerOpen ? (
+        <UserManagerModal
+          meId={currentUser.id}
+          onClose={() => setUserManagerOpen(false)}
+          onChanged={() => { void loadProjects(); void loadLibrary(); void loadTrash(true); }}
+        />
+      ) : null}
+
+      {announcementOpen ? (
+        <AnnouncementModal onClose={() => setAnnouncementOpen(false)} />
       ) : null}
 
       {message ? <div className="toast" role="status">{message}</div> : null}
