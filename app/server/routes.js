@@ -31,6 +31,11 @@ function number(value, fallback, min, max) {
   return Number.isFinite(parsed) ? Math.max(min, Math.min(max, parsed)) : fallback;
 }
 
+function floatNumber(value, fallback, min, max) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? Math.min(max, Math.max(min, parsed)) : fallback;
+}
+
 function transaction(db, fn) {
   db.exec("BEGIN");
   try {
@@ -604,12 +609,20 @@ function getCanvas(request, { db }) {
   if (!canvasId) return Response.json({ error: "缺少画板 ID" }, { status: 400 });
   const canvas = db.prepare("SELECT id, project_id AS projectId, name, revision FROM canvases WHERE id = ?").get(canvasId);
   if (!canvas) return Response.json({ error: "画板不存在" }, { status: 404 });
-  const items = db.prepare(`SELECT ci.id, ci.canvas_id AS canvasId, ci.asset_id AS assetId,
-    ci.x, ci.y, ci.width, ci.height, ci.z_index AS zIndex, ci.rotation,
+  const rows = db.prepare(`SELECT ci.id, ci.canvas_id AS canvasId, ci.asset_id AS assetId, ci.type, ci.parent_frame_id AS parentFrameId,
+    ci.x, ci.y, ci.width, ci.height, ci.z_index AS zIndex, ci.rotation, ci.payload,
     a.name, CASE WHEN a.thumbnail_key IS NOT NULL OR a.storage_key IS NOT NULL
       THEN '/api/media?id=' || a.id || '&variant=thumbnail&v=' || COALESCE(a.thumbnail_key, a.storage_key) ELSE a.thumbnail_url END AS thumbnailUrl
-    FROM canvas_items ci INNER JOIN assets a ON a.id = ci.asset_id
-    WHERE ci.canvas_id = ? AND a.deleted_at IS NULL ORDER BY ci.z_index, ci.id`).all(canvasId);
+    FROM canvas_items ci LEFT JOIN assets a ON a.id = ci.asset_id
+    WHERE ci.canvas_id = ? AND (ci.asset_id IS NULL OR a.deleted_at IS NULL) ORDER BY ci.z_index, ci.id`).all(canvasId);
+  const items = rows.map((row) => {
+    let payload = null;
+    if (row.payload) {
+      try { payload = JSON.parse(row.payload); } catch { payload = null; }
+    }
+    const { payload: _ignored, ...rest } = row;
+    return { ...rest, payload };
+  });
   return Response.json({ canvas, items });
 }
 
@@ -622,26 +635,35 @@ function bumpRevision(db, canvasId) {
 async function addCanvasItem(request, { db }) {
   const payload = await request.json();
   const canvasId = cleanText(payload.canvasId, 80);
-  const assetId = cleanText(payload.assetId, 80);
-  if (!canvasId || !assetId) return Response.json({ error: "参数不完整" }, { status: 400 });
-  const membership = db.prepare(`SELECT 1 FROM canvases c
-    INNER JOIN project_assets pa ON pa.project_id = c.project_id
-    WHERE c.id = ? AND pa.asset_id = ?`).get(canvasId, assetId);
-  if (!membership) return Response.json({ error: "素材不属于当前项目" }, { status: 409 });
+  const assetId = cleanId(payload.assetId);
+  const type = (cleanText(payload.type, 20) || "image");
+  const allowedTypes = new Set(["image", "shape", "text"]);
+  if (!allowedTypes.has(type)) return Response.json({ error: "不支持的元素类型" }, { status: 400 });
+  if (type === "image" && !assetId) return Response.json({ error: "图片元素缺少素材 ID" }, { status: 400 });
+  if (!canvasId) return Response.json({ error: "参数不完整" }, { status: 400 });
+  const parentFrameId = payload.parentFrameId ? cleanText(payload.parentFrameId, 80) : null;
+  if (type === "image") {
+    const membership = db.prepare(`SELECT 1 FROM canvases c
+      INNER JOIN project_assets pa ON pa.project_id = c.project_id
+      WHERE c.id = ? AND pa.asset_id = ?`).get(canvasId, assetId);
+    if (!membership) return Response.json({ error: "素材不属于当前项目" }, { status: 409 });
+  }
   const { count } = db.prepare("SELECT COUNT(*) AS count FROM canvas_items WHERE canvas_id = ?").get(canvasId);
 
   const id = randomUUID();
+  const itemPayload = (payload.payload && typeof payload.payload === "object") ? JSON.stringify(payload.payload) : null;
   const item = {
-    id, canvasId, assetId,
-    x: number(payload.x, 120, 0, 1_000_000_000),
-    y: number(payload.y, 100, 0, 1_000_000_000),
-    width: number(payload.width, 220, 80, 800),
-    height: number(payload.height, 170, 60, 800),
+    id, canvasId, type, parentFrameId, assetId: type === "image" ? assetId : null,
+    x: floatNumber(payload.x, 120, -1_000_000_000, 1_000_000_000),
+    y: floatNumber(payload.y, 100, -1_000_000_000, 1_000_000_000),
+    width: floatNumber(payload.width, 220, 0.1, 100000),
+    height: floatNumber(payload.height, 170, 0.1, 100000),
     zIndex: number(payload.zIndex, count + 1, 0, 10000),
     rotation: number(payload.rotation, 0, -180, 180),
+    payload: payload.payload && typeof payload.payload === "object" ? payload.payload : null,
   };
-  db.prepare("INSERT INTO canvas_items (id, canvas_id, asset_id, x, y, width, height, z_index, rotation) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
-    .run(item.id, item.canvasId, item.assetId, item.x, item.y, item.width, item.height, item.zIndex, item.rotation);
+  db.prepare("INSERT INTO canvas_items (id, canvas_id, asset_id, type, parent_frame_id, x, y, width, height, z_index, rotation, payload) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+    .run(item.id, item.canvasId, item.assetId, item.type, parentFrameId, item.x, item.y, item.width, item.height, item.zIndex, item.rotation, itemPayload);
   const revision = bumpRevision(db, canvasId);
   return Response.json({ item, revision }, { status: 201 });
 }
@@ -651,12 +673,15 @@ async function updateCanvasItem(request, { db }) {
   const id = cleanText(payload.id, 80);
   const canvasId = cleanText(payload.canvasId, 80);
   if (!id || !canvasId) return Response.json({ error: "参数不完整" }, { status: 400 });
-  const result = db.prepare(`UPDATE canvas_items SET x = ?, y = ?, width = ?, height = ?, z_index = ?, rotation = ?
+  const itemPayload = (payload.payload && typeof payload.payload === "object") ? JSON.stringify(payload.payload) : null;
+  const parentFrameId = payload.parentFrameId ? cleanText(payload.parentFrameId, 80) : null;
+  const result = db.prepare(`UPDATE canvas_items SET x = ?, y = ?, width = ?, height = ?, z_index = ?, rotation = ?, parent_frame_id = ?, payload = ?
     WHERE id = ? AND canvas_id = ?`)
     .run(
-      number(payload.x, 0, 0, 1_000_000_000), number(payload.y, 0, 0, 1_000_000_000),
-      number(payload.width, 220, 80, 900), number(payload.height, 170, 60, 900),
+      floatNumber(payload.x, 0, -1_000_000_000, 1_000_000_000), floatNumber(payload.y, 0, -1_000_000_000, 1_000_000_000),
+      floatNumber(payload.width, 220, 0.1, 100000), floatNumber(payload.height, 170, 0.1, 100000),
       number(payload.zIndex, 1, 0, 10000), number(payload.rotation, 0, -180, 180),
+      parentFrameId, itemPayload,
       id, canvasId,
     );
   if (!result.changes) return Response.json({ error: "元素不存在" }, { status: 404 });

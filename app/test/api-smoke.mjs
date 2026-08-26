@@ -268,6 +268,29 @@ const canvasAfterInstanceDelete = await json(await fetch(`${base}/api/canvas?can
 assert.equal(canvasAfterInstanceDelete.items.filter((entry) => entry.assetId === asset.id).length, 1, "删除单个实例不得影响同素材的其他画板实例");
 assert.ok((await json(await fetch(`${base}/api/workspace?projectId=project-visual-direction`))).assets.some((entry) => entry.id === asset.id), "删除画板实例不得删除项目素材");
 
+// 9b) 标记图层元素：文本与描边图形（type=text/shape，assetId 可空，payload 存取）
+const textItem = await json(await post(`${base}/api/canvas-items`, { canvasId: canvas.canvas.id, type: "text", x: 5, y: 6, width: 180, height: 40, zIndex: 1, payload: { text: "批注", color: "#292d29", fontSize: 18 } }));
+assert.equal(textItem.item.type, "text", "应能创建文本标记元素");
+assert.equal(textItem.item.assetId, null, "文本元素不引用素材");
+const shapeItem = await json(await post(`${base}/api/canvas-items`, { canvasId: canvas.canvas.id, type: "shape", x: 7, y: 8, width: 60, height: 40, zIndex: 2, payload: { kind: "rect", stroke: "#d43a3a", strokeWidth: 3 } }));
+assert.equal(shapeItem.item.type, "shape", "应能创建描边图形元素");
+const canvasWithMarkers = await json(await fetch(`${base}/api/canvas?canvasId=${canvas.canvas.id}`));
+const markerItems = canvasWithMarkers.items.filter((entry) => entry.assetId === null);
+assert.ok(markerItems.some((entry) => entry.type === "text" && entry.payload && entry.payload.text === "批注"), "文本元素的 payload 应完整返回");
+assert.ok(markerItems.some((entry) => entry.type === "shape" && entry.payload && entry.payload.kind === "rect"), "图形元素的 payload 应完整返回");
+const textPatch = await json(await fetch(`${base}/api/canvas-items`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ id: textItem.item.id, canvasId: canvas.canvas.id, type: "text", x: 20, y: 30, width: 200, height: 50, zIndex: 3, payload: { text: "改后批注", color: "#2f7dd1", fontSize: 20 } }) }));
+assert.ok(textPatch.ok, "应能更新文本元素");
+const canvasAfterTextPatch = await json(await fetch(`${base}/api/canvas?canvasId=${canvas.canvas.id}`));
+assert.equal(canvasAfterTextPatch.items.find((entry) => entry.id === textItem.item.id).payload.text, "改后批注", "更新后的文本内容应持久化");
+
+// 9c) 无限画布坐标可超出 (0,0)：负坐标必须原样保存，不得被钳回原点
+const negativeItem = await json(await post(`${base}/api/canvas-items`, { canvasId: canvas.canvas.id, type: "shape", x: -120, y: -80, width: 60, height: 40, zIndex: 1, payload: { kind: "rect", stroke: "#292d29", strokeWidth: 2 } }));
+assert.equal(negativeItem.item.x, -120, "负 x 坐标应原样保存");
+assert.equal(negativeItem.item.y, -80, "负 y 坐标应原样保存");
+const canvasWithNegative = await json(await fetch(`${base}/api/canvas?canvasId=${canvas.canvas.id}`));
+assert.equal(canvasWithNegative.items.find((entry) => entry.id === negativeItem.item.id).x, -120, "画板读取后负 x 坐标应保持");
+assert.equal(canvasWithNegative.items.find((entry) => entry.id === negativeItem.item.id).y, -80, "画板读取后负 y 坐标应保持");
+
 // 10) 替换图片：只更新文件字段，保留素材 ID、Metadata、项目引用、维度值和画板元素
 const beforeReplaceWorkspace = await json(await fetch(`${base}/api/workspace?projectId=project-visual-direction`));
 const beforeReplaceAsset = beforeReplaceWorkspace.assets.find((entry) => entry.id === asset.id);

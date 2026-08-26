@@ -716,7 +716,7 @@ export function ArtDatabaseApp({ user, onLogout }: { user: SessionUser; onLogout
 
       <section
         className={`workspace ${activeArea === "project" && surface === "preview" ? "preview-active" : activeArea === "project" && surface === "board" ? "board-active" : ""}`}
-        onDragOver={(event) => { if (activeArea === "project") { event.preventDefault(); setDragActive(true); } }}
+        onDragOver={(event) => { if (activeArea === "project" && Array.from(event.dataTransfer.types).includes("Files")) { event.preventDefault(); setDragActive(true); } }}
         onDragLeave={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node)) setDragActive(false); }}
         onDrop={(event) => { event.preventDefault(); setDragActive(false); acceptUpload(event.dataTransfer.files[0]); }}
       >

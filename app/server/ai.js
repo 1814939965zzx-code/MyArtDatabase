@@ -11,8 +11,12 @@ const CALL_TIMEOUT_MS = 45_000;
 const DOWNLOAD_TIMEOUT_MS = 30_000;
 const MAX_AI_TAGS = 30;
 const MAX_CANDIDATES = 5;
+const MAX_DICT_TAGS = 200;
 const MAX_TAG_LENGTH = 40;
 const MAX_REMOTE_IMAGE_BYTES = 20 * 1024 * 1024;
+
+/** 近义变体常见尾缀：候选匹配时剥离后再比较，用于“氛围”→“氛围感”这类同源词。 */
+const SUFFIX_CHARS = "感风气色调型物图景体品式化效";
 
 export class AiError extends Error {
   constructor(message, status = 502) {
@@ -252,13 +256,23 @@ async function compressForAi(buffer) {
   }
 }
 
-const ROUND1_SYSTEM = [
-  "你是专业的图片素材标签助手。用户会给你一张图片，请观察图片内容，输出适合素材库检索的简洁中文标签。",
+/** 第一轮视觉提示词：注入词库时要求词库优先、禁止近义变体；无词库时退回自由生成。 */
+const ROUND1_SYSTEM = (hasDictionary) => [
+  `你是专业的图片素材标签助手。用户会给你一张图片${hasDictionary ? "和本素材库的已有标签" : ""}，请观察图片内容，输出适合素材库检索的简洁中文标签。`,
   "要求：",
   "- 只输出 JSON 字符串数组，不要任何解释文字；",
   "- 每个标签为 2~8 个汉字或简短中文词组；",
+  ...(hasDictionary
+    ? [
+      "- 优先原样使用用户消息中列出的词库标签，这是第一优先级；",
+      "- 只有词库确实没有合适标签时才允许新建，且新建数量尽量少（不超过 3 个）；",
+      "- 禁止输出词库标签的同义或近义变体（例如词库已有“氛围”就不要再输出“氛围感”“气氛”）；",
+    ]
+    : []),
+  "- 不要输出该素材已使用的标签；",
   "- 覆盖主体、场景、风格、色调、氛围、构图等维度；",
   "- 输出 8~15 个标签，最多不超过 30 个；",
+  "- 输出前自查：剔除重复项和含义重复的近义词；",
   "- 不要输出与图片无关的标签。",
 ].join("\n");
 
@@ -266,17 +280,52 @@ const ROUND2_SYSTEM = [
   "你是标签词库管理员。我们会给你若干 AI 建议标签，以及每个标签在本词库中的相似候选标签。",
   "请判断每个建议标签应该复用哪个候选，还是作为新标签创建。",
   "只输出 JSON 数组，不要解释文字。每个元素格式：{\"tag\":\"建议标签\",\"decision\":\"reuse\"或\"new\",\"reusedTag\":\"候选标签名或null\"}。",
-  "如果候选中有同义或表达更好的一致标签，decision 用 reuse 且 reusedTag 必须为候选之一；否则 decision 用 new 且 reusedTag 为 null。",
+  "优先复用：候选中有同义、近义或表达更规范的一致标签时，decision 必须用 reuse 且 reusedTag 必须为其中一个候选；",
+  "只有全部候选都不合适时，才允许 decision 用 new（reusedTag 为 null）。",
 ].join("\n");
 
-/** 生成模糊候选：归一后互相包含、按使用次数降序，最多 MAX_CANDIDATES 个。 */
+/** 剥离近义尾缀（“氛围感”→“氛围”），剥离后至少保留 1 个字符。 */
+function stripSuffix(key) {
+  const stripped = key.replace(new RegExp(`[${SUFFIX_CHARS}]+$`, "u"), "");
+  return stripped.length >= 1 ? stripped : key;
+}
+
+/** 莱文斯坦距离：用于短词近义匹配（如“人像”/“人物”）。 */
+function levenshtein(a, b) {
+  const m = a.length;
+  const n = b.length;
+  if (!m) return n;
+  if (!n) return m;
+  let prev = new Array(n + 1);
+  let curr = new Array(n + 1);
+  for (let j = 0; j <= n; j += 1) prev[j] = j;
+  for (let i = 1; i <= m; i += 1) {
+    curr[0] = i;
+    for (let j = 1; j <= n; j += 1) {
+      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+      curr[j] = Math.min(prev[j] + 1, curr[j - 1] + 1, prev[j - 1] + cost);
+    }
+    [prev, curr] = [curr, prev];
+  }
+  return prev[n];
+}
+
+/** 生成模糊候选：归一后互相包含、去尾缀同源或短词编辑距离相近，按使用次数降序，最多 MAX_CANDIDATES 个。 */
 function fuzzyCandidates(rawTag, tagRows) {
   const key = normalizeTag(rawTag);
   if (!key) return [];
+  const stripped = stripSuffix(key);
   return tagRows
     .filter((row) => {
       const normalized = normalizeTag(row.name);
-      return normalized && normalized !== key && (normalized.includes(key) || key.includes(normalized));
+      if (!normalized || normalized === key) return false;
+      if (normalized.includes(key) || key.includes(normalized)) return true;
+      const normStripped = stripSuffix(normalized);
+      if (stripped === normStripped) return true;
+      const minLen = Math.min(key.length, normalized.length);
+      const maxDist = minLen <= 3 ? 1 : 2;
+      if (minLen >= 2 && levenshtein(key, normalized) <= maxDist) return true;
+      return false;
     })
     .sort((a, b) => (b.usageCount - a.usageCount) || a.name.localeCompare(b.name, "zh-CN"))
     .slice(0, MAX_CANDIDATES)
@@ -360,15 +409,36 @@ export async function tagAssetWithAi(db, store, assetId) {
   const compressed = await compressForAi(buffer);
   const dataUri = `data:image/jpeg;base64,${compressed.toString("base64")}`;
 
+  // 词库优先：按使用次数取前 MAX_DICT_TAGS 个标签注入第一轮，已用标签单独列出
+  const tagRows = listTags(db);
+  const existingNames = getAssetTagNames(db, assetId);
+  const existingSet = new Set(existingNames.map(normalizeTag));
+  const used = [];
+  const unused = [];
+  for (const row of tagRows) {
+    if (existingSet.has(normalizeTag(row.name))) continue;
+    (row.usageCount > 0 ? used : unused).push(row);
+  }
+  const sortRows = (a, b) => (b.usageCount - a.usageCount) || a.name.localeCompare(b.name, "zh-CN");
+  const dictPool = [...used.sort(sortRows), ...unused.sort(sortRows)].slice(0, MAX_DICT_TAGS).map((row) => row.name);
+  const promptParts = [];
+  if (dictPool.length) {
+    promptParts.push(`本素材库已有标签（按使用次数排序）：${dictPool.join("、")}`);
+  }
+  if (existingNames.length) {
+    promptParts.push(`该素材当前已使用标签：${existingNames.join("、")}（不要重复输出）`);
+  }
+  promptParts.push("请为这张图片生成中文标签，只输出 JSON 字符串数组，例如：[\"建筑\",\"氛围\",\"灰调\"]");
+
   const round1 = await chatCompletions({
     ...config,
     temperature: 0.2,
     messages: [
-      { role: "system", content: ROUND1_SYSTEM },
+      { role: "system", content: ROUND1_SYSTEM(dictPool.length > 0) },
       {
         role: "user",
         content: [
-          { type: "text", text: "请为这张图片生成中文标签，只输出 JSON 字符串数组，例如：[\"建筑\",\"氛围\",\"灰调\"]" },
+          { type: "text", text: promptParts.join("\n\n") },
           { type: "image_url", image_url: { url: dataUri } },
         ],
       },
@@ -381,7 +451,6 @@ export async function tagAssetWithAi(db, store, assetId) {
   )].slice(0, MAX_AI_TAGS);
   if (!aiTags.length) throw new AiError("AI 未识别出标签，请换一张更清晰的图片重试");
 
-  const tagRows = listTags(db);
   const decisions = [];
   const ambiguous = [];
   for (const tag of aiTags) {

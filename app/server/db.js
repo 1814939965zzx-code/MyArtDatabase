@@ -109,13 +109,16 @@ CREATE TABLE IF NOT EXISTS canvases (
 CREATE TABLE IF NOT EXISTS canvas_items (
   id TEXT PRIMARY KEY NOT NULL,
   canvas_id TEXT NOT NULL REFERENCES canvases(id) ON DELETE CASCADE,
-  asset_id TEXT NOT NULL REFERENCES assets(id) ON DELETE CASCADE,
+  asset_id TEXT REFERENCES assets(id) ON DELETE CASCADE,
+  type TEXT NOT NULL DEFAULT 'image',
+  parent_frame_id TEXT,
   x INTEGER NOT NULL,
   y INTEGER NOT NULL,
   width INTEGER NOT NULL,
   height INTEGER NOT NULL,
   z_index INTEGER NOT NULL DEFAULT 0,
-  rotation INTEGER NOT NULL DEFAULT 0
+  rotation INTEGER NOT NULL DEFAULT 0,
+  payload TEXT
 );
 CREATE INDEX IF NOT EXISTS project_assets_project_idx ON project_assets(project_id);
 CREATE INDEX IF NOT EXISTS dimensions_project_idx ON project_dimensions(project_id);
@@ -139,16 +142,19 @@ function allowRepeatedCanvasAssets(db) {
       CREATE TABLE canvas_items_next (
         id TEXT PRIMARY KEY NOT NULL,
         canvas_id TEXT NOT NULL REFERENCES canvases(id) ON DELETE CASCADE,
-        asset_id TEXT NOT NULL REFERENCES assets(id) ON DELETE CASCADE,
+        asset_id TEXT REFERENCES assets(id) ON DELETE CASCADE,
+        type TEXT NOT NULL DEFAULT 'image',
+        parent_frame_id TEXT,
         x INTEGER NOT NULL,
         y INTEGER NOT NULL,
         width INTEGER NOT NULL,
         height INTEGER NOT NULL,
         z_index INTEGER NOT NULL DEFAULT 0,
-        rotation INTEGER NOT NULL DEFAULT 0
+        rotation INTEGER NOT NULL DEFAULT 0,
+        payload TEXT
       );
-      INSERT INTO canvas_items_next (id, canvas_id, asset_id, x, y, width, height, z_index, rotation)
-        SELECT id, canvas_id, asset_id, x, y, width, height, z_index, rotation FROM canvas_items;
+      INSERT INTO canvas_items_next (id, canvas_id, asset_id, type, parent_frame_id, x, y, width, height, z_index, rotation, payload)
+        SELECT id, canvas_id, asset_id, 'image', NULL, x, y, width, height, z_index, rotation, NULL FROM canvas_items;
       DROP TABLE canvas_items;
       ALTER TABLE canvas_items_next RENAME TO canvas_items;
       CREATE INDEX canvas_items_canvas_idx ON canvas_items(canvas_id);
@@ -160,13 +166,18 @@ function allowRepeatedCanvasAssets(db) {
   }
 }
 
-const SCHEMA_VERSION = 3;
+const SCHEMA_VERSION = 5;
 
 /**
  * v1：把素材上的逗号分隔标签字符串迁入 tags/asset_tags 标签字典。
  * 迁移完成后删除 assets.tags 列，标签以新表为唯一事实来源；用 user_version 保证幂等。
  * v2：为 assets 补充 created_by / created_by_name（上传者快照），兼容没有账号概念的旧库。
  * v3：新增 app_settings 键值表（登录页公告等系统级设置），CREATE TABLE IF NOT EXISTS 已覆盖新旧库。
+ * v4：自由画板改为无限画布 + 可选 Frame。canvas_items 新增 type（image/shape/text）、
+ *     parent_frame_id（所属 Frame，可空）、payload（图形/文本/手绘属性 JSON）；
+ *     asset_id 改为可空（文本与图形元素不引用素材）。既有图片元素迁移为 type='image'。
+ * v5：为旧库重建 canvas_items，真正去掉 asset_id 的 NOT NULL 约束（v4 只加列未改约束），
+ *     保证标记图层（shape/text）可写入 asset_id 为 NULL 的元素。
  */
 function migrateSchema(db) {
   const { user_version: version } = db.prepare("PRAGMA user_version").get();
@@ -207,6 +218,59 @@ function migrateSchema(db) {
     }
     if (!assetColumns.includes("created_by_name")) {
       db.exec("ALTER TABLE assets ADD COLUMN created_by_name TEXT NOT NULL DEFAULT ''");
+    }
+  }
+  if (version < 4) {
+    const columns = db.prepare("PRAGMA table_info(canvas_items)").all().map((column) => column.name);
+    if (!columns.includes("type")) db.exec("ALTER TABLE canvas_items ADD COLUMN type TEXT NOT NULL DEFAULT 'image'");
+    if (!columns.includes("parent_frame_id")) db.exec("ALTER TABLE canvas_items ADD COLUMN parent_frame_id TEXT");
+    if (!columns.includes("payload")) db.exec("ALTER TABLE canvas_items ADD COLUMN payload TEXT");
+    db.exec("UPDATE canvas_items SET type = 'image' WHERE type IS NULL OR type = ''");
+  }
+  if (version < 5) {
+    const info = db.prepare("PRAGMA table_info(canvas_items)").all();
+    const cols = new Set(info.map((column) => column.name));
+    const assetNotNull = info.find((column) => column.name === "asset_id")?.notnull === 1;
+    const missing = !cols.has("type") || !cols.has("parent_frame_id") || !cols.has("payload");
+    if (assetNotNull || missing) {
+      const select = [
+        "id", "canvas_id",
+        cols.has("asset_id") ? "asset_id" : "NULL AS asset_id",
+        cols.has("type") ? "type" : "'image' AS type",
+        cols.has("parent_frame_id") ? "parent_frame_id" : "NULL AS parent_frame_id",
+        "x", "y", "width", "height", "z_index", "rotation",
+        cols.has("payload") ? "payload" : "NULL AS payload",
+      ].join(", ");
+      db.exec("BEGIN");
+      try {
+        db.exec(`
+          CREATE TABLE canvas_items_next (
+            id TEXT PRIMARY KEY NOT NULL,
+            canvas_id TEXT NOT NULL REFERENCES canvases(id) ON DELETE CASCADE,
+            asset_id TEXT REFERENCES assets(id) ON DELETE CASCADE,
+            type TEXT NOT NULL DEFAULT 'image',
+            parent_frame_id TEXT,
+            x INTEGER NOT NULL,
+            y INTEGER NOT NULL,
+            width INTEGER NOT NULL,
+            height INTEGER NOT NULL,
+            z_index INTEGER NOT NULL DEFAULT 0,
+            rotation INTEGER NOT NULL DEFAULT 0,
+            payload TEXT
+          );
+          INSERT INTO canvas_items_next (id, canvas_id, asset_id, type, parent_frame_id, x, y, width, height, z_index, rotation, payload)
+            SELECT ${select} FROM canvas_items;
+          DROP TABLE canvas_items;
+          ALTER TABLE canvas_items_next RENAME TO canvas_items;
+          CREATE INDEX canvas_items_canvas_idx ON canvas_items(canvas_id);
+        `);
+        db.exec("COMMIT");
+      } catch (error) {
+        db.exec("ROLLBACK");
+        throw error;
+      }
+    } else {
+      db.exec("UPDATE canvas_items SET type = 'image' WHERE type IS NULL OR type = ''");
     }
   }
   db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
@@ -274,8 +338,8 @@ export function openDatabase(dbPath, { seedDemo = false } = {}) {
   db.exec(SCHEMA);
   // 旧版本限制同一素材在一张画板只能出现一次。事务迁移保留全部既有元素，
   // 只移除该唯一约束，使每次放置都由独立的 canvas_items.id 表示。
-  allowRepeatedCanvasAssets(db);
   migrateSchema(db);
+  allowRepeatedCanvasAssets(db);
   // 示例数据只允许在开发模式或显式开启时写入；生产环境绝不自动写入，
   // 否则空库/路径配置错误会被静默伪装成“示例素材库”。
   if (seedDemo) seed(db);
