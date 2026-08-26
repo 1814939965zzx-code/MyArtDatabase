@@ -118,6 +118,7 @@ export function BoardView({ projectId, assets, onMessage, onSelectAsset }: { pro
   const frameResizeRef = useRef<FrameResizeState | null>(null);
   const marqueeRef = useRef<MarqueeState | null>(null);
   const drawRef = useRef<DrawState | null>(null);
+  const batchRef = useRef(false);
   const creatingDefaultPage = useRef(false);
   const viewportRef = useRef<HTMLDivElement>(null);
 
@@ -255,7 +256,7 @@ export function BoardView({ projectId, assets, onMessage, onSelectAsset }: { pro
   useEffect(() => {
     if (!canvasId) return;
     const timer = window.setInterval(() => {
-      if (!interaction.current && !panRef.current && !frameMoveRef.current && !frameResizeRef.current && !drawRef.current) void loadCanvas(canvasId, true).catch(() => undefined);
+      if (!interaction.current && !panRef.current && !frameMoveRef.current && !frameResizeRef.current && !drawRef.current && !batchRef.current) void loadCanvas(canvasId, true).catch(() => undefined);
     }, 900);
     return () => window.clearInterval(timer);
   }, [canvasId, canvas?.revision]);
@@ -903,20 +904,20 @@ export function BoardView({ projectId, assets, onMessage, onSelectAsset }: { pro
     const startX = point.x - totalW / 2;
     const startY = point.y - totalH / 2;
     const frameId = itemFrameId({ x: startX, y: startY, width: totalW, height: totalH, type: "image", payload: null });
-    const created: CanvasItem[] = [];
-    let revision = canvas.revision;
+    // 批量期间屏蔽轮询同步，且逐条增量更新本地状态，避免中途轮询用部分数据覆盖/重复。
+    batchRef.current = true;
     try {
       for (let index = 0; index < sized.length; index++) {
         const { asset, width: w, height: h } = sized[index];
         const col = index % cols; const row = Math.floor(index / cols);
         const data = await json<{ item: CanvasItem; revision: number }>("/api/canvas-items", { method: "POST", body: JSON.stringify({ canvasId: canvas.id, assetId: asset.id, type: "image", parentFrameId: frameId, x: startX + col * colWidth, y: startY + row * (rowH + gap), width: w, height: h, zIndex: items.length + index + 1, rotation: 0 }) });
-        revision = data.revision;
-        created.push({ ...data.item, name: asset.name, thumbnailUrl: asset.thumbnailUrl, type: "image" });
+        const item: CanvasItem = { ...data.item, name: asset.name, thumbnailUrl: asset.thumbnailUrl, type: "image" };
+        setItems((current) => [...current, item]);
+        setCanvas((current) => current ? { ...current, revision: data.revision } : current);
       }
-      setItems((current) => [...current, ...created]);
-      setCanvas((current) => current ? { ...current, revision } : current);
       onMessage(`已把标签“${tag}”的 ${tagAssets.length} 个素材批量放入画板`);
     } catch (error) { onMessage(error instanceof Error ? error.message : "批量插入失败"); }
+    finally { batchRef.current = false; }
   }
 
   function handleAssetDragStart(event: DragEvent<HTMLButtonElement>, asset: Asset) {
