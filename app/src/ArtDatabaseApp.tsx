@@ -2,6 +2,7 @@
 
 import {
   Archive,
+  ArrowLeft,
   ChevronDown,
   Grid2X2,
   ImageIcon,
@@ -40,6 +41,7 @@ import { DeletionToast } from "./DeletionToast";
 import { DimensionControlsEditor, type DimensionControlsEditorHandle } from "./DimensionControlsEditor";
 import { DimensionEditorModal } from "./DimensionEditorModal";
 import { DimensionPreview } from "./DimensionPreview";
+import { HomeView } from "./HomeView";
 import { TagFilterBar } from "./TagFilterBar";
 import { TagManager, type TagEntry } from "./TagManager";
 import { TrashView, type TrashedAsset } from "./TrashView";
@@ -53,6 +55,7 @@ type Project = {
   description: string;
   assetCount: number;
   dimensionCount: number;
+  thumbnails?: string[];
 };
 
 type Dimension = {
@@ -130,7 +133,7 @@ export function ArtDatabaseApp({ user, onLogout }: { user: SessionUser; onLogout
   const [projects, setProjects] = useState<Project[]>([]);
   const [libraryAssets, setLibraryAssets] = useState<LibraryAsset[]>([]);
   const [trashAssets, setTrashAssets] = useState<TrashedAsset[]>([]);
-  const [activeArea, setActiveArea] = useState<"library" | "project" | "trash">("project");
+  const [activeArea, setActiveArea] = useState<"home" | "library" | "project" | "trash">("home");
   const [selectedProjectId, setSelectedProjectId] = useState("");
   const [workspace, setWorkspace] = useState<Workspace | null>(null);
   const [selectedAssetId, setSelectedAssetId] = useState<string | null>(null);
@@ -146,6 +149,7 @@ export function ArtDatabaseApp({ user, onLogout }: { user: SessionUser; onLogout
   const [pendingDeletion, setPendingDeletion] = useState<PendingDeletion | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
   const [editOpen, setEditOpen] = useState(false);
+  const [editingProject, setEditingProject] = useState<Project | null>(null);
   const [dimensionOpen, setDimensionOpen] = useState(false);
   const [editingDimensionId, setEditingDimensionId] = useState<string | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(false);
@@ -328,6 +332,31 @@ export function ArtDatabaseApp({ user, onLogout }: { user: SessionUser; onLogout
     });
   }, [search, workspace, projectTagFilter]);
 
+  const filteredProjects = useMemo(() => {
+    const keyword = search.trim().toLocaleLowerCase("zh-CN");
+    if (!keyword) return projects;
+    return projects.filter((project) =>
+      [project.name, project.description].some((text) => text.toLocaleLowerCase("zh-CN").includes(keyword)),
+    );
+  }, [projects, search]);
+
+  /** 从主页进入项目：收起侧边栏，只保留项目工作区。 */
+  function openProject(project: Project) {
+    setActiveArea("project");
+    setSelectedProjectId(project.id);
+    setSelectedAssetId(null);
+    setSidebarCollapsed(true);
+    setSidebarOpen(false);
+  }
+
+  /** 从项目返回主页：恢复侧边导航并刷新项目列表。 */
+  function returnHome() {
+    setActiveArea("home");
+    setSelectedAssetId(null);
+    setSidebarCollapsed(false);
+    void loadProjects();
+  }
+
   useEffect(() => {
     setProjectTagFilter((current) => {
       const next = current.filter((tag) => projectTags.includes(tag));
@@ -359,20 +388,22 @@ export function ArtDatabaseApp({ user, onLogout }: { user: SessionUser; onLogout
 
   async function editProject(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (!workspace) return;
+    if (!editingProject) return;
     const form = new FormData(event.currentTarget);
     setBusy(true);
     try {
       await apiFetch("/api/projects", {
         method: "PATCH",
         body: JSON.stringify({
-          id: workspace.project.id,
+          id: editingProject.id,
           name: form.get("name"),
           description: form.get("description"),
         }),
       });
-      await Promise.all([loadProjects(workspace.project.id), loadWorkspace(workspace.project.id)]);
+      await loadProjects(editingProject.id);
+      if (workspace?.project.id === editingProject.id) await loadWorkspace(editingProject.id);
       setEditOpen(false);
+      setEditingProject(null);
       setMessage("项目信息已保存");
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "保存失败");
@@ -381,14 +412,18 @@ export function ArtDatabaseApp({ user, onLogout }: { user: SessionUser; onLogout
     }
   }
 
-  async function deleteProject() {
-    if (!workspace || !window.confirm(`确定删除“${workspace.project.name}”吗？项目中的分类数据会同时删除。`)) return;
+  async function deleteProject(projectOverride?: Project) {
+    const target = projectOverride ?? editingProject;
+    if (!target || !window.confirm(`确定删除“${target.name}”吗？项目中的分类数据会同时删除。`)) return;
     setBusy(true);
     try {
-      await apiFetch(`/api/projects?id=${encodeURIComponent(workspace.project.id)}`, { method: "DELETE" });
+      await apiFetch(`/api/projects?id=${encodeURIComponent(target.id)}`, { method: "DELETE" });
       setEditOpen(false);
-      setWorkspace(null);
-      setSelectedProjectId("");
+      setEditingProject(null);
+      if (workspace?.project.id === target.id) {
+        setWorkspace(null);
+        setSelectedProjectId("");
+      }
       await loadProjects();
       setMessage("项目已删除");
     } catch (error) {
@@ -533,6 +568,7 @@ export function ArtDatabaseApp({ user, onLogout }: { user: SessionUser; onLogout
   }
 
   function acceptUpload(file?: File) {
+    if (activeArea !== "project") return; // 上传只发生在项目内
     if (!file) return;
     if (!["image/jpeg", "image/png", "image/webp"].includes(file.type)) {
       setMessage("仅支持 JPEG、PNG 和 WebP 图片");
@@ -670,49 +706,54 @@ export function ArtDatabaseApp({ user, onLogout }: { user: SessionUser; onLogout
   }
 
   return (
-    <main className={`app-shell ${sidebarCollapsed ? "sidebar-hidden" : ""}`}>
-      <aside className={`sidebar ${sidebarOpen ? "sidebar-open" : ""}`}>
-        <div className="brand-block">
-          <div className="brand-mark"><Sparkles size={17} /></div>
-          <div><strong>Art Database</strong><span>视觉素材工作台</span></div>
-          <button className="icon-button sidebar-hide-button" type="button" onClick={() => { setSidebarOpen(false); setSidebarCollapsed(true); }} aria-label="隐藏项目栏"><PanelLeftClose size={17} /></button>
-        </div>
-        <button
-          className={`all-assets-item ${activeArea === "library" ? "active" : ""}`}
-          type="button"
-          onClick={() => { setActiveArea("library"); setSelectedAssetId(null); setSidebarOpen(false); void loadLibrary(); }}
-        >
-          <span className="project-icon"><Grid2X2 size={16} /></span>
-          <span className="project-copy"><strong>全部素材</strong><small>{libraryAssets.length} 个数据库素材</small></span>
-        </button>
-        <div className="sidebar-section-title">
-          <span>项目</span><span>{projects.length}</span>
-        </div>
-        <nav className="project-list" aria-label="项目列表">
-          {projects.map((project) => (
-            <button
-              type="button"
-              key={project.id}
-              className={`project-item ${activeArea === "project" && selectedProjectId === project.id ? "active" : ""}`}
-              onClick={() => { setActiveArea("project"); setSelectedProjectId(project.id); setSelectedAssetId(null); setSidebarOpen(false); }}
-            >
-              <span className="project-icon"><Archive size={16} /></span>
-              <span className="project-copy"><strong>{project.name}</strong><small>{project.assetCount} 个素材 · {project.dimensionCount} 个维度</small></span>
-            </button>
-          ))}
-        </nav>
-        <button className="new-project-button" type="button" onClick={() => setCreateOpen(true)}>
-          <Plus size={17} /> 新建项目
-        </button>
-        <button
-          className={`trash-nav-item ${activeArea === "trash" ? "active" : ""}`}
-          type="button"
-          onClick={() => { setActiveArea("trash"); setSelectedAssetId(null); setSidebarOpen(false); void loadTrash(); }}
-        >
-          <span className="project-icon"><Trash2 size={16} /></span>
-          <span className="project-copy"><strong>回收站</strong><small>{trashAssets.length} 个已删除素材</small></span>
-        </button>
-      </aside>
+    <main className={`app-shell ${sidebarCollapsed || activeArea === "project" ? "sidebar-hidden" : ""}`}>
+      {activeArea !== "project" ? (
+        <aside className={`sidebar ${sidebarOpen ? "sidebar-open" : ""}`}>
+          <div className="brand-block">
+            <div className="brand-mark"><Sparkles size={17} /></div>
+            <div><strong>Art Database</strong><span>视觉素材工作台</span></div>
+            <button className="icon-button sidebar-hide-button" type="button" onClick={() => { setSidebarOpen(false); setSidebarCollapsed(true); }} aria-label="隐藏导航栏"><PanelLeftClose size={17} /></button>
+          </div>
+          <button
+            className={`all-assets-item ${activeArea === "home" ? "active" : ""}`}
+            type="button"
+            onClick={() => { setActiveArea("home"); setSelectedAssetId(null); setSidebarOpen(false); void loadProjects(); }}
+          >
+            <span className="project-icon"><Archive size={16} /></span>
+            <span className="project-copy"><strong>项目</strong><small>{projects.length} 个独立空间</small></span>
+          </button>
+          <button
+            className={`all-assets-item ${activeArea === "library" ? "active" : ""}`}
+            type="button"
+            onClick={() => { setActiveArea("library"); setSelectedAssetId(null); setSidebarOpen(false); void loadLibrary(); }}
+          >
+            <span className="project-icon"><Grid2X2 size={16} /></span>
+            <span className="project-copy"><strong>全部素材</strong><small>{libraryAssets.length} 个数据库素材</small></span>
+          </button>
+          <button
+            className="all-assets-item"
+            type="button"
+            onClick={() => { setSidebarOpen(false); setTagManagerOpen(true); }}
+          >
+            <span className="project-icon"><Tags size={16} /></span>
+            <span className="project-copy"><strong>标签管理</strong><small>词库与标签维护</small></span>
+          </button>
+          <div className="sidebar-section-title">
+            <span>项目</span><span>{projects.length}</span>
+          </div>
+          <button className="new-project-button" type="button" onClick={() => setCreateOpen(true)}>
+            <Plus size={17} /> 新建项目
+          </button>
+          <button
+            className={`trash-nav-item ${activeArea === "trash" ? "active" : ""}`}
+            type="button"
+            onClick={() => { setActiveArea("trash"); setSelectedAssetId(null); setSidebarOpen(false); void loadTrash(); }}
+          >
+            <span className="project-icon"><Trash2 size={16} /></span>
+            <span className="project-copy"><strong>回收站</strong><small>{trashAssets.length} 个已删除素材</small></span>
+          </button>
+        </aside>
+      ) : null}
 
       <section
         className={`workspace ${activeArea === "project" && surface === "preview" ? "preview-active" : activeArea === "project" && surface === "board" ? "board-active" : ""}`}
@@ -724,16 +765,27 @@ export function ArtDatabaseApp({ user, onLogout }: { user: SessionUser; onLogout
         {dragActive ? <div className="drop-overlay"><Upload size={28} /><strong>松开即可添加图片</strong><span>上传前会先填写 Metadata 和维度值</span></div> : null}
         <header className="topbar">
           <div className="topbar-leading">
-            <button className={`icon-button menu-button ${sidebarCollapsed ? "force-visible" : ""}`} type="button" onClick={() => { setSidebarCollapsed(false); setSidebarOpen(true); }} aria-label="展开项目栏">{sidebarCollapsed ? <PanelLeftOpen size={18} /> : <Menu size={19} />}</button>
+            {activeArea === "project" ? (
+              <button className="back-button" type="button" onClick={returnHome}><ArrowLeft size={17} />返回主页</button>
+            ) : (
+              <button className={`icon-button menu-button ${sidebarCollapsed ? "force-visible" : ""}`} type="button" onClick={() => { setSidebarCollapsed(false); setSidebarOpen(true); }} aria-label="展开导航栏">{sidebarCollapsed ? <PanelLeftOpen size={18} /> : <Menu size={19} />}</button>
+            )}
             {activeArea === "project" && workspace ? (
               <div className="topbar-project">
                 <div className="topbar-title">
                   <h1>{workspace.project.name}</h1>
-                  <button className="icon-button" type="button" onClick={() => setEditOpen(true)} aria-label="编辑项目"><Pencil size={14} /></button>
+                  <button className="icon-button" type="button" onClick={() => { setEditingProject(workspace.project); setEditOpen(true); }} aria-label="编辑项目"><Pencil size={14} /></button>
                 </div>
                 <div className="topbar-subtitle">
                   <span>{workspace.project.description || "还没有项目说明"}</span>
                   <em className="topbar-count-badge">{workspace.assets.length} 素材</em>
+                </div>
+              </div>
+            ) : activeArea === "home" ? (
+              <div className="topbar-project">
+                <div className="topbar-title">
+                  <h1>项目</h1>
+                  <em className="topbar-title-total">{filteredProjects.length}</em>
                 </div>
               </div>
             ) : activeArea === "library" ? (
@@ -754,7 +806,7 @@ export function ArtDatabaseApp({ user, onLogout }: { user: SessionUser; onLogout
           </div>
           <div className="topbar-actions">
             {activeArea === "library" ? <button className="tag-manager-open-button" type="button" onClick={() => setTagManagerOpen(true)}><Tags size={14} />标签管理</button> : null}
-            <div className="search-box"><Search size={17} /><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="搜索名称、文件或标签" aria-label="搜索素材" /></div>
+            <div className="search-box"><Search size={17} /><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder={activeArea === "home" ? "搜索项目名称或说明" : "搜索名称、文件或标签"} aria-label={activeArea === "home" ? "搜索项目" : "搜索素材"} /></div>
             {activeArea === "project" && workspace ? <button className="upload-button" type="button" onClick={() => fileInputRef.current?.click()}><Upload size={15} />上传图片</button> : null}
             <div className="user-menu" ref={userMenuRef}>
               <button className="user-menu-trigger" type="button" onClick={() => setUserMenuOpen((open) => !open)} aria-haspopup="menu" aria-expanded={userMenuOpen}>
@@ -803,6 +855,16 @@ export function ArtDatabaseApp({ user, onLogout }: { user: SessionUser; onLogout
             onViewChange={setView}
             onRefresh={async () => { await Promise.all([loadLibrary(), loadProjects()]); }}
             onMessage={setMessage}
+          />
+        ) : activeArea === "home" ? (
+          <HomeView
+            projects={filteredProjects}
+            search={search}
+            loading={loading}
+            onEnter={openProject}
+            onNewProject={() => setCreateOpen(true)}
+            onRename={(project) => { setEditingProject(project); setEditOpen(true); }}
+            onDelete={(project) => void deleteProject(project)}
           />
         ) : loading && !workspace ? (
           <div className="loading-state"><LoaderCircle className="spin" size={22} /> 正在整理素材库…</div>
@@ -900,7 +962,7 @@ export function ArtDatabaseApp({ user, onLogout }: { user: SessionUser; onLogout
 
       {createOpen ? <Modal title="新建项目" description="为一组视觉探索建立独立空间。" onClose={() => setCreateOpen(false)}><form className="modal-form" onSubmit={createProject}><label>项目名称<input name="name" required maxLength={50} placeholder="例如：2026 产品视觉方向" /></label><label>项目说明<textarea name="description" maxLength={240} rows={3} placeholder="这组素材要解决什么问题？" /></label><div className="modal-actions"><button className="secondary-button" type="button" onClick={() => setCreateOpen(false)}>取消</button><button className="primary-button" type="submit" disabled={busy}>{busy ? "创建中…" : "创建项目"}</button></div></form></Modal> : null}
 
-      {editOpen && workspace ? <Modal title="项目设置" description="修改项目名称和用途说明。" onClose={() => setEditOpen(false)}><form className="modal-form" onSubmit={editProject}><label>项目名称<input name="name" required maxLength={50} defaultValue={workspace.project.name} /></label><label>项目说明<textarea name="description" maxLength={240} rows={3} defaultValue={workspace.project.description} /></label><div className="danger-zone"><button type="button" onClick={() => void deleteProject()} disabled={busy}><Trash2 size={15} /> 删除项目</button><span>素材原文件不会被删除</span></div><div className="modal-actions"><button className="secondary-button" type="button" onClick={() => setEditOpen(false)}>取消</button><button className="primary-button" type="submit" disabled={busy}>{busy ? "保存中…" : "保存修改"}</button></div></form></Modal> : null}
+      {editOpen && editingProject ? <Modal title="项目设置" description="修改项目名称和用途说明。" onClose={() => { setEditOpen(false); setEditingProject(null); }}><form className="modal-form" onSubmit={editProject}><label>项目名称<input name="name" required maxLength={50} defaultValue={editingProject.name} /></label><label>项目说明<textarea name="description" maxLength={240} rows={3} defaultValue={editingProject.description} /></label><div className="danger-zone"><button type="button" onClick={() => void deleteProject()} disabled={busy}><Trash2 size={15} /> 删除项目</button><span>素材原文件不会被删除</span></div><div className="modal-actions"><button className="secondary-button" type="button" onClick={() => { setEditOpen(false); setEditingProject(null); }}>取消</button><button className="primary-button" type="submit" disabled={busy}>{busy ? "保存中…" : "保存修改"}</button></div></form></Modal> : null}
 
       {dimensionOpen && workspace ? <Modal title="添加分类维度" description="项目维度数量不限；进入预览后再选择最多 3 个坐标轴。" onClose={() => setDimensionOpen(false)}><form className="modal-form" onSubmit={addDimension}><div className="dimension-form-row"><label>左端名称<input name="leftLabel" required maxLength={24} placeholder="例如：克制" /></label><span>—</span><label>右端名称<input name="rightLabel" required maxLength={24} placeholder="例如：张扬" /></label></div><p className="form-hint">添加后，项目内已有素材会先放在维度中点。</p><div className="modal-actions"><button className="secondary-button" type="button" onClick={() => setDimensionOpen(false)}>取消</button><button className="primary-button" type="submit" disabled={busy}>{busy ? "添加中…" : "添加维度"}</button></div></form></Modal> : null}
 

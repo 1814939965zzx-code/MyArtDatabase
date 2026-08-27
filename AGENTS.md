@@ -36,7 +36,8 @@
 | 位置 | 职责 |
 | --- | --- |
 | `app/src/AuthGate.tsx` | 登录页 / 首次设置管理员页、会话状态与 401 事件监听 |
-| `app/src/ArtDatabaseApp.tsx` | 页面状态与主要应用流程（顶部用户菜单、账号设置、成员管理入口） |
+| `app/src/ArtDatabaseApp.tsx` | 页面状态与主要应用流程（主页/全部素材/回收站/项目工作区导航、顶部用户菜单、账号设置、成员管理入口） |
+| `app/src/HomeView.tsx` | 主页（Figma 式项目卡片网格：封面拼图、重命名/删除、进入项目） |
 | `app/src/AllAssetsView.tsx` | 全局素材库 |
 | `app/src/DimensionPreview.tsx` | 一维、二维、三维预览与拖动交互 |
 | `app/src/BoardView.tsx` | 自由画板 |

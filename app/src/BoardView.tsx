@@ -2,8 +2,8 @@
 
 /* eslint-disable react-hooks/exhaustive-deps, react-hooks/set-state-in-effect */
 
-import { ArrowDownToLine, ArrowUpToLine, Check, ChevronDown, Circle, Eye, EyeOff, Frame, ImagePlus, LoaderCircle, Minus, MousePointer2, MoveUpRight, Pencil, Plus, Search, Square, Tag, Trash2, Type } from "lucide-react";
-import { DragEvent, KeyboardEvent, MouseEvent, PointerEvent, useEffect, useRef, useState } from "react";
+import { AlignCenter, AlignLeft, AlignRight, ArrowDownToLine, ArrowUpToLine, Bold, Check, ChevronDown, Circle, Eye, EyeOff, Frame, ImagePlus, Italic, LoaderCircle, Minus, MousePointer2, MoveHorizontal, MoveVertical, MoveUpRight, Pencil, Plus, Search, Square, Strikethrough, Tag, Trash2, Type, Underline } from "lucide-react";
+import { DragEvent, KeyboardEvent, MouseEvent, PointerEvent, useEffect, useRef, useState, type CSSProperties } from "react";
 import { notifyUnauthorized } from "./api";
 
 type Asset = { id: string; name: string; thumbnailUrl: string | null; tags: string[]; width: number; height: number };
@@ -11,7 +11,21 @@ type CanvasSummary = { id: string; projectId: string; name: string; revision: nu
 type Point = { x: number; y: number };
 type ShapeKind = "freehand" | "rect" | "ellipse" | "arrow" | "line";
 type ShapePayload = { kind: ShapeKind; stroke: string; strokeWidth: number; points?: Point[] };
-type TextPayload = { text: string; color: string; fontSize: number };
+type TextAlign = "left" | "center" | "right";
+type VerticalAlign = "top" | "middle" | "bottom";
+type TextPayload = {
+  text: string;
+  color: string;
+  fontSize: number;
+  bold?: boolean;
+  italic?: boolean;
+  underline?: boolean;
+  strikeThrough?: boolean;
+  textAlign?: TextAlign;
+  verticalAlign?: VerticalAlign;
+  autoWidth?: boolean;
+  autoHeight?: boolean;
+};
 type ItemPayload = ShapePayload | TextPayload;
 type CanvasItem = {
   id: string; canvasId: string; assetId: string | null; type: "image" | "shape" | "text";
@@ -26,6 +40,7 @@ type Interaction = {
   itemId: string; pointerId: number; mode: "move" | "resize";
   startX: number; startY: number; x: number; y: number; width: number; height: number;
   itemStarts: Record<string, { x: number; y: number }>;
+  direction?: ResizeDirection;
 };
 type PanState = { pointerId: number; startX: number; startY: number; originX: number; originY: number };
 type FrameMoveState = { pointerId: number; frameId: string; startX: number; startY: number; x: number; y: number; itemStarts: Record<string, { x: number; y: number }> };
@@ -43,6 +58,8 @@ const MIN_FRAME_HEIGHT = 1;
 const INITIAL_ZOOM = .72;
 const MIN_ZOOM = .2;
 const MAX_ZOOM = 4;
+/** 自动宽度文本的限宽：短文本贴合内容，长文本在限宽内自动换行。 */
+const AUTO_WIDTH_MAX = 360;
 const FRAME_GAP = 160;
 const SNAP_DISTANCE_PX = 7;
 const RESIZE_DIRECTIONS: ResizeDirection[] = ["nw", "n", "ne", "e", "se", "s", "sw", "w"];
@@ -55,6 +72,33 @@ const TOOLS: { id: Tool; icon: typeof MousePointer2; label: string; shortcut?: s
   { id: "arrow", icon: MoveUpRight, label: "箭头" },
   { id: "line", icon: Minus, label: "直线" },
 ];
+
+/** 文本垂直对齐图标：方框内三条文字线位于顶部/中部/底部。 */
+function TextVerticalAlignIcon({ position }: { position: "top" | "middle" | "bottom" }) {
+  const ys = position === "top" ? [7.5, 10, 12.5] : position === "middle" ? [10, 12, 14] : [12.5, 15, 17.5];
+  return (
+    <svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.6} strokeLinecap="round" aria-hidden="true">
+      <rect x="3.5" y="3.5" width="17" height="17" rx="2.5" />
+      {ys.map((y, index) => <line key={y} x1={7} y1={y} x2={index === 1 ? 13.5 : 17} y2={y} />)}
+    </svg>
+  );
+}
+
+/** 文本显示样式：对齐、加粗、斜体、下划线、删除线、自动宽度与垂直对齐统一从这里取。 */
+function textDisplayStyle(payload: TextPayload | null, fallbackColor: string): CSSProperties {
+  return {
+    color: payload?.color || fallbackColor,
+    fontSize: payload?.fontSize || 18,
+    lineHeight: 1.35,
+    textAlign: payload?.textAlign || "left",
+    fontWeight: payload?.bold ? 700 : 400,
+    fontStyle: payload?.italic ? "italic" : "normal",
+    textDecoration: [payload?.underline ? "underline" : "", payload?.strikeThrough ? "line-through" : ""].filter(Boolean).join(" ") || "none",
+    // 始终 pre-wrap：保留手动换行（\n 与 <br>），长行在框宽（自动宽度时为限宽）内自动换行。
+    whiteSpace: "pre-wrap",
+    justifyContent: payload?.verticalAlign === "middle" ? "center" : payload?.verticalAlign === "bottom" ? "flex-end" : "flex-start",
+  };
+}
 
 async function json<T>(url: string, init?: RequestInit): Promise<T> {
   const response = await fetch(url, { ...init, headers: { "Content-Type": "application/json", ...init?.headers } });
@@ -562,7 +606,7 @@ export function BoardView({ projectId, assets, onMessage, onSelectAsset }: { pro
   }
 
   // ---- 图片元素移动 / 缩放 ----
-  function startInteraction(event: PointerEvent<HTMLElement>, item: CanvasItem, mode: "move" | "resize") {
+  function startInteraction(event: PointerEvent<HTMLElement>, item: CanvasItem, mode: "move" | "resize", direction: ResizeDirection = "se") {
     if (isPanGesture(event)) return;
     event.stopPropagation();
     if (event.button !== 0) return;
@@ -576,7 +620,7 @@ export function BoardView({ projectId, assets, onMessage, onSelectAsset }: { pro
     else { movingIds = [item.id]; selectItems(movingIds, item.id); }
     event.currentTarget.setPointerCapture(event.pointerId);
     const topZ = Math.max(0, ...imageItems.map((entry) => entry.zIndex));
-    interaction.current = { itemId: item.id, pointerId: event.pointerId, mode, startX: event.clientX, startY: event.clientY, x: item.x, y: item.y, width: item.width, height: item.height, itemStarts: Object.fromEntries(imageItems.filter((entry) => movingIds.includes(entry.id)).map((entry) => [entry.id, { x: entry.x, y: entry.y }])) };
+    interaction.current = { itemId: item.id, pointerId: event.pointerId, mode, direction, startX: event.clientX, startY: event.clientY, x: item.x, y: item.y, width: item.width, height: item.height, itemStarts: Object.fromEntries(items.filter((entry) => movingIds.includes(entry.id)).map((entry) => [entry.id, { x: entry.x, y: entry.y }])) };
     setSelectedFrameId(null);
     if (item.zIndex < topZ) setItems((current) => current.map((entry) => entry.id === item.id ? { ...entry, zIndex: topZ + 1 } : entry));
   }
@@ -607,13 +651,23 @@ export function BoardView({ projectId, assets, onMessage, onSelectAsset }: { pro
         return { ...item, x: start.x + dx, y: start.y + dy };
       }
       if (item.id !== active.itemId) return item;
-      return { ...item, width: Math.max(2, Math.round(active.width + dx)), height: Math.max(2, Math.round(active.height + dy)) };
+      // 方向感知缩放：四角自由缩放，四边只缩放单轴，锚定对侧
+      const dir = active.direction ?? "se";
+      let left = active.x; let top = active.y;
+      let w = active.width; let h = active.height;
+      if (dir.includes("e")) w = active.width + dx;
+      if (dir.includes("w")) { w = active.width - dx; left = active.x + dx; }
+      if (dir.includes("s")) h = active.height + dy;
+      if (dir.includes("n")) { h = active.height - dy; top = active.y + dy; }
+      if (w < 2) { w = 2; if (dir.includes("w")) left = active.x + active.width - 2; }
+      if (h < 2) { h = 2; if (dir.includes("n")) top = active.y + active.height - 2; }
+      return { ...item, x: left, y: top, width: Math.round(w), height: Math.round(h) };
     }));
   }
   async function endInteraction(event: PointerEvent<HTMLElement>) {
     const active = interaction.current; if (!active || active.pointerId !== event.pointerId) return;
     interaction.current = null; setSnapGuides({ vertical: [], horizontal: [] });
-    const changedItems = imageItems.filter((entry) => active.mode === "move" ? Boolean(active.itemStarts[entry.id]) : entry.id === active.itemId);
+    const changedItems = items.filter((entry) => active.mode === "move" ? Boolean(active.itemStarts[entry.id]) : entry.id === active.itemId);
     if (!changedItems.length || !canvas) return;
     // 移动结束后按“与 Frame 是否有交集”重新归属：有交集则跟随该 Frame，否则回到自由画布。
     let updatedItems = changedItems;
@@ -645,6 +699,16 @@ export function BoardView({ projectId, assets, onMessage, onSelectAsset }: { pro
       setCanvas((current) => current ? { ...current, revision: data.revision } : current);
     } catch (error) { onMessage(error instanceof Error ? error.message : "保存失败"); }
   }
+  /** 按元素 id 保存（不依赖选中状态）：文本提交等场景使用，避免点击空白退出编辑时选中被框选清空导致丢失。 */
+  async function updateItemById(id: string, changes: Partial<CanvasItem>) {
+    if (!canvas) return;
+    const item = items.find((entry) => entry.id === id); if (!item) return;
+    const updated = { ...item, ...changes }; setItems((current) => current.map((entry) => entry.id === id ? updated : entry));
+    try {
+      const data = await json<{ revision: number }>("/api/canvas-items", { method: "PATCH", body: JSON.stringify(updated) });
+      setCanvas((current) => current ? { ...current, revision: data.revision } : current);
+    } catch (error) { onMessage(error instanceof Error ? error.message : "保存失败"); }
+  }
   async function deleteCanvasItems(itemIds: string[]) {
     if (!canvas) return;
     const uniqueIds = [...new Set(itemIds)];
@@ -667,6 +731,8 @@ export function BoardView({ projectId, assets, onMessage, onSelectAsset }: { pro
   // ---- 标记元素：绘制 / 文本 ----
   function beginDraw(event: PointerEvent<HTMLDivElement>) {
     if (tool === "text") {
+      // 正在编辑文本框时点击空白处：只结束本次编辑（由编辑器 blur 提交），不再新建文本框
+      if (editingTextId) return;
       const point = toCanvas(event.clientX, event.clientY);
       void createTextItem(point);
       return;
@@ -735,9 +801,10 @@ export function BoardView({ projectId, assets, onMessage, onSelectAsset }: { pro
   async function createTextItem(point: Point) {
     if (!canvas) return;
     const width = 180; const height = 40;
-    const frameId = itemFrameId({ x: point.x, y: point.y, width, height, type: "text", payload: { text: "", color: strokeColor, fontSize: 18 } });
+    const defaults: TextPayload = { text: "", color: strokeColor, fontSize, textAlign: "left", verticalAlign: "top", autoWidth: true, autoHeight: true };
+    const frameId = itemFrameId({ x: point.x, y: point.y, width, height, type: "text", payload: defaults });
     try {
-      const data = await json<{ item: CanvasItem; revision: number }>("/api/canvas-items", { method: "POST", body: JSON.stringify({ canvasId: canvas.id, type: "text", parentFrameId: frameId, x: point.x, y: point.y, width, height, zIndex: items.length + 1, rotation: 0, payload: { text: "", color: strokeColor, fontSize } }) });
+      const data = await json<{ item: CanvasItem; revision: number }>("/api/canvas-items", { method: "POST", body: JSON.stringify({ canvasId: canvas.id, type: "text", parentFrameId: frameId, x: point.x, y: point.y, width, height, zIndex: items.length + 1, rotation: 0, payload: defaults }) });
       const created = { ...data.item, type: "text" as const };
       setItems((current) => [...current, created]);
       setCanvas((current) => current ? { ...current, revision: data.revision } : current);
@@ -748,56 +815,116 @@ export function BoardView({ projectId, assets, onMessage, onSelectAsset }: { pro
 
   function commitText(item: CanvasItem, raw: string) {
     setEditingTextId(null);
-    const text = raw.trim();
+    setTool("pointer"); // 编辑完成后回到指针工具：再点空白处只会取消选择，不会新建文本框
+    const text = (raw ?? "").trim();
     if (!text) { void deleteCanvasItems([item.id]); return; }
-    const payload = { text, color: item.payload && "color" in item.payload ? item.payload.color : strokeColor, fontSize: item.payload && "fontSize" in item.payload ? item.payload.fontSize : 18 };
-    void updateSelected({ payload });
+    const previous = item.payload && "text" in item.payload ? item.payload as TextPayload : null;
+    const payload: TextPayload = {
+      text,
+      color: previous?.color || strokeColor,
+      fontSize: previous?.fontSize || 18,
+      ...(previous ? { bold: previous.bold, italic: previous.italic, underline: previous.underline, strikeThrough: previous.strikeThrough, textAlign: previous.textAlign, verticalAlign: previous.verticalAlign, autoWidth: previous.autoWidth, autoHeight: previous.autoHeight } : {}),
+    };
+    void updateItemById(item.id, { payload });
+  }
+
+  /** 读取可编辑文本的纯文本：innerText 会把 <br> 与块级元素转成换行，textContent 会丢掉 <br> 的换行。 */
+  function editableText(el: HTMLElement | null): string {
+    if (!el) return "";
+    return typeof el.innerText === "string" && el.innerText.trim() !== "" ? el.innerText : (el.textContent ?? "");
   }
 
   // ---- 标记元素移动 / 缩放 ----
-  function startAnnotationInteraction(event: PointerEvent<HTMLElement>, item: CanvasItem, mode: "move" | "resize") {
+  function startAnnotationInteraction(event: PointerEvent<HTMLElement>, item: CanvasItem, mode: "move" | "resize", direction: ResizeDirection = "se") {
     if (isPanGesture(event)) return;
     event.stopPropagation();
     if (event.button !== 0) return;
     if (editingTextId === item.id) return;
-    if (mode === "resize") selectItems([item.id], item.id);
-    else if (event.shiftKey) {
+    let movingIds: string[];
+    if (mode === "resize") {
+      movingIds = [item.id]; selectItems(movingIds, item.id);
+    } else if (event.shiftKey) {
       if (selectedItemIds.includes(item.id)) { selectItems(selectedItemIds.filter((id) => id !== item.id)); return; }
-      selectItems([...selectedItemIds, item.id], item.id);
-    } else if (!selectedItemIds.includes(item.id)) selectItems([item.id], item.id);
+      movingIds = [...selectedItemIds, item.id]; selectItems(movingIds, item.id);
+    } else if (selectedItemIds.includes(item.id)) movingIds = selectedItemIds;
+    else { movingIds = [item.id]; selectItems(movingIds, item.id); }
+    // 自动宽/高的文本：被拖动的轴从当前内容尺寸开始缩放，而不是旧的存储尺寸
+    let baseWidth = item.width; let baseHeight = item.height;
+    const textPayload = item.payload && "text" in item.payload ? item.payload as TextPayload : null;
+    if (mode === "resize" && textPayload && (textPayload.autoWidth || textPayload.autoHeight)) {
+      const el = viewportRef.current?.querySelector<HTMLElement>(`[data-item-id="${item.id}"] .annotation-text, [data-item-id="${item.id}"] .annotation-text-editor`);
+      if (el) {
+        const rect = el.getBoundingClientRect();
+        if (textPayload.autoWidth) baseWidth = Math.max(20, Math.round(rect.width / view.zoom));
+        if (textPayload.autoHeight) baseHeight = Math.max(16, Math.round(rect.height / view.zoom));
+      }
+    }
     event.currentTarget.setPointerCapture(event.pointerId);
-    interaction.current = { itemId: item.id, pointerId: event.pointerId, mode, startX: event.clientX, startY: event.clientY, x: item.x, y: item.y, width: item.width, height: item.height, itemStarts: { [item.id]: { x: item.x, y: item.y } } };
+    interaction.current = { itemId: item.id, pointerId: event.pointerId, mode, direction, startX: event.clientX, startY: event.clientY, x: item.x, y: item.y, width: baseWidth, height: baseHeight, itemStarts: Object.fromEntries(items.filter((entry) => movingIds.includes(entry.id)).map((entry) => [entry.id, { x: entry.x, y: entry.y }])) };
   }
   function moveAnnotation(event: PointerEvent<HTMLElement>) {
     const active = interaction.current; if (!active || active.pointerId !== event.pointerId) return;
     const dx = (event.clientX - active.startX) / view.zoom; const dy = (event.clientY - active.startY) / view.zoom;
     setItems((current) => current.map((item) => {
+      if (active.mode === "move") {
+        const start = active.itemStarts[item.id]; if (!start) return item;
+        return { ...item, x: start.x + dx, y: start.y + dy };
+      }
       if (item.id !== active.itemId) return item;
-      if (active.mode === "move") return { ...item, x: active.x + dx, y: active.y + dy };
-      const scaleX = Math.max(0.1, (active.width + dx) / active.width);
-      const scaleY = Math.max(0.1, (active.height + dy) / active.height);
       const payload = item.payload;
+      const isText = payload && "text" in payload;
+      const minW = isText ? 20 : 2;
+      const minH = isText ? 16 : 2;
+      // 方向感知缩放：四角自由缩放，四边只缩放单轴，锚定对侧
+      const dir = active.direction ?? "se";
+      let left = active.x; let top = active.y;
+      let w = active.width; let h = active.height;
+      if (dir.includes("e")) w = active.width + dx;
+      if (dir.includes("w")) { w = active.width - dx; left = active.x + dx; }
+      if (dir.includes("s")) h = active.height + dy;
+      if (dir.includes("n")) { h = active.height - dy; top = active.y + dy; }
+      if (w < minW) { w = minW; if (dir.includes("w")) left = active.x + active.width - minW; }
+      if (h < minH) { h = minH; if (dir.includes("n")) top = active.y + active.height - minH; }
+      const width = Math.round(w); const height = Math.round(h);
       if (payload && "kind" in payload && payload.kind === "freehand" && payload.points) {
-        return { ...item, width: Math.max(2, Math.round(active.width * scaleX)), height: Math.max(2, Math.round(active.height * scaleY)), payload: { ...payload, points: payload.points.map((p) => ({ x: p.x * scaleX, y: p.y * scaleY })) } };
+        const scaleX = width / Math.max(1, active.width); const scaleY = height / Math.max(1, active.height);
+        return { ...item, x: left, y: top, width, height, payload: { ...payload, points: payload.points.map((p) => ({ x: p.x * scaleX, y: p.y * scaleY })) } };
       }
       if (payload && "text" in payload) {
-        // 文本：缩放只改变文本框的展示范围（宽高），字号保持不变，文本按新框宽重新换行。
-        return { ...item, width: Math.max(20, Math.round(active.width * scaleX)), height: Math.max(16, Math.round(active.height * scaleY)) };
+        // 文本：缩放只改变文本框的展示范围（宽高），字号保持不变；拖哪条轴就只退出对应的自动尺寸——
+        // 只拖宽度边（e/w）保持自动高度，只拖高度边（n/s）保持自动宽度，拖角（宽高同时）才两个都退出。
+        const textPayload = payload as TextPayload;
+        const changesWidth = dir.includes("e") || dir.includes("w");
+        const changesHeight = dir.includes("n") || dir.includes("s");
+        const nextPayload = { ...textPayload };
+        if (changesWidth && textPayload.autoWidth) nextPayload.autoWidth = false;
+        if (changesHeight && textPayload.autoHeight) nextPayload.autoHeight = false;
+        return { ...item, x: left, y: top, width, height, payload: nextPayload };
       }
-      return { ...item, width: Math.max(2, Math.round(active.width * scaleX)), height: Math.max(2, Math.round(active.height * scaleY)) };
+      return { ...item, x: left, y: top, width, height };
     }));
   }
   async function endAnnotation(event: PointerEvent<HTMLElement>) {
     const active = interaction.current; if (!active || active.pointerId !== event.pointerId) return;
     interaction.current = null;
     if (!canvas) return;
-    const item = items.find((entry) => entry.id === active.itemId); if (!item) return;
-    const frameId = itemFrameId(item);
-    const updated = item.parentFrameId === frameId ? item : { ...item, parentFrameId: frameId };
-    if (updated !== item) setItems((current) => current.map((entry) => entry.id === item.id ? updated : entry));
+    const changedItems = items.filter((entry) => active.mode === "move" ? Boolean(active.itemStarts[entry.id]) : entry.id === active.itemId);
+    if (!changedItems.length) return;
+    // 移动结束后按“与 Frame 是否有交集”重新归属
+    const updatedItems = changedItems.map((item) => {
+      const frameId = itemFrameId(item);
+      return item.parentFrameId === frameId ? item : { ...item, parentFrameId: frameId };
+    });
+    if (updatedItems.some((item, index) => item.parentFrameId !== changedItems[index].parentFrameId)) {
+      setItems((current) => current.map((entry) => updatedItems.find((u) => u.id === entry.id) ?? entry));
+    }
     try {
-      const data = await json<{ revision: number }>("/api/canvas-items", { method: "PATCH", body: JSON.stringify(updated) });
-      setCanvas((current) => current ? { ...current, revision: data.revision } : current);
+      let revision = canvas.revision;
+      for (const item of updatedItems) {
+        const data = await json<{ revision: number }>("/api/canvas-items", { method: "PATCH", body: JSON.stringify(item) });
+        revision = data.revision;
+      }
+      setCanvas((current) => current ? { ...current, revision } : current);
     } catch (error) { onMessage(error instanceof Error ? error.message : "布局保存失败"); }
   }
 
@@ -950,10 +1077,78 @@ export function BoardView({ projectId, assets, onMessage, onSelectAsset }: { pro
   const controlSize = Math.max(9, 10 / view.zoom);
   const titleScale = Math.max(1, 1 / view.zoom);
 
+  // 单个文本元素（正在编辑或选中）时显示悬浮格式面板
+  const selectedTextItem = editingTextId
+    ? items.find((entry) => entry.id === editingTextId && entry.type === "text") ?? null
+    : selectedItemIds.length === 1
+      ? items.find((entry) => entry.id === selectedItemIds[0] && entry.type === "text") ?? null
+      : null;
+
+  /** 若正在编辑该文本，先把编辑器内容并入 payload（空内容则删除元素并返回 null），避免格式操作覆盖未保存的文字。 */
+  function textPayloadForFormatChange(item: CanvasItem): TextPayload | null {
+    const base = item.payload && "text" in item.payload ? item.payload as TextPayload : null;
+    if (!base) return null;
+    if (editingTextId !== item.id) return base;
+    const editor = viewportRef.current?.querySelector<HTMLElement>(`[data-item-id="${item.id}"] .annotation-text-editor`) ?? null;
+    const raw = editableText(editor).trim();
+    if (!raw) { void deleteCanvasItems([item.id]); return null; }
+    setEditingTextId(null);
+    return { ...base, text: raw };
+  }
+
+  function applyTextFormat(patch: Partial<TextPayload>) {
+    if (!selectedTextItem) return;
+    const next = textPayloadForFormatChange(selectedTextItem);
+    if (!next) return;
+    void updateItemById(selectedTextItem.id, { payload: { ...next, ...patch } });
+  }
+
+  function toggleTextAutoWidth() {
+    if (!selectedTextItem) return;
+    const next = textPayloadForFormatChange(selectedTextItem);
+    if (!next) return;
+    if (next.autoWidth) {
+      // 关闭自动宽度：把框宽写为当前内容宽度，避免跳回旧的存储宽度
+      let width = selectedTextItem.width;
+      const el = viewportRef.current?.querySelector<HTMLElement>(`[data-item-id="${selectedTextItem.id}"] .annotation-text, [data-item-id="${selectedTextItem.id}"] .annotation-text-editor`);
+      if (el) width = Math.max(20, Math.round(el.getBoundingClientRect().width / view.zoom));
+      void updateItemById(selectedTextItem.id, { width, payload: { ...next, autoWidth: false } });
+    } else {
+      void updateItemById(selectedTextItem.id, { payload: { ...next, autoWidth: true } });
+    }
+  }
+
+  function toggleTextAutoHeight() {
+    if (!selectedTextItem) return;
+    const next = textPayloadForFormatChange(selectedTextItem);
+    if (!next) return;
+    if (next.autoHeight) {
+      // 关闭自动高度：把框高写为当前内容高度
+      let height = selectedTextItem.height;
+      const el = viewportRef.current?.querySelector<HTMLElement>(`[data-item-id="${selectedTextItem.id}"] .annotation-text, [data-item-id="${selectedTextItem.id}"] .annotation-text-editor`);
+      if (el) height = Math.max(16, Math.round(el.getBoundingClientRect().height / view.zoom));
+      void updateItemById(selectedTextItem.id, { height, payload: { ...next, autoHeight: false } });
+    } else {
+      void updateItemById(selectedTextItem.id, { payload: { ...next, autoHeight: true } });
+    }
+  }
+
+  const textFormatPanelPos = (() => {
+    if (!selectedTextItem) return null;
+    const screenX = view.x + selectedTextItem.x * view.zoom;
+    const screenY = view.y + selectedTextItem.y * view.zoom;
+    const vpWidth = viewportRef.current?.clientWidth ?? 0;
+    const PANEL_WIDTH = 650;
+    const left = Math.max(8, Math.min(screenX, Math.max(8, vpWidth - PANEL_WIDTH - 8)));
+    return { left, top: Math.max(8, screenY - 54) };
+  })();
+
   function renderImageItem(item: CanvasItem) {
     return <article key={item.id} className={`canvas-item ${selectedItemIds.includes(item.id) ? "selected" : ""}`} style={{ left: item.x, top: item.y, width: item.width, height: item.height, zIndex: item.zIndex, transform: `rotate(${item.rotation}deg)` }} onPointerDown={(event) => startInteraction(event, item, "move")} onPointerMove={moveInteraction} onPointerUp={(event) => void endInteraction(event)} onDoubleClick={(event) => { event.stopPropagation(); onSelectAsset(item.assetId!); }} onContextMenu={(event) => openItemMenu(event, item)} title="双击查看素材详情">
       {item.thumbnailUrl ? <img src={item.thumbnailUrl} alt={item.name ?? ""} draggable={false} /> : <div className="canvas-item-empty">{item.name ?? "图片"}</div>}
-      <button className="resize-handle" type="button" aria-label="调整素材大小" onPointerDown={(event) => startInteraction(event, item, "resize")} onPointerMove={moveInteraction} onPointerUp={(event) => void endInteraction(event)} />
+      {RESIZE_DIRECTIONS.map((dir) => (
+        <button key={dir} type="button" className={`resize-handle handle-${dir}`} aria-label={`从 ${dir} 方向调整素材大小`} onPointerDown={(event) => startInteraction(event, item, "resize", dir)} onPointerMove={moveInteraction} onPointerUp={(event) => void endInteraction(event)} />
+      ))}
     </article>;
   }
 
@@ -978,19 +1173,22 @@ export function BoardView({ projectId, assets, onMessage, onSelectAsset }: { pro
     const isText = item.type === "text";
     const itemWidth = Math.max(1, item.width); const itemHeight = Math.max(1, item.height);
     if (isText) {
-      const text = payload && "text" in payload ? (payload as TextPayload).text : "";
-      const color = payload && "color" in payload ? (payload as TextPayload).color : strokeColor;
-      const fontSize = payload && "fontSize" in payload ? (payload as TextPayload).fontSize : 18;
-      return <article key={item.id} className={`canvas-item annotation-item ${selected ? "selected" : ""}`} style={{ left: item.x, top: item.y, width: item.width, height: item.height, zIndex: item.zIndex }} onPointerDown={(event) => startAnnotationInteraction(event, item, "move")} onPointerMove={moveAnnotation} onPointerUp={(event) => void endAnnotation(event)} onContextMenu={(event) => openItemMenu(event, item)} onDoubleClick={(event) => { event.stopPropagation(); setEditingTextId(item.id); }}>
+      const textPayload = payload && "text" in payload ? payload as TextPayload : null;
+      const textStyle = textDisplayStyle(textPayload, strokeColor);
+      return <article key={item.id} data-item-id={item.id} className={`canvas-item annotation-item ${textPayload?.autoWidth ? "text-auto-width" : ""} ${textPayload?.autoHeight ? "text-auto-height" : ""} ${selected ? "selected" : ""}`} style={{ left: item.x, top: item.y, ...(textPayload?.autoWidth ? { width: "max-content", maxWidth: AUTO_WIDTH_MAX } : { width: item.width }), ...(textPayload?.autoHeight ? {} : { height: item.height }), zIndex: item.zIndex }} onPointerDown={(event) => startAnnotationInteraction(event, item, "move")} onPointerMove={moveAnnotation} onPointerUp={(event) => void endAnnotation(event)} onContextMenu={(event) => openItemMenu(event, item)} onDoubleClick={(event) => { event.stopPropagation(); setEditingTextId(item.id); }}>
         {editingTextId === item.id
-          ? <div className="annotation-text-editor" contentEditable suppressContentEditableWarning autoFocus style={{ color, fontSize }} ref={(el) => { if (el && !el.textContent) el.focus(); }} onBlur={(event) => commitText(item, event.currentTarget.textContent ?? "")} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); (event.currentTarget as HTMLElement).blur(); } if (event.key === "Escape") { setTool("pointer"); (event.currentTarget as HTMLElement).blur(); } }} />
-          : <div className="annotation-text" style={{ color, fontSize, lineHeight: 1.35 }}>{text}</div>}
-        {!editingTextId && selected && <button className="resize-handle" type="button" aria-label="调整大小" onPointerDown={(event) => startAnnotationInteraction(event, item, "resize")} onPointerMove={moveAnnotation} onPointerUp={(event) => void endAnnotation(event)} />}
+          ? <div key="text-editor" className="annotation-text-editor" contentEditable suppressContentEditableWarning autoFocus style={textStyle} ref={(el) => { if (!el) return; if (el.dataset.initialized === undefined) { el.dataset.initialized = "1"; el.textContent = textPayload?.text ?? ""; el.focus(); const range = document.createRange(); range.selectNodeContents(el); range.collapse(false); const sel = window.getSelection(); sel?.removeAllRanges(); sel?.addRange(range); } }} onBlur={(event) => commitText(item, editableText(event.currentTarget))} onKeyDown={(event) => { if (event.nativeEvent.isComposing) return; if ((event.ctrlKey || event.metaKey) && event.key === "Enter") { event.preventDefault(); (event.currentTarget as HTMLElement).blur(); } if (event.key === "Escape") { setTool("pointer"); (event.currentTarget as HTMLElement).blur(); } }} />
+          : <div key="text-display" className="annotation-text" style={textStyle}><span>{textPayload?.text ?? ""}</span></div>}
+        {!editingTextId && selected ? RESIZE_DIRECTIONS.map((dir) => (
+          <button key={dir} type="button" className={`resize-handle handle-${dir}`} aria-label={`从 ${dir} 方向调整大小`} onPointerDown={(event) => startAnnotationInteraction(event, item, "resize", dir)} onPointerMove={moveAnnotation} onPointerUp={(event) => void endAnnotation(event)} />
+        )) : null}
       </article>;
     }
     return <article key={item.id} className={`canvas-item annotation-item ${selected ? "selected" : ""}`} style={{ left: item.x, top: item.y, width: item.width, height: item.height, zIndex: item.zIndex }} onPointerDown={(event) => startAnnotationInteraction(event, item, "move")} onPointerMove={moveAnnotation} onPointerUp={(event) => void endAnnotation(event)} onContextMenu={(event) => openItemMenu(event, item)}>
       {payload && "kind" in payload ? renderShape(payload as ShapePayload, itemWidth, itemHeight) : null}
-      {selected && <button className="resize-handle" type="button" aria-label="调整大小" onPointerDown={(event) => startAnnotationInteraction(event, item, "resize")} onPointerMove={moveAnnotation} onPointerUp={(event) => void endAnnotation(event)} />}
+      {selected ? RESIZE_DIRECTIONS.map((dir) => (
+        <button key={dir} type="button" className={`resize-handle handle-${dir}`} aria-label={`从 ${dir} 方向调整大小`} onPointerDown={(event) => startAnnotationInteraction(event, item, "resize", dir)} onPointerMove={moveAnnotation} onPointerUp={(event) => void endAnnotation(event)} />
+      )) : null}
     </article>;
   }
 
@@ -1057,6 +1255,39 @@ export function BoardView({ projectId, assets, onMessage, onSelectAsset }: { pro
             </div>
             {marquee ? <div className="board-selection-marquee" style={{ left: Math.min(marquee.startX, marquee.currentX), top: Math.min(marquee.startY, marquee.currentY), width: Math.abs(marquee.currentX - marquee.startX), height: Math.abs(marquee.currentY - marquee.startY) }} /> : null}
             {dragHint ? <div className="board-drag-hint" style={{ left: dragHint.x + 12, top: dragHint.y + 14 }}>{dragHint.text}</div> : null}
+            {textFormatPanelPos && selectedTextItem ? (() => {
+              const p = selectedTextItem.payload as TextPayload;
+              const align = p.textAlign ?? "left";
+              const valign = p.verticalAlign ?? "top";
+              return (
+                <div className="text-format-panel" style={{ left: textFormatPanelPos.left, top: textFormatPanelPos.top }} onPointerDown={(event) => event.stopPropagation()} onPointerMove={(event) => event.stopPropagation()} onPointerUp={(event) => event.stopPropagation()} role="toolbar" aria-label="文本格式">
+                  <div className="tfp-group" aria-label="水平对齐">
+                    <button type="button" className={align === "left" ? "active" : ""} title="左对齐" onClick={() => applyTextFormat({ textAlign: "left" })}><AlignLeft size={14} /></button>
+                    <button type="button" className={align === "center" ? "active" : ""} title="居中" onClick={() => applyTextFormat({ textAlign: "center" })}><AlignCenter size={14} /></button>
+                    <button type="button" className={align === "right" ? "active" : ""} title="右对齐" onClick={() => applyTextFormat({ textAlign: "right" })}><AlignRight size={14} /></button>
+                  </div>
+                  <div className="tfp-group" aria-label="垂直对齐">
+                    <button type="button" className={valign === "top" ? "active" : ""} title="顶部对齐" onClick={() => applyTextFormat({ verticalAlign: "top" })}><TextVerticalAlignIcon position="top" /></button>
+                    <button type="button" className={valign === "middle" ? "active" : ""} title="垂直居中" onClick={() => applyTextFormat({ verticalAlign: "middle" })}><TextVerticalAlignIcon position="middle" /></button>
+                    <button type="button" className={valign === "bottom" ? "active" : ""} title="底部对齐" onClick={() => applyTextFormat({ verticalAlign: "bottom" })}><TextVerticalAlignIcon position="bottom" /></button>
+                  </div>
+                  <div className="tfp-group" aria-label="字体样式">
+                    <button type="button" className={p.bold ? "active" : ""} title="加粗" onClick={() => applyTextFormat({ bold: !p.bold })}><Bold size={14} /></button>
+                    <button type="button" className={p.italic ? "active" : ""} title="斜体" onClick={() => applyTextFormat({ italic: !p.italic })}><Italic size={14} /></button>
+                    <button type="button" className={p.underline ? "active" : ""} title="下划线" onClick={() => applyTextFormat({ underline: !p.underline })}><Underline size={14} /></button>
+                    <button type="button" className={p.strikeThrough ? "active" : ""} title="删除线" onClick={() => applyTextFormat({ strikeThrough: !p.strikeThrough })}><Strikethrough size={14} /></button>
+                  </div>
+                  <div className="tfp-group" aria-label="字号">
+                    <Type size={13} />
+                    <input className="tfp-fontsize" type="number" min={8} max={120} value={p.fontSize ?? 18} aria-label="字号" onChange={(event) => applyTextFormat({ fontSize: Math.max(8, Math.min(120, Math.round(Number(event.target.value)) || 8)) })} />
+                  </div>
+                  <div className="tfp-group" aria-label="尺寸模式">
+                    <button type="button" className={p.autoWidth ? "active" : ""} title="自动宽度：短文本贴合内容，长文本在限宽内自动换行" onClick={toggleTextAutoWidth}><MoveHorizontal size={14} />自动宽度</button>
+                    <button type="button" className={p.autoHeight ? "active" : ""} title="自动高度：框高跟随文字内容" onClick={toggleTextAutoHeight}><MoveVertical size={14} />自动高度</button>
+                  </div>
+                </div>
+              );
+            })() : null}
           </div>
           {selectedItemIds.length ? <div className="canvas-selection-tools"><span className="selection-count">已选 {selectedItemIds.length} 个</span><button type="button" onClick={() => void updateSelected({ zIndex: topZ + 1 })} title="置于顶层"><ArrowUpToLine size={15} /></button><button type="button" onClick={() => void updateSelected({ zIndex: Math.max(0, bottomZ - 1) })} title="置于底层"><ArrowDownToLine size={15} /></button><button className="danger" type="button" onClick={() => void deleteSelected()} title="删除"><Trash2 size={15} /></button></div> : null}
           {frameMenu ? <div className="frame-context-menu" role="menu" style={{ left: frameMenu.x, top: frameMenu.y }} onPointerDown={(event) => event.stopPropagation()}><button type="button" role="menuitem" onClick={() => requestFrameDeletion(frameMenu.frameId)}><Trash2 size={14} />删除 Frame</button></div> : null}

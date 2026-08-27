@@ -362,6 +362,30 @@ async function judgeAmbiguous(config, items) {
   return decisions;
 }
 
+/** 把裁决结果合并成最终标签列表（不落库）：已有标签在前、AI 标签追加在后，去重并应用 50 个上限。 */
+function mergeDecisions(existingNames, decisions) {
+  const present = new Set(existingNames.map(normalizeTag));
+  const finalTags = [...existingNames];
+  let reused = 0;
+  let created = 0;
+  let dropped = 0;
+  for (const decision of decisions) {
+    const name = String(decision.tag ?? "").trim();
+    if (!name) continue;
+    if (finalTags.length >= MAX_ASSET_TAGS) { dropped += 1; continue; }
+    const finalName = decision.decision === "reuse" && decision.reusedTag ? decision.reusedTag : name;
+    if (present.has(normalizeTag(finalName))) continue; // 与已有标签重复，天然幂等
+    present.add(normalizeTag(finalName));
+    finalTags.push(finalName);
+    if (decision.decision === "reuse" && decision.reusedTag && normalizeTag(decision.reusedTag) === normalizeTag(name)) {
+      reused += 1;
+    } else {
+      created += 1;
+    }
+  }
+  return { tags: finalTags, reused, created, dropped };
+}
+
 /** 把裁决结果写入素材标签：合并去重、总上限 50、人工标签在前、AI 标签追加在后。 */
 function applyAiDecisions(db, assetId, decisions) {
   const existingNames = getAssetTagNames(db, assetId);
@@ -399,19 +423,10 @@ function applyAiDecisions(db, assetId, decisions) {
   return { tags: finalTags, reused, created, dropped };
 }
 
-/** 单图 AI 打标主流程：看图出标签 → 精确复用 / 模糊候选 AI 裁决 → 合并落库。 */
-export async function tagAssetWithAi(db, store, assetId) {
-  const config = readAiConfig();
-  if (!config) {
-    throw new AiError("未配置 AI 打标服务：请设置 AI_BASE_URL、AI_API_KEY、AI_MODEL 环境变量，或提供 app/data/ai-config.json", 400);
-  }
-  const buffer = await loadAssetImage(db, store, assetId);
-  const compressed = await compressForAi(buffer);
-  const dataUri = `data:image/jpeg;base64,${compressed.toString("base64")}`;
-
+/** 单图 AI 打标核心分析：看图出标签 → 精确复用 / 模糊候选 AI 裁决，返回裁决列表（不落库）。 */
+async function analyzeTags(db, config, dataUri, existingNames) {
   // 词库优先：按使用次数取前 MAX_DICT_TAGS 个标签注入第一轮，已用标签单独列出
   const tagRows = listTags(db);
-  const existingNames = getAssetTagNames(db, assetId);
   const existingSet = new Set(existingNames.map(normalizeTag));
   const used = [];
   const unused = [];
@@ -475,5 +490,31 @@ export async function tagAssetWithAi(db, store, assetId) {
       for (const { tag } of ambiguous) decisions.push({ tag, decision: "new", reusedTag: null });
     }
   }
+  return decisions;
+}
+
+/** 单图 AI 打标主流程：看图出标签 → 精确复用 / 模糊候选 AI 裁决 → 合并落库。 */
+export async function tagAssetWithAi(db, store, assetId) {
+  const config = readAiConfig();
+  if (!config) {
+    throw new AiError("未配置 AI 打标服务：请设置 AI_BASE_URL、AI_API_KEY、AI_MODEL 环境变量，或提供 app/data/ai-config.json", 400);
+  }
+  const buffer = await loadAssetImage(db, store, assetId);
+  const compressed = await compressForAi(buffer);
+  const dataUri = `data:image/jpeg;base64,${compressed.toString("base64")}`;
+  const existingNames = getAssetTagNames(db, assetId);
+  const decisions = await analyzeTags(db, config, dataUri, existingNames);
   return applyAiDecisions(db, assetId, decisions);
+}
+
+/** 上传前 AI 打标：对尚未入库的待上传图片分析并返回建议标签（不落库、不建立任何关联）。 */
+export async function suggestTagsForUpload(db, buffer) {
+  const config = readAiConfig();
+  if (!config) {
+    throw new AiError("未配置 AI 打标服务：请设置 AI_BASE_URL、AI_API_KEY、AI_MODEL 环境变量，或提供 app/data/ai-config.json", 400);
+  }
+  const compressed = await compressForAi(buffer);
+  const dataUri = `data:image/jpeg;base64,${compressed.toString("base64")}`;
+  const decisions = await analyzeTags(db, config, dataUri, []);
+  return mergeDecisions([], decisions);
 }

@@ -200,6 +200,8 @@ tagsLegacyDb.close();
 // 1) 项目列表（含种子数据）
 const projects = await json(await fetch(`${base}/api/projects`));
 assert.ok(projects.projects.length >= 1, "应有种子项目");
+assert.ok(Array.isArray(projects.projects[0].thumbnails), "项目列表应返回封面缩略图数组");
+assert.ok(projects.projects[0].thumbnails.length <= 4, "封面缩略图最多 4 张");
 
 // 2) 工作区
 const ws = await json(await fetch(`${base}/api/workspace?projectId=project-visual-direction`));
@@ -278,10 +280,19 @@ const canvasWithMarkers = await json(await fetch(`${base}/api/canvas?canvasId=${
 const markerItems = canvasWithMarkers.items.filter((entry) => entry.assetId === null);
 assert.ok(markerItems.some((entry) => entry.type === "text" && entry.payload && entry.payload.text === "批注"), "文本元素的 payload 应完整返回");
 assert.ok(markerItems.some((entry) => entry.type === "shape" && entry.payload && entry.payload.kind === "rect"), "图形元素的 payload 应完整返回");
-const textPatch = await json(await fetch(`${base}/api/canvas-items`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ id: textItem.item.id, canvasId: canvas.canvas.id, type: "text", x: 20, y: 30, width: 200, height: 50, zIndex: 3, payload: { text: "改后批注", color: "#2f7dd1", fontSize: 20 } }) }));
+const textPatch = await json(await fetch(`${base}/api/canvas-items`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ id: textItem.item.id, canvasId: canvas.canvas.id, type: "text", x: 20, y: 30, width: 200, height: 50, zIndex: 3, payload: { text: "改后批注", color: "#2f7dd1", fontSize: 20, bold: true, italic: true, underline: true, strikeThrough: true, textAlign: "center", verticalAlign: "middle", autoWidth: true, autoHeight: true } }) }));
 assert.ok(textPatch.ok, "应能更新文本元素");
 const canvasAfterTextPatch = await json(await fetch(`${base}/api/canvas?canvasId=${canvas.canvas.id}`));
-assert.equal(canvasAfterTextPatch.items.find((entry) => entry.id === textItem.item.id).payload.text, "改后批注", "更新后的文本内容应持久化");
+const textPayloadAfterPatch = canvasAfterTextPatch.items.find((entry) => entry.id === textItem.item.id).payload;
+assert.equal(textPayloadAfterPatch.text, "改后批注", "更新后的文本内容应持久化");
+assert.equal(textPayloadAfterPatch.bold, true, "加粗格式应持久化");
+assert.equal(textPayloadAfterPatch.italic, true, "斜体格式应持久化");
+assert.equal(textPayloadAfterPatch.underline, true, "下划线格式应持久化");
+assert.equal(textPayloadAfterPatch.strikeThrough, true, "删除线格式应持久化");
+assert.equal(textPayloadAfterPatch.textAlign, "center", "水平对齐应持久化");
+assert.equal(textPayloadAfterPatch.verticalAlign, "middle", "垂直对齐应持久化");
+assert.equal(textPayloadAfterPatch.autoWidth, true, "自动宽度应持久化");
+assert.equal(textPayloadAfterPatch.autoHeight, true, "自动高度应持久化");
 
 // 9c) 无限画布坐标可超出 (0,0)：负坐标必须原样保存，不得被钳回原点
 const negativeItem = await json(await post(`${base}/api/canvas-items`, { canvasId: canvas.canvas.id, type: "shape", x: -120, y: -80, width: 60, height: 40, zIndex: 1, payload: { kind: "rect", stroke: "#292d29", strokeWidth: 2 } }));
@@ -356,6 +367,24 @@ assert.deepEqual(aiResult1.tags, ["建筑", "氛围", "灰调", "测试词语", 
 const aiResult2 = await json(await post(`${base}/api/assets/ai-tags`, { id: "asset-02" }));
 assert.equal(aiResult2.created, 1, "裁决失败时机械臂应退化为新建");
 assert.deepEqual(aiResult2.tags, ["机械", "红色", "工业", "机械臂"]);
+
+// 10.5b) 上传前 AI 打标：对待上传图片返回建议标签（复用词库），不落库、不建立素材关联
+const dictBeforeUploadAi = await json(await fetch(`${base}/api/tags`));
+const uploadAiForm = new FormData();
+uploadAiForm.set("file", new File([buffer], "ai-tag.png", { type: "image/png" }));
+const uploadAiRes = await fetch(`${base}/api/uploads/ai-tags`, { method: "POST", body: uploadAiForm });
+assert.equal(uploadAiRes.status, 200, "上传前 AI 打标应 200");
+const uploadAi = await uploadAiRes.json();
+assert.equal(uploadAi.reused, 1, "机械臂应精确复用词库标签");
+assert.equal(uploadAi.created, 0, "不应新建标签");
+assert.deepEqual(uploadAi.tags, ["机械臂"], "应只返回建议标签");
+const badUploadAiForm = new FormData();
+badUploadAiForm.set("file", new File(["nope"], "x.txt", { type: "text/plain" }));
+assert.equal((await fetch(`${base}/api/uploads/ai-tags`, { method: "POST", body: badUploadAiForm })).status, 400, "非图片文件应拒绝");
+const dictAfterUploadAi = await json(await fetch(`${base}/api/tags`));
+assert.equal(dictAfterUploadAi.tags.length, dictBeforeUploadAi.tags.length, "上传前 AI 打标不得改动标签字典");
+const byNameUploadAi = new Map(dictAfterUploadAi.tags.map((tag) => [tag.name, tag]));
+assert.equal(byNameUploadAi.get("机械臂").usageCount, 1, "上传前 AI 打标不得建立素材关联");
 
 const dict1 = await json(await fetch(`${base}/api/tags`));
 const dictByName1 = new Map(dict1.tags.map((tag) => [tag.name, tag]));
@@ -635,5 +664,5 @@ assert.equal((await fetch(`${base}/api/projects`)).status, 401, "退出后原会
 const reLogin = await post(`${base}/api/auth/login`, { username: "admin", password: "admin5678" });
 assert.equal(reLogin.status, 200, "退出后可重新登录");
 
-console.log("✓ 全部通过：项目 / 工作区 / 上传 / 缩略图 / 原图 / 去重 / 改元数据 / 改维度名称 / 画板迁移与重复实例 / 安全替换图片 / 旧库标签迁移 / AI 打标(复用·裁决·降级) / 标签管理(重命名·合并·删除·清理) / AI 服务配置(状态·保存·掩码·测试连接·模型列表·环境变量覆盖) / 回收站(软删-列出-恢复-彻底删) / 登录页公告(公开读取·仅管理员可写·启用开关) / 账号系统(首次初始化·登录·权限隔离·成员管理·停用踢下线·重置密码·删除保留素材·登录审计·退出)");
+console.log("✓ 全部通过：项目 / 工作区 / 上传 / 缩略图 / 原图 / 去重 / 改元数据 / 改维度名称 / 画板迁移与重复实例 / 安全替换图片 / 旧库标签迁移 / AI 打标(复用·裁决·降级·上传前建议) / 标签管理(重命名·合并·删除·清理) / AI 服务配置(状态·保存·掩码·测试连接·模型列表·环境变量覆盖) / 回收站(软删-列出-恢复-彻底删) / 登录页公告(公开读取·仅管理员可写·启用开关) / 账号系统(首次初始化·登录·权限隔离·成员管理·停用踢下线·重置密码·删除保留素材·登录审计·退出)");
 process.exit(0);

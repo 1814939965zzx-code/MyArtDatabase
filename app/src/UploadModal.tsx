@@ -1,6 +1,6 @@
 "use client";
 
-import { AlertTriangle, Check, FileImage, LoaderCircle, Upload, X } from "lucide-react";
+import { AlertTriangle, Check, FileImage, LoaderCircle, Sparkles, Upload, X } from "lucide-react";
 import { sha256 } from "@noble/hashes/sha2.js";
 import { bytesToHex } from "@noble/hashes/utils.js";
 import { FormEvent, useEffect, useState } from "react";
@@ -16,6 +16,8 @@ type PreparedFile = {
   previewUrl: string;
   duplicates: Duplicate[];
 };
+
+const MAX_TAGS = 50;
 
 async function prepareImage(file: File, projectId: string): Promise<PreparedFile> {
   const buffer = await file.arrayBuffer();
@@ -63,6 +65,8 @@ export function UploadModal({
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [allowDuplicate, setAllowDuplicate] = useState(false);
+  const [tagsText, setTagsText] = useState("");
+  const [aiTagBusy, setAiTagBusy] = useState(false);
   const [values, setValues] = useState<Record<string, number>>(
     Object.fromEntries(dimensions.map((dimension) => [dimension.id, 500])),
   );
@@ -109,6 +113,40 @@ export function UploadModal({
     }
   }
 
+  /** AI 打标：把待上传图片发给服务端分析，建议标签合并进标签输入框，由用户确认编辑后随上传提交。 */
+  async function runAiTag() {
+    if (!prepared) return;
+    setAiTagBusy(true);
+    setError("");
+    try {
+      const form = new FormData();
+      form.set("file", file);
+      const response = await fetch("/api/uploads/ai-tags", { method: "POST", body: form });
+      if (response.status === 401) notifyUnauthorized();
+      const data = await response.json() as { tags?: string[]; reused?: number; created?: number; error?: string };
+      if (!response.ok) throw new Error(data.error || "AI 打标失败");
+      const suggested = (data.tags ?? []).map((tag) => String(tag).trim()).filter(Boolean);
+      if (!suggested.length) throw new Error("AI 未返回标签");
+      setTagsText((current) => {
+        const existing = [...new Set(current.split(",").map((tag) => tag.trim()).filter(Boolean))];
+        const merged = [...existing];
+        for (const tag of suggested) {
+          const key = tag.toLocaleLowerCase("zh-CN");
+          if (merged.some((item) => item.toLocaleLowerCase("zh-CN") === key)) continue;
+          if (merged.length >= MAX_TAGS) break;
+          merged.push(tag);
+        }
+        return merged.join(", ");
+      });
+      const parts = [`建议 ${suggested.length} 个标签`, `复用 ${data.reused ?? 0} 个`, `新建 ${data.created ?? 0} 个`];
+      onMessage(`AI 打标完成：${parts.join("，")}，已填入标签输入框，可编辑后提交`);
+    } catch (reason) {
+      onMessage(`AI 打标失败：${reason instanceof Error ? reason.message : "未知错误"}`);
+    } finally {
+      setAiTagBusy(false);
+    }
+  }
+
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!prepared) return;
@@ -121,7 +159,7 @@ export function UploadModal({
     form.set("file", file);
     form.set("projectId", projectId);
     form.set("name", String(fields.get("name") || ""));
-    form.set("tags", String(fields.get("tags") || ""));
+    form.set("tags", tagsText);
     form.set("description", String(fields.get("description") || ""));
     form.set("notes", String(fields.get("notes") || ""));
     form.set("sourceUrl", String(fields.get("sourceUrl") || ""));
@@ -172,7 +210,7 @@ export function UploadModal({
             <div className="upload-fields">
               <div className="upload-scroll">
                 <label>素材名称<input name="name" maxLength={120} defaultValue={baseName} /></label>
-                <label>全局标签<input name="tags" maxLength={4000} placeholder="用逗号分隔，例如：建筑, 暖色, 户外" /></label>
+                <label>全局标签<div className="upload-tags-row"><input name="tags" value={tagsText} onChange={(event) => setTagsText(event.target.value)} maxLength={4000} placeholder="用逗号分隔，例如：建筑, 暖色, 户外" /><button className="ai-tag-button" type="button" disabled={busy || aiTagBusy || !prepared} onClick={() => void runAiTag()} title="调用 AI 观察这张图片并自动补充标签">{aiTagBusy ? <><LoaderCircle className="spin" size={12} />AI 打标中…</> : <><Sparkles size={12} />AI 打标</>}</button></div></label>
                 <label>描述<textarea name="description" rows={2} maxLength={2000} placeholder="描述图片内容或使用方向" /></label>
                 <div className="upload-two-fields"><label>来源链接<input name="sourceUrl" type="url" maxLength={1000} placeholder="https://" /></label><label>备注<input name="notes" maxLength={2000} placeholder="团队内部备注" /></label></div>
                 <div className="upload-dimensions">

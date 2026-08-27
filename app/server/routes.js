@@ -13,7 +13,7 @@ import {
   sessionTokenFromRequest,
   verifyPassword,
 } from "./auth.js";
-import { AiError, listAiModels, readAiConfigDetails, saveAiConfig, tagAssetWithAi, testAiConnection } from "./ai.js";
+import { AiError, listAiModels, readAiConfigDetails, saveAiConfig, suggestTagsForUpload, tagAssetWithAi, testAiConnection } from "./ai.js";
 import { findTagByName, listTags, mergeTags, replaceAssetTags } from "./tags.js";
 
 const ALLOWED_TYPES = new Set(["image/jpeg", "image/png", "image/webp"]);
@@ -85,7 +85,25 @@ function listProjects({ db }) {
     GROUP BY p.id
     ORDER BY p.updated_at DESC, assetCount DESC, p.created_at DESC
   `).all();
-  return Response.json({ projects: rows });
+  // 每个项目取前 4 张素材缩略图作为主页封面拼图
+  const covers = db.prepare(`
+    SELECT pa.project_id AS projectId, a.id,
+      CASE WHEN a.thumbnail_key IS NOT NULL OR a.storage_key IS NOT NULL
+        THEN '/api/media?id=' || a.id || '&variant=thumbnail&v=' || COALESCE(a.thumbnail_key, a.storage_key) ELSE a.thumbnail_url END AS thumbnailUrl
+    FROM project_assets pa
+    INNER JOIN assets a ON a.id = pa.asset_id AND a.deleted_at IS NULL
+    ORDER BY pa.created_at ASC, a.id ASC
+  `).all();
+  const coverMap = new Map();
+  for (const row of covers) {
+    if (!row.thumbnailUrl) continue;
+    const list = coverMap.get(row.projectId) ?? [];
+    if (list.length < 4) list.push(row.thumbnailUrl);
+    coverMap.set(row.projectId, list);
+  }
+  return Response.json({
+    projects: rows.map((row) => ({ ...row, thumbnails: coverMap.get(row.id) ?? [] })),
+  });
 }
 
 async function createProject(request, { db }) {
@@ -713,6 +731,26 @@ async function aiTagAsset(request, { db, store }) {
   }
 }
 
+/** 上传前 AI 打标：对选中的待上传图片分析并返回建议标签（不落库，前端填入标签输入框供确认后随上传提交）。 */
+async function aiTagUploadImage(request, { db }) {
+  try {
+    const form = await request.formData();
+    const file = form.get("file");
+    if (!(file instanceof File) || !ALLOWED_TYPES.has(file.type)) {
+      return Response.json({ error: "仅支持 JPEG、PNG 和 WebP 图片" }, { status: 400 });
+    }
+    if (file.size <= 0 || file.size > 50 * 1024 * 1024) {
+      return Response.json({ error: "图片不能超过 50MB" }, { status: 400 });
+    }
+    const buffer = Buffer.from(await file.arrayBuffer());
+    const result = await suggestTagsForUpload(db, buffer);
+    return Response.json({ ok: true, ...result });
+  } catch (error) {
+    const status = error instanceof AiError ? error.status : 500;
+    return Response.json({ error: errorMessage(error, "AI 打标失败") }, { status });
+  }
+}
+
 // ---- AI 服务配置 ----
 function aiConfigStatus() {
   return Response.json(readAiConfigDetails());
@@ -1122,6 +1160,7 @@ export async function handleApi(request, ctx) {
     if (pathname === "/api/workspace" && method === "GET") return workspace(request, ctx);
 
     if (pathname === "/api/uploads/check" && method === "POST") return await checkUpload(request, ctx);
+    if (pathname === "/api/uploads/ai-tags" && method === "POST") return await aiTagUploadImage(request, ctx);
     if (pathname === "/api/uploads" && method === "POST") return await upload(request, ctx);
 
     if (pathname === "/api/media" && method === "GET") return await media(request, ctx);
