@@ -29,9 +29,6 @@ data/
 .npm-cache/
 .wrangler/
 
-# Chrome 扩展构建产物
-extension/release/
-
 # Local validation runtime and generated fixtures
 infra/resourcespace/runtime/
 validation-results/resourcespace/fixtures/
