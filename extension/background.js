@@ -13,8 +13,45 @@
 
 const MENU_ID = "artdb-save-image";
 const MAX_IMAGE_BYTES = 50 * 1024 * 1024;
+const MAX_VIDEO_BYTES = 200 * 1024 * 1024;
 
-/** 仅接受 JPEG / PNG / WebP / GIF / SVG / TIFF / HEIC（与服务端 IMAGE_TYPES 一致），按魔数判定。 */
+/**
+ * 采集会话：SW 在内存中持有图片字节，内容脚本只收元数据。
+ * 不要经消息通道传 Blob —— Blob 跨上下文传递不可靠，会导致内容脚本
+ * URL.createObjectURL 抛错、面板后续逻辑（项目加载/按钮绑定）全部中断。
+ */
+const sessions = new Map(); // tabId -> { bytes, mime, sha256, at }
+const SESSION_TTL_MS = 10 * 60 * 1000;
+
+function getSession(tabId) {
+  const session = sessions.get(tabId);
+  if (!session) return null;
+  if (Date.now() - session.at > SESSION_TTL_MS) {
+    sessions.delete(tabId);
+    return null;
+  }
+  return session;
+}
+
+function takeSession(tabId) {
+  const session = getSession(tabId);
+  if (session) sessions.delete(tabId);
+  return session;
+}
+
+function dropSession(tabId) {
+  sessions.delete(tabId);
+}
+
+const EXT_BY_MIME = {
+  "image/jpeg": "jpg", "image/png": "png", "image/webp": "webp", "image/gif": "gif",
+  "image/svg+xml": "svg", "image/tiff": "tiff", "image/heic": "heic", "image/heif": "heif", "image/avif": "avif",
+  "video/mp4": "mp4", "video/webm": "webm", "video/quicktime": "mov",
+  "video/x-msvideo": "avi", "video/x-matroska": "mkv", "video/mpeg": "mpg",
+  "video/3gpp": "3gp", "video/3gpp2": "3g2",
+};
+
+/** 仅接受 JPEG / PNG / WebP / GIF / SVG / TIFF / HEIC / AVIF（与服务端 IMAGE_TYPES 一致），按魔数判定。 */
 const IMAGE_DETECTORS = [
   {
     mime: "image/jpeg",
@@ -65,11 +102,22 @@ const IMAGE_DETECTORS = [
       return ["heic", "heix", "hevc", "hevx", "heim", "heis", "hevm", "hevs", "mif1", "msf1"].includes(brand);
     },
   },
+  {
+    mime: "image/avif",
+    test: (b) => {
+      if (b.length < 12) return false;
+      const ascii = (offset) => String.fromCharCode(b[offset], b[offset + 1], b[offset + 2], b[offset + 3]);
+      if (ascii(4) !== "ftyp") return false;
+      const brand = ascii(8).toLowerCase();
+      // AVIF 也是 ISO-BMFF（ftyp）容器，必须与视频区分，否则会被误判为 video/mp4
+      return ["avif", "avis"].includes(brand);
+    },
+  },
 ];
 
 chrome.runtime.onInstalled.addListener(() => {
   chrome.contextMenus.removeAll(() => {
-    chrome.contextMenus.create({ id: MENU_ID, title: "保存到素材库", contexts: ["image"] });
+    chrome.contextMenus.create({ id: MENU_ID, title: "保存到素材库", contexts: ["image", "video"] });
   });
 });
 
@@ -79,89 +127,106 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
   const tabId = tab?.id;
   if (tabId == null) return;
 
-  // 点击右键菜单会授予 activeTab，此处按需注入内容脚本
   try {
-    await chrome.scripting.executeScript({ target: { tabId }, files: ["content.js"] });
-  } catch {
-    return; // 无法注入的页面（chrome:// 等）直接放弃
-  }
+    // 点击右键菜单会授予 activeTab，此处按需注入内容脚本
+    try {
+      await chrome.scripting.executeScript({ target: { tabId }, files: ["content.js"] });
+    } catch {
+      return; // 无法注入的页面（chrome:// 等）直接放弃
+    }
 
-  const { serverUrl, token } = await chrome.storage.local.get(["serverUrl", "token"]);
-  if (!serverUrl || !token) {
-    notify(tabId, { type: "toast", message: "请先在扩展设置中配置服务器地址和令牌", kind: "error", actionLabel: "去设置", action: "open-options" });
-    return;
-  }
+    const { serverUrl, token } = await chrome.storage.local.get(["serverUrl", "token"]);
+    if (!serverUrl || !token) {
+      notify(tabId, { type: "toast", message: "请先在扩展设置中配置服务器地址和令牌", kind: "error", actionLabel: "去设置", action: "open-options" });
+      return;
+    }
 
-  // 1. 下载图片
-  if (!info.srcUrl) {
-    notify(tabId, { type: "toast", message: "无法获取图片（该图片没有可用地址，可能是懒加载未完成）", kind: "error" });
-    return;
-  }
-  let bytes, declaredMime;
-  try {
-    ({ bytes, mime: declaredMime } = await fetchImage(info.srcUrl, tabId));
-  } catch (error) {
-    notify(tabId, { type: "toast", message: "无法获取图片：" + error.message, kind: "error" });
-    return;
-  }
+    // 1. 下载图片/视频
+    if (!info.srcUrl) {
+      notify(tabId, { type: "toast", message: "无法获取素材（该元素没有可用地址，可能是懒加载未完成）", kind: "error" });
+      return;
+    }
+    let bytes, declaredMime;
+    try {
+      ({ bytes, mime: declaredMime } = await fetchMedia(info.srcUrl, tabId));
+    } catch (error) {
+      notify(tabId, { type: "toast", message: "无法获取素材：" + error.message, kind: "error" });
+      return;
+    }
 
-  // 2. 校验格式与大小
-  const mime = detectImage(bytes, declaredMime);
-  if (!mime) {
-    notify(tabId, { type: "toast", message: "仅支持 JPEG/PNG/WebP/GIF/SVG/TIFF/HEIC 图片，其他格式无法保存", kind: "error" });
-    return;
-  }
-  if (bytes.byteLength > MAX_IMAGE_BYTES) {
-    notify(tabId, { type: "toast", message: "图片超过 50MB，无法保存", kind: "error" });
-    return;
-  }
+    // 2. 校验格式与大小（图片 50MB / 视频 200MB，与服务端一致）
+    const imageMime = detectImage(bytes, declaredMime);
+    const videoMime = imageMime ? null : detectVideo(bytes, declaredMime);
+    const mime = imageMime || videoMime;
+    const kind = imageMime ? "image" : videoMime ? "video" : null;
+    if (!kind) {
+      notify(tabId, {
+        type: "toast",
+        message: "仅支持 JPEG/PNG/WebP/GIF/SVG/TIFF/HEIC 图片或 mp4/webm/mov/mkv/avi 等视频",
+        kind: "error",
+      });
+      return;
+    }
+    const maxBytes = kind === "video" ? MAX_VIDEO_BYTES : MAX_IMAGE_BYTES;
+    if (bytes.byteLength > maxBytes) {
+      notify(tabId, { type: "toast", message: kind === "video" ? "视频超过 200MB，无法保存" : "图片超过 50MB，无法保存", kind: "error" });
+      return;
+    }
 
-  // 3. 查重（弹面板之前；重复直接跳过）
-  let sha256;
-  try {
-    sha256 = await sha256Hex(bytes);
-  } catch {
-    notify(tabId, { type: "toast", message: "图片校验失败，请重试", kind: "error" });
-    return;
-  }
-  try {
-    const checked = await api(serverUrl, token, "/api/uploads/check", {
-      method: "POST",
-      body: JSON.stringify({ sha256 }),
+    // 3. 查重（弹面板之前；重复直接跳过）
+    let sha256;
+    try {
+      sha256 = await sha256Hex(bytes);
+    } catch {
+      notify(tabId, { type: "toast", message: "素材校验失败，请重试", kind: "error" });
+      return;
+    }
+    try {
+      const checked = await api(serverUrl, token, "/api/uploads/check", {
+        method: "POST",
+        body: JSON.stringify({ sha256 }),
+      });
+      if (Array.isArray(checked?.duplicates) && checked.duplicates.length > 0) {
+        notify(tabId, { type: "toast", message: "已存在，未保存（素材库中已有相同文件）", kind: "info" });
+        return;
+      }
+    } catch (error) {
+      if (error.status === 401) {
+        notify(tabId, { type: "toast", message: "令牌无效或已过期，请到扩展设置页更新", kind: "error", actionLabel: "去设置", action: "open-options" });
+        return;
+      }
+      if (error.status === 409) {
+        notify(tabId, { type: "toast", message: "已存在，未保存（素材库中已有相同文件）", kind: "info" });
+        return;
+      }
+      notify(tabId, { type: "toast", message: "查重失败：" + error.message, kind: "error" });
+      return;
+    }
+
+    // 4. 字节保留在 SW 会话中，派发确认面板
+    //    图片把字节一并发给内容脚本做预览（>20MB 的降级为占位，避免消息通道超限）；
+    //    视频不传大字节，只显示占位
+    sessions.set(tabId, { bytes, mime, sha256, kind, at: Date.now() });
+    notify(tabId, {
+      type: "show-panel",
+      payload: {
+        kind,
+        mime,
+        sha256,
+        pageUrl: info.pageUrl || "",
+        srcUrl: info.srcUrl || "",
+        fileSize: bytes.byteLength,
+        ...(kind === "image" && bytes.byteLength <= 20 * 1024 * 1024 ? { bytes } : {}),
+      },
     });
-    if (Array.isArray(checked?.duplicates) && checked.duplicates.length > 0) {
-      notify(tabId, { type: "toast", message: "已存在，未保存（素材库中已有相同图片）", kind: "info" });
-      return;
-    }
   } catch (error) {
-    if (error.status === 401) {
-      notify(tabId, { type: "toast", message: "令牌无效或已过期，请到扩展设置页更新", kind: "error", actionLabel: "去设置", action: "open-options" });
-      return;
-    }
-    if (error.status === 409) {
-      notify(tabId, { type: "toast", message: "已存在，未保存（素材库中已有相同图片）", kind: "info" });
-      return;
-    }
-    notify(tabId, { type: "toast", message: "查重失败：" + error.message, kind: "error" });
-    return;
+    notify(tabId, { type: "toast", message: "保存失败：" + (error?.message || "未知错误"), kind: "error" });
   }
-
-  // 4. 派发确认面板（blob 经消息通道传给内容脚本用于预览）
-  notify(tabId, {
-    type: "show-panel",
-    payload: {
-      blob: new Blob([bytes], { type: mime }),
-      sha256,
-      mime,
-      pageUrl: info.pageUrl || "",
-      srcUrl: info.srcUrl || "",
-    },
-  });
 });
 
-// ---- 图片下载与校验 ----
+// ---- 素材下载与校验 ----
 
-async function fetchImage(srcUrl, tabId) {
+async function fetchMedia(srcUrl, tabId) {
   if (/^data:/i.test(srcUrl)) {
     const res = await fetch(srcUrl);
     const bytes = await res.arrayBuffer();
@@ -186,11 +251,47 @@ function detectImage(bytes, declaredMime) {
   }
   // 兜底：部分 CDN 响应头声明了类型但魔数被转码处理过
   const DECLARED_IMAGE_MIMES = new Set([
-    "image/jpeg", "image/png", "image/webp", "image/gif", "image/svg+xml", "image/tiff", "image/heic", "image/heif",
+    "image/jpeg", "image/png", "image/webp", "image/gif", "image/svg+xml", "image/tiff", "image/heic", "image/heif", "image/avif",
   ]);
   if (DECLARED_IMAGE_MIMES.has(declaredMime)) {
     return declaredMime;
   }
+  return null;
+}
+
+/** 视频魔数检测，返回服务端 VIDEO_TYPES 白名单内的 MIME；无法识别返回 null。 */
+function detectVideo(bytes, declaredMime) {
+  const b = new Uint8Array(bytes);
+  const ascii = (offset, len = 4) => String.fromCharCode(...b.slice(offset, offset + len));
+
+  // ISO BMFF（MP4 / MOV / 3GP 等）：box 头为 ftyp
+  if (b.length >= 12 && ascii(4) === "ftyp") {
+    const brand = ascii(8).toLowerCase();
+    // 图片容器（HEIC/AVIF）也以 ftyp 开头，必须排除，绝不当作视频
+    if (["avif", "avis", "heic", "heix", "hevc", "hevx", "heim", "heis", "hevm", "hevs", "mif1", "msf1"].includes(brand)) {
+      return null;
+    }
+    if (brand.startsWith("qt")) return "video/quicktime";
+    if (brand.startsWith("3gp")) return "video/3gpp";
+    if (brand.startsWith("3g2")) return "video/3gpp2";
+    return "video/mp4";
+  }
+  // EBML（WebM / MKV）
+  if (b.length >= 4 && b[0] === 0x1a && b[1] === 0x45 && b[2] === 0xdf && b[3] === 0xa3) {
+    const head = ascii(0, Math.min(b.length, 256)).toLowerCase();
+    return head.includes("webm") ? "video/webm" : "video/x-matroska";
+  }
+  // AVI
+  if (b.length >= 12 && ascii(0) === "RIFF" && ascii(8) === "AVI ") return "video/x-msvideo";
+  // MPEG 节目流 / 视频流
+  if (b.length >= 4 && b[0] === 0x00 && b[1] === 0x00 && b[2] === 0x01 && (b[3] === 0xba || b[3] === 0xb3)) {
+    return "video/mpeg";
+  }
+  // 兜底：响应头声明
+  const DECLARED_VIDEO_MIMES = new Set([
+    "video/mp4", "video/webm", "video/quicktime", "video/x-msvideo", "video/x-matroska", "video/mpeg", "video/3gpp", "video/3gpp2",
+  ]);
+  if (DECLARED_VIDEO_MIMES.has(declaredMime)) return declaredMime;
   return null;
 }
 
@@ -229,7 +330,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     try {
       switch (message.type) {
         case "open-options":
-          chrome.runtime.openOptionsPage();
+          chrome.runtime.openOptionsPage().catch(() => {});
           sendResponse({ ok: true });
           break;
         case "projects": {
@@ -246,21 +347,30 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         }
         case "ai-tags": {
           const cfg = await requireConfig();
+          const session = getSession(sender.tab?.id);
+          if (!session) {
+            sendResponse({ ok: false, error: "素材数据已失效，请重新右键采集" });
+            break;
+          }
+          if (session.kind !== "image") {
+            sendResponse({ ok: false, error: "视频不支持 AI 打标" });
+            break;
+          }
           const form = new FormData();
-          form.append("file", message.blob, "capture.jpg");
+          form.append("file", new Blob([session.bytes], { type: session.mime }), "capture." + (EXT_BY_MIME[session.mime] || "jpg"));
           const body = await api(cfg.serverUrl, cfg.token, "/api/uploads/ai-tags", { method: "POST", body: form });
           sendResponse({ ok: true, tags: body.tags || [] });
           break;
         }
         case "upload": {
           const cfg = await requireConfig();
-          const EXT_BY_MIME = {
-            "image/png": "png", "image/webp": "webp", "image/gif": "gif",
-            "image/svg+xml": "svg", "image/tiff": "tiff", "image/heic": "heic", "image/heif": "heif",
-          };
-          const ext = EXT_BY_MIME[message.mime] || "jpg";
+          const session = takeSession(sender.tab?.id);
+          if (!session) {
+            sendResponse({ ok: false, error: "素材数据已失效，请重新右键采集" });
+            break;
+          }
           const form = new FormData();
-          form.append("file", message.blob, "capture." + ext);
+          form.append("file", new Blob([session.bytes], { type: session.mime }), "capture." + (EXT_BY_MIME[session.mime] || "bin"));
           form.append("projectId", message.projectId);
           form.append("name", message.name || "");
           form.append("tags", (message.tags || []).join(","));
@@ -271,6 +381,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           sendResponse({ ok: true, asset: body.asset || null });
           break;
         }
+        case "close-panel":
+          dropSession(sender.tab?.id);
+          sendResponse({ ok: true });
+          break;
         default:
           sendResponse({ ok: false, error: "未知请求" });
       }

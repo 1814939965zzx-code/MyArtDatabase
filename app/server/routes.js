@@ -30,6 +30,7 @@ const IMAGE_TYPES = new Set([
   "image/tiff",
   "image/heic",
   "image/heif",
+  "image/avif",
 ]);
 const VIDEO_TYPES = new Set([
   "video/mp4",
@@ -322,7 +323,7 @@ async function upload(request, { db, store, user }) {
     const file = form.get("file");
     const kind = file instanceof File ? mediaKind(file.type) : null;
     if (!kind) {
-      return Response.json({ error: "仅支持 JPEG/PNG/WebP/GIF/SVG/TIFF/HEIC 图片或 mp4/mov/webm/mkv 等视频" }, { status: 400 });
+      return Response.json({ error: "仅支持 JPEG/PNG/WebP/GIF/SVG/TIFF/HEIC/AVIF 图片或 mp4/mov/webm/mkv 等视频" }, { status: 400 });
     }
     const maxBytes = kind === "video" ? VIDEO_MAX_BYTES : IMAGE_MAX_BYTES;
     if (file.size <= 0 || file.size > maxBytes) {
@@ -402,7 +403,7 @@ async function replaceAssetMedia(request, { db, store }) {
     if (!id) return Response.json({ error: "缺少素材 ID" }, { status: 400 });
     const kind = file instanceof File ? mediaKind(file.type) : null;
     if (!kind) {
-      return Response.json({ error: "仅支持 JPEG/PNG/WebP/GIF/SVG/TIFF/HEIC 图片或 mp4/mov/webm/mkv 等视频" }, { status: 400 });
+      return Response.json({ error: "仅支持 JPEG/PNG/WebP/GIF/SVG/TIFF/HEIC/AVIF 图片或 mp4/mov/webm/mkv 等视频" }, { status: 400 });
     }
 
     const existing = db.prepare(`SELECT id, storage_key AS storageKey, thumbnail_key AS thumbnailKey, mime_type AS mimeType
@@ -857,7 +858,7 @@ async function aiTagUploadImage(request, { db }) {
     const form = await request.formData();
     const file = form.get("file");
     if (!(file instanceof File) || !IMAGE_TYPES.has(file.type)) {
-      return Response.json({ error: "仅支持 JPEG、PNG、WebP、GIF、SVG、TIFF、HEIC 图片" }, { status: 400 });
+      return Response.json({ error: "仅支持 JPEG、PNG、WebP、GIF、SVG、TIFF、HEIC、AVIF 图片" }, { status: 400 });
     }
     if (file.size <= 0 || file.size > IMAGE_MAX_BYTES) {
       return Response.json({ error: "图片不能超过 50MB" }, { status: 400 });

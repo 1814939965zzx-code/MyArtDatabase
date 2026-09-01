@@ -2,9 +2,9 @@
  * artDatabase 浏览器采集扩展 —— 内容脚本
  *
  * 职责：
- *  - 注入「保存到素材库」确认面板（Shadow DOM 隔离样式，不污染页面）
+ *  - 注入「保存到素材库」确认面板（Shadow DOM 隔离样式，不污染页面；图片预览 / 视频占位）
  *  - 页面内 toast 反馈（成功 / 已存在 / 失败）
- *  - 协助 Service Worker 获取 blob: 图片（blob URL 属于页面 origin）
+ *  - 协助 Service Worker 获取 blob: 素材（blob URL 属于页面 origin）
  *  - 计算默认名称（img alt → URL 文件名 → 兜底）
  *
  * 本脚本不直接访问服务器，所有网络请求经 chrome.runtime.sendMessage 由后台代理。
@@ -24,12 +24,13 @@
     .toast-stack {
       position: fixed; right: 16px; bottom: 16px; display: flex; flex-direction: column;
       gap: 8px; z-index: 2147483647; font-family: -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
+      pointer-events: auto; /* 宿主是 pointer-events:none，这里必须重新开启，否则 toast 按钮点不到 */
     }
     .toast {
       min-width: 220px; max-width: 360px; padding: 10px 14px; border-radius: 8px;
       background: rgba(28, 28, 32, 0.94); color: #fff; font-size: 13px; line-height: 1.5;
       box-shadow: 0 6px 24px rgba(0,0,0,.35); display: flex; align-items: center; gap: 8px;
-      animation: artdb-in .16s ease-out;
+      animation: artdb-in .16s ease-out; pointer-events: auto;
     }
     .toast.kind-success { border-left: 3px solid #34c759; }
     .toast.kind-error { border-left: 3px solid #ff453a; }
@@ -67,6 +68,12 @@
       align-items: center; justify-content: center; overflow: hidden; border: 1px solid #ececf0;
     }
     .preview img { max-width: 100%; max-height: 100%; object-fit: contain; }
+    .video-placeholder {
+      display: flex; flex-direction: column; align-items: center; justify-content: center;
+      gap: 6px; color: #6e6e78; font-size: 13px; text-align: center; line-height: 1.6; padding: 12px;
+    }
+    .video-placeholder .video-icon { font-size: 40px; line-height: 1; }
+    .video-placeholder small { font-size: 11px; color: #9b9e98; }
     .fields { display: flex; flex-direction: column; gap: 10px; }
     .fields label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: #6e6e78; }
     .fields input, .fields select, .fields textarea {
@@ -134,12 +141,25 @@
     }
   });
 
-  function send(message) {
+  /** 向后台发消息并等待回复；带超时兜底，绝不永久挂起。 */
+  function send(message, timeoutMs = 12000) {
     return new Promise((resolve) => {
-      chrome.runtime.sendMessage(message, (reply) => {
-        if (chrome.runtime.lastError) resolve({ ok: false, error: chrome.runtime.lastError.message });
-        else resolve(reply || { ok: false, error: "无响应" });
-      });
+      let settled = false;
+      const timer = setTimeout(() => done({ ok: false, error: "后台无响应（超时），请重试" }), timeoutMs);
+      function done(reply) {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        resolve(reply);
+      }
+      try {
+        chrome.runtime.sendMessage(message, (reply) => {
+          if (chrome.runtime.lastError) done({ ok: false, error: chrome.runtime.lastError.message });
+          else done(reply || { ok: false, error: "无响应" });
+        });
+      } catch (error) {
+        done({ ok: false, error: error.message });
+      }
     });
   }
 
@@ -176,8 +196,13 @@
 
   // ---- 确认面板 ----
   function showPanel(payload) {
-    if (panelEl) closePanel();
-    panelState = { ...payload, projects: [], projectNames: {}, lastProjectId: "" };
+    if (panelEl) closePanel({ skipNotify: true }); // 替换旧面板，不释放后台刚建的新会话
+    if (!payload || !payload.mime) {
+      showToast("面板数据不完整，请重新右键采集", "error");
+      return;
+    }
+    panelState = { projects: [], projectNames: {}, lastProjectId: "" };
+    panelState.kind = payload.kind === "video" ? "video" : "image";
     const shadow = ensureHost().shadowRoot;
 
     const overlay = document.createElement("div");
@@ -213,24 +238,7 @@
     shadow.appendChild(overlay);
     panelEl = overlay;
 
-    // 预览
-    previewUrl = URL.createObjectURL(payload.blob);
-    const img = document.createElement("img");
-    img.src = previewUrl;
-    overlay.querySelector(".preview").appendChild(img);
-
-    // 默认名称
-    const imgEl = findImgBySrc(payload.srcUrl);
-    overlay.querySelector(".name").value = defaultName(payload.srcUrl, imgEl);
-
-    // 来源链接
-    overlay.querySelector(".source").value = payload.pageUrl || "";
-
-    // 项目列表 + 标签字典
-    loadProjects(overlay);
-    loadTags(overlay);
-
-    // 事件
+    // 事件先行绑定：即使后续预览或数据加载失败，取消/关闭也必须可用
     overlay.querySelector(".close").addEventListener("click", closePanel);
     overlay.querySelector(".cancel").addEventListener("click", closePanel);
     overlay.querySelector(".save").addEventListener("click", save);
@@ -239,13 +247,56 @@
       if (event.target === overlay) closePanel();
     });
     document.addEventListener("keydown", onPanelKeydown);
+
+    // 预览：图片由后台传来的字节在本地构建 Blob；视频/超大图只显示占位（不跨上下文传大字节）
+    const previewBox = overlay.querySelector(".preview");
+    if (payload.bytes) {
+      try {
+        previewUrl = URL.createObjectURL(new Blob([payload.bytes], { type: payload.mime }));
+        const img = document.createElement("img");
+        img.src = previewUrl;
+        previewBox.appendChild(img);
+      } catch {
+        showToast("图片预览失败，请重新右键采集", "error");
+        closePanel();
+        return;
+      }
+    } else if (panelState.kind === "video") {
+      previewBox.innerHTML = `
+        <div class="video-placeholder">
+          <span class="video-icon">🎬</span>
+          <span>视频素材 · ${formatSize(payload.fileSize || 0)}</span>
+          <small>上传后服务端自动转码为低码率 MP4</small>
+        </div>`;
+    } else {
+      previewBox.innerHTML = `
+        <div class="video-placeholder">
+          <span class="video-icon">📷</span>
+          <span>图片素材 · ${formatSize(payload.fileSize || 0)}</span>
+          <small>图片较大，未加载预览</small>
+        </div>`;
+    }
+
+    // 视频不支持 AI 打标（与服务端一致），隐藏按钮
+    if (panelState.kind === "video") {
+      overlay.querySelector(".ai-btn").style.display = "none";
+    }
+
+    // 默认名称与来源
+    const imgEl = findImgBySrc(payload.srcUrl);
+    overlay.querySelector(".name").value = defaultName(payload.srcUrl, imgEl);
+    overlay.querySelector(".source").value = payload.pageUrl || "";
+
+    // 项目列表 + 标签字典
+    loadProjects(overlay);
+    loadTags(overlay);
   }
 
   function onPanelKeydown(event) {
     if (event.key === "Escape") closePanel();
   }
 
-  function closePanel() {
+  function closePanel({ skipNotify = false } = {}) {
     if (!panelEl) return;
     document.removeEventListener("keydown", onPanelKeydown);
     panelEl.remove();
@@ -255,6 +306,7 @@
       URL.revokeObjectURL(previewUrl);
       previewUrl = null;
     }
+    if (!skipNotify) send({ type: "close-panel" }); // 通知后台释放采集会话（尽力而为，不阻塞关闭）
   }
 
   function findImgBySrc(srcUrl) {
@@ -280,12 +332,31 @@
     return "未命名-" + new Date().toISOString().slice(0, 19).replace(/[T:]/g, "-");
   }
 
+  function formatSize(bytes) {
+    if (!bytes) return "";
+    if (bytes < 1024 * 1024) return Math.round(bytes / 1024) + " KB";
+    return (bytes / (1024 * 1024)).toFixed(1) + " MB";
+  }
+
   async function loadProjects(overlay) {
     const select = overlay.querySelector(".project");
     const reply = await send({ type: "projects" });
     if (!reply.ok) {
       select.innerHTML = `<option value="">项目加载失败</option>`;
-      setStatus(overlay, reply.error, true);
+      const status = overlay.querySelector(".status");
+      status.textContent = "项目加载失败：" + (reply.error || "未知错误") + "（点此重试）";
+      status.classList.add("error");
+      status.style.cursor = "pointer";
+      status.onclick = () => {
+        status.textContent = "";
+        status.classList.remove("error");
+        status.onclick = null;
+        status.style.cursor = "";
+        void loadProjects(overlay);
+      };
+      if (reply.status === 401) {
+        showToast("令牌无效或已过期，请到扩展设置页更新", "error", "去设置", "open-options");
+      }
       return;
     }
     panelState.projects = reply.projects;
@@ -327,7 +398,7 @@
     btn.disabled = true;
     setStatus(overlay, "AI 打标中…");
     try {
-      const reply = await send({ type: "ai-tags", blob: panelState.blob });
+      const reply = await send({ type: "ai-tags" });
       if (!reply.ok) {
         setStatus(overlay, reply.error || "AI 打标失败", true);
         return;
@@ -376,8 +447,6 @@
     setStatus(overlay, "上传中…");
     const reply = await send({
       type: "upload",
-      blob: panelState.blob,
-      mime: panelState.mime,
       projectId,
       name,
       tags,

@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { closeSync, openSync, readFileSync } from "node:fs";
-import { mkdir, rm } from "node:fs/promises";
+import { mkdir, rm, stat } from "node:fs/promises";
 import ffmpegPath from "ffmpeg-static";
 
 /**
@@ -104,7 +104,22 @@ async function runJob({ db, store, assetId }) {
     setProgress(82);
 
     // 封面从转码产物抽帧（不依赖原文件），最长边 ≤900，与图片缩略图规格一致。
-    await runFfmpeg(["-y", "-i", videoTemp, "-ss", "0.1", "-frames:v", "1", "-vf", "scale='min(900,iw)':-2", "-c:v", "libwebp", "-quality", "80", thumbTemp], logPath);
+    // 单帧/极短视频（如图片被当作视频转码）在 -ss 0.1 时取不到帧，ffmpeg 会成功退出但写出空文件，
+    // 因此校验输出大小，无效时回退到首帧（-ss 0）重试。
+    const extractThumb = (ss) => runFfmpeg(["-y", "-i", videoTemp, "-ss", ss, "-frames:v", "1", "-vf", "scale='min(900,iw)':-2", "-c:v", "libwebp", "-quality", "80", thumbTemp], logPath);
+    const thumbIsValid = async () => {
+      try {
+        const info = await stat(thumbTemp);
+        return info.size > 200;
+      } catch {
+        return false;
+      }
+    };
+    await extractThumb("0.1");
+    if (!(await thumbIsValid())) {
+      await extractThumb("0");
+      if (!(await thumbIsValid())) throw new Error("封面抽帧失败：输出为空");
+    }
     setProgress(92);
 
     const probe = await probeVideo(videoTemp, logPath);

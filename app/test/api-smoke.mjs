@@ -823,11 +823,34 @@ const svgThumb = await fetch(`${base}/api/media?id=${svgAsset.id}&variant=thumbn
 assert.equal(svgThumb.status, 200, "SVG 应生成 WebP 缩略图");
 assert.equal((await sharp(Buffer.from(await svgThumb.arrayBuffer())).metadata()).format, "webp");
 
+// 16b) AVIF：与 HEIC/MP4 同为 ISO-BMFF（ftyp）容器，必须按图片处理并生成缩略图
+const avifPath = path.join(tmp, "smoke.avif");
+await runFfmpeg(["-y", "-f", "lavfi", "-i", "testsrc=duration=1:size=64x64:rate=1", "-frames:v", "1", "-c:v", "libaom-av1", "-still-picture", "1", avifPath]);
+const avifForm = new FormData();
+avifForm.set("file", new File([await readFile(avifPath)], "smoke.avif", { type: "image/avif" }));
+avifForm.set("projectId", "project-visual-direction");
+avifForm.set("name", "冒烟测试 AVIF");
+const avifUp = await fetch(`${base}/api/uploads`, { method: "POST", body: avifForm });
+assert.equal(avifUp.status, 201, `AVIF 上传应 201，实际 ${avifUp.status}`);
+const avifAsset = (await avifUp.json()).asset;
+{
+  const avifWs = await json(await fetch(`${base}/api/workspace?projectId=project-visual-direction`));
+  const avifEntry = avifWs.assets.find((item) => item.id === avifAsset.id);
+  assert.equal(avifEntry.mimeType, "image/avif", "AVIF 素材 mime 应保留");
+  assert.ok(avifEntry.thumbnailUrl, "AVIF 应有 WebP 缩略图");
+}
+const avifThumb = await fetch(`${base}/api/media?id=${avifAsset.id}&variant=thumbnail`);
+assert.equal(avifThumb.status, 200, "AVIF 缩略图应 200");
+assert.equal((await sharp(Buffer.from(await avifThumb.arrayBuffer())).metadata()).format, "webp", "AVIF 缩略图应为 WebP");
+const avifOrig = await fetch(`${base}/api/media?id=${avifAsset.id}`);
+assert.equal(avifOrig.status, 200);
+assert.match(avifOrig.headers.get("content-type") || "", /image\/avif/, "AVIF 原图 content-type 应正确");
+
 // 仍拒绝未知类型
 const badFormatForm = new FormData();
 badFormatForm.set("file", new File(["x"], "x.bmp", { type: "image/bmp" }));
 badFormatForm.set("projectId", "project-visual-direction");
 assert.equal((await fetch(`${base}/api/uploads`, { method: "POST", body: badFormatForm })).status, 400, "BMP（未支持格式）应被拒绝");
 
-console.log("✓ 全部通过：项目 / 工作区 / 上传 / 缩略图 / 原图 / 去重 / 改元数据 / 改维度名称 / 画板迁移与重复实例 / 安全替换图片 / 旧库标签迁移 / AI 打标(复用·裁决·降级·上传前建议) / 标签管理(重命名·合并·删除·清理) / AI 服务配置(状态·保存·掩码·测试连接·模型列表·环境变量覆盖) / 回收站(软删-列出-恢复-彻底删) / 登录页公告(公开读取·仅管理员可写·启用开关) / 账号系统(首次初始化·登录·权限隔离·成员管理·停用踢下线·重置密码·删除保留素材·登录审计·退出) / 视频(上传·异步转码·进度·时长·封面·Range/206·同类型替换·AI 拦截) / 扩展图片格式(GIF·SVG·拒绝未知类型)");
+console.log("✓ 全部通过：项目 / 工作区 / 上传 / 缩略图 / 原图 / 去重 / 改元数据 / 改维度名称 / 画板迁移与重复实例 / 安全替换图片 / 旧库标签迁移 / AI 打标(复用·裁决·降级·上传前建议) / 标签管理(重命名·合并·删除·清理) / AI 服务配置(状态·保存·掩码·测试连接·模型列表·环境变量覆盖) / 回收站(软删-列出-恢复-彻底删) / 登录页公告(公开读取·仅管理员可写·启用开关) / 账号系统(首次初始化·登录·权限隔离·成员管理·停用踢下线·重置密码·删除保留素材·登录审计·退出) / 视频(上传·异步转码·进度·时长·封面·Range/206·同类型替换·AI 拦截) / 扩展图片格式(GIF·SVG·AVIF·拒绝未知类型)");
 process.exit(0);

@@ -582,8 +582,8 @@ export function ArtDatabaseApp({ user, onLogout }: { user: SessionUser; onLogout
     if (activeArea !== "project") return; // 上传只发生在项目内
     if (!file) return;
     const isVideo = file.type.startsWith("video/");
-    if (!isVideo && !["image/jpeg", "image/png", "image/webp", "image/gif", "image/svg+xml", "image/tiff", "image/heic", "image/heif"].includes(file.type)) {
-      setMessage("仅支持 JPEG/PNG/WebP/GIF/SVG/TIFF/HEIC 图片或 mp4/mov/webm/mkv 等视频");
+    if (!isVideo && !["image/jpeg", "image/png", "image/webp", "image/gif", "image/svg+xml", "image/tiff", "image/heic", "image/heif", "image/avif"].includes(file.type)) {
+      setMessage("仅支持 JPEG/PNG/WebP/GIF/SVG/TIFF/HEIC/AVIF 图片或 mp4/mov/webm/mkv 等视频");
       return;
     }
     if (isVideo && !["video/mp4", "video/webm", "video/quicktime", "video/x-msvideo", "video/x-matroska", "video/mpeg", "video/3gpp", "video/3gpp2"].includes(file.type)) {
@@ -792,7 +792,7 @@ export function ArtDatabaseApp({ user, onLogout }: { user: SessionUser; onLogout
         onDragLeave={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node)) setDragActive(false); }}
         onDrop={(event) => { event.preventDefault(); setDragActive(false); acceptUpload(event.dataTransfer.files[0]); }}
       >
-        <input ref={fileInputRef} className="visually-hidden" type="file" accept="image/jpeg,image/png,image/webp,image/gif,image/svg+xml,image/tiff,image/heic,image/heif,video/mp4,video/webm,video/quicktime,video/x-msvideo,video/x-matroska,video/mpeg,video/3gpp,video/3gpp2" onChange={(event) => { acceptUpload(event.target.files?.[0]); event.currentTarget.value = ""; }} />
+        <input ref={fileInputRef} className="visually-hidden" type="file" accept="image/jpeg,image/png,image/webp,image/gif,image/svg+xml,image/tiff,image/heic,image/heif,image/avif,video/mp4,video/webm,video/quicktime,video/x-msvideo,video/x-matroska,video/mpeg,video/3gpp,video/3gpp2" onChange={(event) => { acceptUpload(event.target.files?.[0]); event.currentTarget.value = ""; }} />
         {dragActive ? <div className="drop-overlay"><Upload size={28} /><strong>松开即可添加图片</strong><span>上传前会先填写 Metadata 和维度值</span></div> : null}
         <header className="topbar">
           <div className="topbar-leading">

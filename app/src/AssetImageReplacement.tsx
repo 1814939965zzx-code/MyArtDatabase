@@ -14,6 +14,7 @@ const ALLOWED_IMAGE_TYPES = new Set([
   "image/tiff",
   "image/heic",
   "image/heif",
+  "image/avif",
 ]);
 const ALLOWED_VIDEO_TYPES = new Set([
   "video/mp4",

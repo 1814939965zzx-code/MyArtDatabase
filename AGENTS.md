@@ -27,7 +27,7 @@
 - 运行时：单个原生 Node.js 进程，同时提供 React 页面、`/api/*` 接口、SQLite 数据库和本地图片/视频存储。
 - 账号：两级角色（管理员/成员）；除健康检查与登录相关接口外，全部 `/api/*` 需要登录（HttpOnly Cookie Session 或插件令牌 Bearer 二选一）；首次启动在界面引导创建管理员。
 - 前端：React 19、TypeScript、Vite、Tailwind CSS v4。
-- 浏览器采集：`extension/` 目录是独立的 Chrome 扩展（Manifest V3、原生 JS 零构建、unpacked 加载），右键保存网页图片到素材库，经「插件令牌」（账号设置页生成）认证。
+- 浏览器采集：`extension/` 目录是独立的 Chrome 扩展（Manifest V3、原生 JS 零构建、unpacked 加载），右键保存网页图片/视频到素材库，经「插件令牌」（账号设置页生成）认证。
 - 后端：`node:http`、Node 内置 `node:sqlite`、`sharp`、`ffmpeg-static`（视频转码与抽帧）。
 - 环境要求：Node.js `>=23.4.0`，建议 Node.js 24。
 - 默认开发地址：`http://localhost:3000`。
@@ -58,8 +58,8 @@
 | `app/src/TagManager.tsx` | 标签管理面板（全局：重命名/合并/删除/清理/AI 配置；项目：该项目标签，重命名/删除） |
 | `app/test/api-smoke.mjs` | API 全链路冒烟测试（含账号系统用例） |
 | `extension/manifest.json` | Chrome 扩展 MV3 声明（右键菜单、activeTab/scripting、`<all_urls>` 主机权限） |
-| `extension/background.js` | 扩展 Service Worker（右键菜单、图片下载/魔数校验/查重、全部网络请求代理与 Bearer 令牌） |
-| `extension/content.js` | 扩展内容脚本（确认面板与 toast，Shadow DOM 隔离样式；blob: 图片代为获取） |
+| `extension/background.js` | 扩展 Service Worker（右键菜单[图片/视频]、素材下载与魔数校验/查重、采集会话与全部网络请求代理、Bearer 令牌） |
+| `extension/content.js` | 扩展内容脚本（确认面板[图片预览/视频占位]与 toast，Shadow DOM 隔离样式；blob: 素材代为获取） |
 | `extension/options.html` / `extension/options.js` | 扩展设置页（服务器地址 + 插件令牌 + 测试连接） |
 | `scripts/deploy.sh` | 服务器部署与版本校验 |
 | `scripts/setup-server.sh` | 首次安装、旧数据安全迁移与 systemd 初始化 |
@@ -100,7 +100,7 @@ npm run build
 - 软删除只更新 `deleted_at`；只有彻底删除才能移除磁盘文件。
 - 视频统一转码为低码率 H.264 MP4（最长边 ≤1280、码率上限 2Mbps）；**转码成功且数据库已切换到转码产物后才删除原文件**，失败/中断/切换失败必须保留原文件。
 - 视频转码异步单并发执行（不阻塞上传）；`processing` 不可播放、界面显示进度（`transcode_progress` 0～100），`ready` 才可播放，`failed` 保留原文件供重新转码。
-- 图片格式白名单：JPEG/PNG/WebP/GIF/SVG/TIFF/HEIC/HEIF（服务端、网页端与 `extension/` 扩展魔数校验保持一致）；浏览器不支持原图显示时回退到 WebP 缩略图。
+- 图片格式白名单：JPEG/PNG/WebP/GIF/SVG/TIFF/HEIC/HEIF/AVIF（服务端、网页端与 `extension/` 扩展魔数校验保持一致；HEIC/AVIF 与 MP4 同为 `ftyp` 容器，扩展必须按图片品牌区分，绝不当作视频）；浏览器不支持原图显示时回退到 WebP 缩略图。
 - 保持现有 `/api/*` URL 契约，除非需求明确要求破坏性变更。
 
 ## 文档维护
