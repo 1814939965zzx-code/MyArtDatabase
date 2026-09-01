@@ -17,7 +17,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { AssetMetadataEditor, type AssetMetadataEditorHandle, type AssetMetadataUpdate } from "./AssetMetadataEditor";
 import { AssetImageReplacement } from "./AssetImageReplacement";
 import { notifyUnauthorized } from "./api";
-import { formatDuration, isVideoMime, videoStatusOf } from "./assetMedia";
+import { formatDuration, isVideoMime, transcodePercent, useTranscodePolling, videoStatusOf } from "./assetMedia";
 import { TagFilterBar } from "./TagFilterBar";
 import type { TagEntry } from "./TagManager";
 import { useProgressiveImage } from "./useProgressiveImage";
@@ -46,6 +46,7 @@ export type LibraryAsset = {
   mimeType: string;
   duration: number;
   transcodeStatus: string | null;
+  transcodeProgress: number;
   createdAt: string;
   projects: Array<{ id: string; name: string }>;
 };
@@ -134,6 +135,9 @@ export function AllAssetsView({
   const detailImage = useProgressiveImage(selectedAsset?.thumbnailUrl ?? null, selectedAsset?.originalUrl ?? null);
   const assignAsset = assets.find((asset) => asset.id === assignAssetId) ?? null;
   const assignedIds = new Set(assignAsset?.projects.map((project) => project.id) ?? []);
+
+  // 有视频在转码时每 2 秒刷新列表，驱动"转码中 X%"进度
+  useTranscodePolling(assets, onRefresh);
 
   useEffect(() => {
     if (!selectedAssetId) return;
@@ -287,6 +291,7 @@ export function AllAssetsView({
               <span className="asset-image-wrap">
                 {asset.thumbnailUrl ? <img src={asset.thumbnailUrl} alt="" loading={index > 7 ? "lazy" : "eager"} /> : <span className="asset-fallback"><ImageIcon /></span>}
                 <span className="asset-index">{String(index + 1).padStart(2, "0")}</span>
+                {isVideoMime(asset.mimeType) && asset.transcodeStatus === "processing" ? <span className="transcode-badge"><span>转码中 {transcodePercent(asset.transcodeProgress)}%</span><i className="transcode-bar"><span style={{ width: `${transcodePercent(asset.transcodeProgress)}%` }} /></i></span> : null}
                 <span className="project-count-badge">{asset.projects.length} 个项目</span>
               </span>
               <span className="asset-meta"><strong>{asset.name}</strong><span className="tag-row">{asset.tags.map((tag) => <i key={tag}>{tag}</i>)}</span></span>
@@ -311,7 +316,7 @@ export function AllAssetsView({
                   <span className="drawer-image-fallback" onClick={(event) => event.stopPropagation()}>
                     {status === "failed"
                       ? <><AlertTriangle size={30} /><small>转码失败，原文件已保留</small><button className="secondary-button" type="button" onClick={(event) => { event.stopPropagation(); void retranscodeVideo(selectedAsset); }}><RotateCcw size={13} />重新转码</button></>
-                      : <><LoaderCircle className="spin" size={30} /><small>视频转码中…</small></>}
+                      : <><LoaderCircle className="spin" size={30} /><small>视频转码中 {transcodePercent(selectedAsset.transcodeProgress)}%</small><span className="drawer-progress"><span style={{ width: `${transcodePercent(selectedAsset.transcodeProgress)}%` }} /></span></>}
                   </span>
                 );
               }

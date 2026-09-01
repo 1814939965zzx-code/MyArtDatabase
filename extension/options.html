@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <title>右键保存到素材库 — 设置</title>
+  <style>
+    :root {
+      --border: #d9d9de;
+      --text: #1c1c20;
+      --muted: #6e6e78;
+      --accent: #0a84ff;
+    }
+    * { box-sizing: border-box; }
+    body {
+      font-family: -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
+      color: var(--text); background: #f6f6f8; margin: 0; padding: 32px 16px;
+      display: flex; justify-content: center;
+    }
+    .card {
+      width: 460px; max-width: 100%; background: #fff; border-radius: 12px;
+      box-shadow: 0 8px 32px rgba(0,0,0,.1); padding: 24px;
+    }
+    h1 { font-size: 16px; margin: 0 0 4px; }
+    .desc { font-size: 12px; color: var(--muted); margin: 0 0 20px; line-height: 1.6; }
+    label { display: block; font-size: 13px; margin-bottom: 14px; }
+    label span { display: block; margin-bottom: 5px; color: var(--muted); }
+    input {
+      width: 100%; font-size: 13px; padding: 8px 10px; border: 1px solid var(--border);
+      border-radius: 8px; outline: none;
+    }
+    input:focus { border-color: var(--accent); box-shadow: 0 0 0 2px rgba(10,132,255,.18); }
+    .token-row { position: relative; }
+    .token-row input { padding-right: 64px; }
+    .eye {
+      position: absolute; right: 6px; top: 50%; transform: translateY(-50%);
+      border: 0; background: transparent; color: var(--muted); cursor: pointer;
+      font-size: 12px; padding: 4px 8px; border-radius: 6px;
+    }
+    .eye:hover { background: #f2f2f5; }
+    .actions { display: flex; align-items: center; gap: 10px; margin-top: 20px; }
+    button.primary {
+      border: 0; background: var(--accent); color: #fff; font-size: 13px;
+      padding: 9px 18px; border-radius: 8px; cursor: pointer;
+    }
+    button.primary:hover { background: #0070e0; }
+    button.ghost {
+      border: 1px solid var(--border); background: #fff; color: var(--text);
+      font-size: 13px; padding: 8px 16px; border-radius: 8px; cursor: pointer;
+    }
+    button.ghost:hover { background: #f6f6f8; }
+    button:disabled { opacity: .6; cursor: default; }
+    .status { font-size: 12px; color: var(--muted); line-height: 1.5; margin-top: 14px; min-height: 18px; }
+    .status.ok { color: #1a7f37; }
+    .status.error { color: #d70015; }
+    code { background: #f2f2f5; padding: 1px 5px; border-radius: 4px; font-size: 12px; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>右键保存到素材库</h1>
+    <p class="desc">
+      配置 artDatabase 服务器地址与「插件令牌」。令牌在网页端
+      <code>账号设置 → 插件令牌</code> 中生成，可随时吊销。
+    </p>
+    <form id="form">
+      <label>
+        <span>服务器地址</span>
+        <input id="serverUrl" type="text" placeholder="http://localhost:3000" autocomplete="off" spellcheck="false" />
+      </label>
+      <label>
+        <span>插件令牌</span>
+        <span class="token-row">
+          <input id="token" type="password" placeholder="粘贴令牌" autocomplete="off" spellcheck="false" />
+          <button type="button" class="eye" id="eye" title="显示/隐藏">显示</button>
+        </span>
+      </label>
+      <div class="actions">
+        <button type="submit" class="primary" id="save">保存</button>
+        <button type="button" class="ghost" id="test">测试连接</button>
+      </div>
+    </form>
+    <div class="status" id="status"></div>
+  </div>
+  <script src="options.js"></script>
+</body>
+</html>

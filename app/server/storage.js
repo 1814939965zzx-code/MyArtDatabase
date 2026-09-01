@@ -126,7 +126,7 @@ export function createLocalDiskStore({ root, thumbMax = 900, thumbQuality = 82 }
     return path.join(blobsDir, `.${id}.tmp`);
   }
   function tempPath(id, kind) {
-    const name = kind === "video" ? "out.mp4" : kind === "thumb" ? "thumb.webp" : "ffmpeg.log";
+    const name = kind === "video" ? "out.mp4" : kind === "thumb" ? "thumb.webp" : kind === "progress" ? "progress.txt" : "ffmpeg.log";
     return path.join(tempDir(id), name);
   }
 

@@ -16,6 +16,7 @@ export type TrashedAsset = {
   mimeType: string;
   duration: number;
   transcodeStatus: string | null;
+  transcodeProgress: number;
   deletedAt: string;
   projects: Array<{ id: string; name: string }>;
 };

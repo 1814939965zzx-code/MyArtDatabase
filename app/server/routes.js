@@ -3,12 +3,16 @@ import { Readable } from "node:stream";
 import {
   backfillLegacyAssets,
   clearSessionCookieHeader,
+  createApiToken,
   createSession,
   createUser,
   destroySession,
   hashPassword,
+  listApiTokens,
   logLogin,
   resolveUser,
+  resolveUserFromToken,
+  revokeApiToken,
   sessionCookieHeader,
   sessionTokenFromRequest,
   verifyPassword,
@@ -17,7 +21,16 @@ import { AiError, listAiModels, readAiConfigDetails, saveAiConfig, suggestTagsFo
 import { findTagByName, listTags, mergeTags, replaceAssetTags } from "./tags.js";
 import { enqueueVideoTranscode } from "./transcode.js";
 
-const IMAGE_TYPES = new Set(["image/jpeg", "image/png", "image/webp"]);
+const IMAGE_TYPES = new Set([
+  "image/jpeg",
+  "image/png",
+  "image/webp",
+  "image/gif",
+  "image/svg+xml",
+  "image/tiff",
+  "image/heic",
+  "image/heif",
+]);
 const VIDEO_TYPES = new Set([
   "video/mp4",
   "video/webm",
@@ -259,7 +272,7 @@ function workspace(request, { db }) {
       THEN '/api/media?id=' || a.id || '&variant=original&v=' || a.storage_key ELSE a.thumbnail_url END AS originalUrl,
     a.description, a.notes, a.source_url AS sourceUrl,
     a.file_size AS fileSize, a.width, a.height, a.mime_type AS mimeType,
-    a.duration AS duration, a.transcode_status AS transcodeStatus,
+    a.duration AS duration, a.transcode_status AS transcodeStatus, a.transcode_progress AS transcodeProgress,
     a.created_at AS createdAt, a.created_by_name AS createdByName
     FROM assets a
     INNER JOIN project_assets pa ON pa.asset_id = a.id
@@ -286,13 +299,14 @@ function workspace(request, { db }) {
 async function checkUpload(request, { db }) {
   const payload = await request.json();
   const sha256 = typeof payload.sha256 === "string" ? payload.sha256.trim().toLowerCase() : "";
+  // projectId 可选：仅在需要判断「是否已在该项目内」时传入（浏览器扩展全局查重只传 sha256）
   const projectId = typeof payload.projectId === "string" ? payload.projectId.trim() : "";
-  if (!/^[a-f0-9]{64}$/.test(sha256) || !projectId) return Response.json({ error: "文件哈希或项目参数无效" }, { status: 400 });
+  if (!/^[a-f0-9]{64}$/.test(sha256)) return Response.json({ error: "文件哈希无效" }, { status: 400 });
   const duplicates = db.prepare(`
     SELECT a.id, a.name, a.file_name AS fileName,
       CASE WHEN (a.thumbnail_key IS NOT NULL OR a.storage_key IS NOT NULL) AND (a.transcode_status IS NULL OR a.transcode_status = 'ready')
         THEN '/api/media?id=' || a.id || '&variant=thumbnail&v=' || COALESCE(a.thumbnail_key, a.storage_key) ELSE a.thumbnail_url END AS thumbnailUrl,
-      a.mime_type AS mimeType, a.transcode_status AS transcodeStatus,
+      a.mime_type AS mimeType, a.transcode_status AS transcodeStatus, a.transcode_progress AS transcodeProgress,
       EXISTS(SELECT 1 FROM project_assets pa WHERE pa.asset_id = a.id AND pa.project_id = ?) AS inProject
     FROM assets a
     WHERE a.sha256 = ? AND a.deleted_at IS NULL
@@ -308,7 +322,7 @@ async function upload(request, { db, store, user }) {
     const file = form.get("file");
     const kind = file instanceof File ? mediaKind(file.type) : null;
     if (!kind) {
-      return Response.json({ error: "仅支持 JPEG、PNG、WebP 图片或 mp4/mov/webm/mkv 等视频" }, { status: 400 });
+      return Response.json({ error: "仅支持 JPEG/PNG/WebP/GIF/SVG/TIFF/HEIC 图片或 mp4/mov/webm/mkv 等视频" }, { status: 400 });
     }
     const maxBytes = kind === "video" ? VIDEO_MAX_BYTES : IMAGE_MAX_BYTES;
     if (file.size <= 0 || file.size > maxBytes) {
@@ -388,7 +402,7 @@ async function replaceAssetMedia(request, { db, store }) {
     if (!id) return Response.json({ error: "缺少素材 ID" }, { status: 400 });
     const kind = file instanceof File ? mediaKind(file.type) : null;
     if (!kind) {
-      return Response.json({ error: "仅支持 JPEG、PNG、WebP 图片或 mp4/mov/webm/mkv 等视频" }, { status: 400 });
+      return Response.json({ error: "仅支持 JPEG/PNG/WebP/GIF/SVG/TIFF/HEIC 图片或 mp4/mov/webm/mkv 等视频" }, { status: 400 });
     }
 
     const existing = db.prepare(`SELECT id, storage_key AS storageKey, thumbnail_key AS thumbnailKey, mime_type AS mimeType
@@ -571,7 +585,7 @@ function library({ db }) {
       THEN '/api/media?id=' || a.id || '&variant=original&v=' || a.storage_key ELSE a.thumbnail_url END AS originalUrl,
     a.description, a.notes, a.source_url AS sourceUrl,
     a.file_size AS fileSize, a.width, a.height, a.mime_type AS mimeType,
-    a.duration AS duration, a.transcode_status AS transcodeStatus,
+    a.duration AS duration, a.transcode_status AS transcodeStatus, a.transcode_progress AS transcodeProgress,
     a.created_at AS createdAt, a.created_by_name AS createdByName
     FROM assets a
     WHERE a.deleted_at IS NULL
@@ -602,7 +616,7 @@ function trash({ db }) {
     CASE WHEN (a.thumbnail_key IS NOT NULL OR a.storage_key IS NOT NULL) AND (a.transcode_status IS NULL OR a.transcode_status = 'ready')
       THEN '/api/media?id=' || a.id || '&variant=thumbnail&v=' || COALESCE(a.thumbnail_key, a.storage_key) ELSE a.thumbnail_url END AS thumbnailUrl,
     a.file_size AS fileSize, a.width, a.height, a.mime_type AS mimeType,
-    a.duration AS duration, a.transcode_status AS transcodeStatus,
+    a.duration AS duration, a.transcode_status AS transcodeStatus, a.transcode_progress AS transcodeProgress,
     a.deleted_at AS deletedAt, a.created_by_name AS createdByName
     FROM assets a
     WHERE a.deleted_at IS NOT NULL
@@ -843,7 +857,7 @@ async function aiTagUploadImage(request, { db }) {
     const form = await request.formData();
     const file = form.get("file");
     if (!(file instanceof File) || !IMAGE_TYPES.has(file.type)) {
-      return Response.json({ error: "仅支持 JPEG、PNG 和 WebP 图片" }, { status: 400 });
+      return Response.json({ error: "仅支持 JPEG、PNG、WebP、GIF、SVG、TIFF、HEIC 图片" }, { status: 400 });
     }
     if (file.size <= 0 || file.size > IMAGE_MAX_BYTES) {
       return Response.json({ error: "图片不能超过 50MB" }, { status: 400 });
@@ -1029,6 +1043,29 @@ function logout(request, { db }) {
 /** 当前用户信息。 */
 function me({ user }) {
   return Response.json({ user });
+}
+
+// ---- 插件令牌管理（登录用户管理自己的令牌）----
+
+function listTokens({ db, user }) {
+  return Response.json({ tokens: listApiTokens(db, user.id) });
+}
+
+async function createToken(request, { db, user }) {
+  const payload = await request.json().catch(() => ({}));
+  const name = cleanText(payload.name, 50);
+  const token = createApiToken(db, user.id, name);
+  // 明文只在生成时返回一次，数据库仅存哈希
+  return Response.json({ id: token.id, name: token.name, token: token.raw }, { status: 201 });
+}
+
+function revokeToken(request, { db, user }) {
+  const id = cleanId(new URL(request.url).searchParams.get("id"));
+  if (!id) return Response.json({ error: "缺少令牌 ID" }, { status: 400 });
+  if (!revokeApiToken(db, user.id, id)) {
+    return Response.json({ error: "令牌不存在或已吊销" }, { status: 404 });
+  }
+  return Response.json({ ok: true });
 }
 
 /** 修改自己的显示名 / 密码。 */
@@ -1222,14 +1259,19 @@ export async function handleApi(request, ctx) {
     if (pathname === "/api/auth/setup" && method === "POST") return await setupAdmin(request, ctx);
     if (pathname === "/api/auth/login" && method === "POST") return await login(request, ctx);
 
-    // 其余所有接口都必须登录
-    const user = resolveUser(ctx.db, request);
+    // 其余所有接口都必须登录：Cookie 会话或插件令牌（Bearer）二选一
+    const user = resolveUser(ctx.db, request) || resolveUserFromToken(ctx.db, request);
     if (!user) return Response.json({ error: "请先登录" }, { status: 401 });
     ctx.user = user;
 
     if (pathname === "/api/auth/me" && method === "GET") return me(ctx);
     if (pathname === "/api/auth/me" && method === "PATCH") return await updateMe(request, ctx);
     if (pathname === "/api/auth/logout" && method === "POST") return logout(request, ctx);
+
+    // 插件令牌管理（本人令牌，登录用户即可：列 / 生成 / 吊销）
+    if (pathname === "/api/auth/tokens" && method === "GET") return listTokens(ctx);
+    if (pathname === "/api/auth/tokens" && method === "POST") return await createToken(request, ctx);
+    if (pathname === "/api/auth/tokens" && method === "DELETE") return revokeToken(request, ctx);
 
     // 管理员专属：用户管理、登录审计、AI 服务配置、登录页公告
     if (pathname.startsWith("/api/users") || pathname === "/api/login-logs" || (pathname === "/api/announcement" && method === "PUT")) {

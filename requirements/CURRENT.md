@@ -33,7 +33,7 @@ Metadata 字段：
 | 上传时间、原始文件名、文件大小、图片尺寸、格式 | 系统生成 | 只读 |
 | 时长 | 系统生成 | 图片为空；视频为转码后时长（毫秒），转码完成前为 0 |
 
-主要数据表：`projects`、`project_dimensions`、`assets`、`project_assets`、`asset_dimension_values`、`canvases`、`canvas_items`、`tags`、`asset_tags`、`users`、`sessions`、`login_logs`。
+主要数据表：`projects`、`project_dimensions`、`assets`、`project_assets`、`asset_dimension_values`、`canvases`、`canvas_items`、`tags`、`asset_tags`、`users`、`sessions`、`login_logs`、`api_tokens`。
 
 ## 3. 当前有效行为
 
@@ -61,15 +61,17 @@ Metadata 字段：
 ### 3.2 上传
 
 - 支持文件选择、拖拽和剪贴板粘贴（剪贴板粘贴仅适用于图片），一次只上传一张。
-- 图片支持 JPEG、PNG、WebP，单文件上限 50 MB；视频支持常见容器格式（mp4/mov/webm/mkv 等，编码不限，HEVC 亦可），单文件上限 200 MB。
+- 图片支持 JPEG、PNG、WebP、GIF、SVG、TIFF、HEIC/HEIF，单文件上限 50 MB；视频支持常见容器格式（mp4/mov/webm/mkv 等，编码不限，HEVC 亦可），单文件上限 200 MB。
 - 上传前使用 SHA-256 检测完全重复文件（按原始文件哈希）；用户可以引用已有素材或保留为新素材。
 - 正式提交前编辑全局标签和当前项目的全部维度值。
 - 上传窗口的维度值按 `-100～100` 展示，新素材默认位于中点 `0`。
 - 新素材自动加入当前项目；取消上传不得创建素材记录。
-- 图片由服务端 sharp 生成最长边不超过 900 px 的 WebP 缩略图。
+- 上传窗口显示**上传进度百分比**（XHR 进度事件）；浏览器无法预览的格式（如 HEIC）显示提示占位但仍可上传。
+- 图片由服务端 sharp 生成最长边不超过 900 px 的 WebP 缩略图（GIF/SVG/TIFF/HEIC 同样生成；浏览器不支持原图的格式在详情大图自动回退到缩略图）。
 - **视频统一转码**（服务端异步队列，单进程内单并发，不阻塞上传请求）：
   - 转码规格：H.264 MP4，最长边不超过 1280（720p 级），码率上限 2 Mbps（`-crf 28` + `-maxrate 2000k -bufsize 4000k`），`-movflags +faststart`；音频有音轨则转 AAC 128k，无音轨则不生成音轨。
-  - 转码期间素材状态为 `processing`（界面显示“转码中”，不可播放）；成功为 `ready`（可播放，缩略图由转码产物抽帧生成 WebP，时长/分辨率/大小/mime_type 更新为转码产物）；失败为 `failed`（保留原始文件，可重试或删除重传）。
+  - **转码进度可视化**：`assets.transcode_progress` 记录 0～100 整数（由 ffmpeg `-progress` 的 out_time 映射转码阶段 2~80，封面 82~92，完成 100）；转码期间列表卡片显示“转码中 X%”徽标、详情抽屉显示进度条，前端在存在转码中视频时每 2 秒轮询刷新。
+  - 转码期间素材状态为 `processing`（界面显示“转码中 X%”，不可播放）；成功为 `ready`（可播放，缩略图由转码产物抽帧生成 WebP，时长/分辨率/大小/mime_type 更新为转码产物，进度为 100）；失败为 `failed`（保留原始文件，进度归零，可重试或删除重传）。
   - 服务进程重启时把遗留的 `processing` 记录重置为 `failed`（原始文件仍在，安全）。
   - **删除原始文件只发生在转码成功且数据库已切换到转码产物之后**；转码失败、中断或数据库切换失败时必须保留原始文件。
   - 视频不参与 AI 打标（上传窗口与详情页对视频素材不显示 AI 打标入口）。
@@ -203,6 +205,16 @@ Metadata 字段：
 - 所有密码/密钥输入框（登录、初始化、账号设置、成员管理创建成员、AI 服务配置 API Key）均带“显示/隐藏”小眼睛，可点击切换明文查看自己输入的内容，点击不抢占输入焦点、不触发表单提交。
 - 前端角色展示：管理员可见“成员管理”入口，成员隐藏“AI 服务配置”入口（服务端同时校验，越权返回 403）。
 - 登录页公告：公告展示在登录页（未登录即可见），仅管理员可编辑（顶部用户菜单 → “登录页公告”），多行纯文本、上限 2000 字，带启用/关闭开关（关闭后登录页不显示，内容保留）；数据存 `app_settings` 键值表，`GET /api/announcement` 公开读取、`PUT /api/announcement` 仅管理员。
+- **插件令牌**：任何登录用户可在「账号设置 → 插件令牌」生成/吊销自己的令牌（可填备注；列表展示创建时间与最后使用时间）；令牌明文只在生成时返回一次，数据库仅存 SHA-256 哈希（`api_tokens` 表，v7 迁移）；外部客户端（如 Chrome 扩展）以 `Authorization: Bearer <token>` 调用 `/api/*`，与 Cookie 会话等效（身份为该令牌所属用户，上传等操作归属本人）；令牌无过期时间、只能吊销；伪造/已吊销令牌或用户被停用/删除返回 401。
+
+### 3.10 浏览器采集扩展（Chrome「右键保存到素材库」）
+
+- 代码位于仓库 `extension/` 目录（Manifest V3、原生 JS 零构建、本地 unpacked 加载），配套服务端插件令牌（§3.9）使用；服务器地址与令牌在扩展设置页配置（单服务器，默认 `http://localhost:3000`），存 chrome.storage.local，未配置时提示去设置。
+- 入口：任意网页 `<img>` 元素上右键 →「保存到素材库」（`contexts:["image"]`，单选项）。**明确不做**：拖拽采集（与 Eagle 桌面端冲突）、悬停保存按钮、框选区域截图、保存页面全部图片、视频素材、多服务器、系统通知、商店上架。
+- 采集流程：后台 Service Worker 下载图片（绕过页面 CORS；`http(s):`/`data:`/`blob:` 均可）→ 魔数校验仅 JPEG/PNG/WebP 且 ≤50MB → SHA-256 全局查重（`POST /api/uploads/check`，**projectId 已放宽为可选**）→ 重复则页面内 toast「已存在，未保存」直接跳过（不弹面板）；不重复则在当前页面注入浮动确认面板（Shadow DOM 隔离样式）。
+- 确认面板字段：预览 + **项目**（必选，默认记住上次使用的项目）+ **名称**（默认取 img alt → URL 文件名 → “未命名-时间戳”兜底，可编辑）+ **标签**（逗号分隔、联想自标签字典、上限 50）+ **来源链接**（默认当前页面 URL，可编辑）+ **备注** + **「AI 打标」按钮**（复用 `POST /api/uploads/ai-tags`，建议标签合并进标签框，不提前落库）。
+- 提交：multipart `POST /api/uploads`（与网页端同一契约）；成功 toast「已保存到项目X」并关闭面板；上传竞态 409 也按「已存在，未保存」处理；401 提示去设置页更新令牌。
+- 全部网络请求统一在 Service Worker 发起并携带 Bearer 令牌，内容脚本只负责 UI 与 blob: 图片代为获取。
 
 ## 4. 当前待办与未决策
 
@@ -228,5 +240,6 @@ Metadata 字段：
 - 静态资源路径和本地媒体存储键必须限定在各自根目录内，禁止通过编码路径、`..` 或路径分隔符访问任意文件。
 - 环境变量：`PORT`（默认 `3000`）、`DB_PATH`、`STORE_ROOT`；AI 打标可选配置 `AI_BASE_URL`、`AI_API_KEY`、`AI_MODEL`（优先于页面配置）与 `AI_CONFIG_PATH`（配置文件路径，默认与数据库同目录）。
 - 账号会话存 SQLite（`users`/`sessions`/`login_logs` 表），密码使用 scrypt 哈希；会话 Cookie 为 HttpOnly + SameSite=Lax。
+- 插件令牌存 `api_tokens` 表（只存 SHA-256 哈希）；`Authorization: Bearer` 与 Cookie 会话等效，未命中或已吊销返回 401。
 - Node.js 要求 `>=23.4.0`。
 - 启动、验证和部署方式分别以根目录 `README.md`、`AGENTS.md` 和 `BUILD.md` 为准。

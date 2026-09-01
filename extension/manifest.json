@@ -1,0 +1,14 @@
+{
+  "manifest_version": 3,
+  "name": "右键保存到素材库",
+  "version": "0.1.0",
+  "description": "在网页图片上右键，一键保存到 artDatabase 素材库（选择项目、补充标签后上传）。",
+  "minimum_chrome_version": "116",
+  "permissions": ["contextMenus", "storage", "activeTab", "scripting"],
+  "host_permissions": ["<all_urls>"],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [],
+  "options_page": "options.html"
+}

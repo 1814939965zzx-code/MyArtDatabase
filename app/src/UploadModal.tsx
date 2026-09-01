@@ -19,6 +19,22 @@ type PreparedFile = {
 
 const MAX_TAGS = 50;
 
+/** XHR 上传并回报进度（fetch 不提供上传进度事件）。 */
+function uploadWithProgress(form: FormData, onProgress: (fraction: number) => void): Promise<Response> {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", "/api/uploads");
+    xhr.upload.onprogress = (event) => {
+      if (event.lengthComputable && event.total > 0) onProgress(event.loaded / event.total);
+    };
+    xhr.onload = () => {
+      resolve(new Response(xhr.responseText, { status: xhr.status, headers: { "Content-Type": "application/json" } }));
+    };
+    xhr.onerror = () => reject(new Error("网络错误，上传中断"));
+    xhr.send(form);
+  });
+}
+
 async function prepareFile(file: File, projectId: string): Promise<PreparedFile> {
   const buffer = await file.arrayBuffer();
   const digest = globalThis.crypto?.subtle
@@ -71,6 +87,8 @@ export function UploadModal({
   const [allowDuplicate, setAllowDuplicate] = useState(false);
   const [tagsText, setTagsText] = useState("");
   const [aiTagBusy, setAiTagBusy] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState<number | null>(null);
+  const [previewFailed, setPreviewFailed] = useState(false);
   const [values, setValues] = useState<Record<string, number>>(
     Object.fromEntries(dimensions.map((dimension) => [dimension.id, 500])),
   );
@@ -78,6 +96,7 @@ export function UploadModal({
   useEffect(() => {
     let active = true;
     let previewUrl = "";
+    setPreviewFailed(false);
     void prepareFile(file, projectId).then((result) => {
       previewUrl = result.previewUrl;
       if (active) setPrepared(result);
@@ -173,8 +192,9 @@ export function UploadModal({
     form.set("dimensionValues", JSON.stringify(values));
     setBusy(true);
     setError("");
+    setUploadProgress(0);
     try {
-      const response = await fetch("/api/uploads", { method: "POST", body: form });
+      const response = await uploadWithProgress(form, setUploadProgress);
       if (response.status === 401) notifyUnauthorized();
       const data = await response.json() as { error?: string };
       if (!response.ok) throw new Error(data.error || "上传失败");
@@ -185,6 +205,7 @@ export function UploadModal({
       setError(reason instanceof Error ? reason.message : "上传失败");
     } finally {
       setBusy(false);
+      setUploadProgress(null);
     }
   }
 
@@ -202,7 +223,9 @@ export function UploadModal({
         {prepared ? (
           <form className="upload-layout" onSubmit={submit}>
             <div className="upload-preview-column">
-              {isVideo ? <video src={prepared.previewUrl} controls muted playsInline /> : <img src={prepared.previewUrl} alt="待上传素材预览" />}
+              {isVideo ? <video src={prepared.previewUrl} controls muted playsInline /> : previewFailed
+                ? <div className="upload-preview-fallback">该格式浏览器无法预览，仍可正常上传</div>
+                : <img src={prepared.previewUrl} alt="待上传素材预览" onError={() => setPreviewFailed(true)} />}
               <div className="file-facts"><FileImage size={15} /><span>{file.name}</span><small>{isVideo ? "视频" : `${Math.round(prepared.width)} × ${Math.round(prepared.height)}`} · {(file.size / 1024 / 1024).toFixed(2)}MB</small></div>
               {prepared.duplicates.length ? (
                 <div className={`duplicate-card ${allowDuplicate ? "duplicate-confirmed" : ""}`}>
@@ -228,7 +251,10 @@ export function UploadModal({
                   )) : <p className="form-hint">项目还没有维度，可上传后再添加。</p>}
                 </div>
               </div>
-              <div className="modal-actions"><button className="secondary-button" type="button" onClick={onClose}>取消</button><button className="primary-button" type="submit" disabled={busy}><Upload size={15} />{busy ? "上传中…" : "确认上传"}</button></div>
+              {uploadProgress !== null ? (
+                <div className="upload-progress"><span style={{ width: `${Math.round(uploadProgress * 100)}%` }} /></div>
+              ) : null}
+              <div className="modal-actions"><button className="secondary-button" type="button" onClick={onClose}>取消</button><button className="primary-button" type="submit" disabled={busy}><Upload size={15} />{busy ? (uploadProgress !== null ? `上传中 ${Math.round(uploadProgress * 100)}%` : "上传中…") : "确认上传"}</button></div>
             </div>
           </form>
         ) : null}

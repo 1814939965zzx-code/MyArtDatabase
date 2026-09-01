@@ -659,6 +659,59 @@ assert.ok(failureLog.ip, "审计应记录客户端 IP");
 const successLog = logs.logs.find((entry) => entry.username === "member1" && entry.success);
 assert.ok(successLog, "成员成功登录应记录审计");
 
+// ---- 插件令牌：生成 / Bearer 认证 / 全局查重 / 列表 / 吊销 ----
+{
+  const created = await post(`${base}/api/auth/tokens`, { name: "smoke-chrome-extension" });
+  assert.equal(created.status, 201, "登录用户应能生成插件令牌");
+  const createdBody = await created.json();
+  assert.ok(/^artdb_[A-Za-z0-9_-]+$/.test(createdBody.token), "令牌应为 artdb_ 前缀的随机串");
+  assert.equal(createdBody.name, "smoke-chrome-extension", "令牌应带备注");
+  const pluginToken = createdBody.token;
+
+  const tokenFetch = (url, init) => originalFetch(url, { ...init, headers: { ...(init?.headers || {}), authorization: `Bearer ${pluginToken}` } });
+
+  // Bearer 令牌与 Cookie 会话等效
+  const projectsViaToken = await tokenFetch(`${base}/api/projects`);
+  assert.equal(projectsViaToken.status, 200, "令牌应能访问业务接口");
+
+  // 令牌上传素材归属令牌用户
+  const tokenBuffer = await sharp({ create: { width: 48, height: 48, channels: 3, background: { r: 200, g: 30, b: 30 } } }).png().toBuffer();
+  const tokenForm = new FormData();
+  tokenForm.set("file", new File([tokenBuffer], "token-upload.png", { type: "image/png" }));
+  tokenForm.set("projectId", "project-visual-direction");
+  tokenForm.set("name", "令牌上传素材");
+  const tokenUpload = await tokenFetch(`${base}/api/uploads`, { method: "POST", body: tokenForm });
+  assert.equal(tokenUpload.status, 201, "令牌应能上传素材");
+  const tokenAsset = (await tokenUpload.json()).asset;
+
+  // 查重：只传 sha256（浏览器扩展场景，projectId 可选）
+  const dupGlobal = await tokenFetch(`${base}/api/uploads/check`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ sha256: tokenAsset.sha256 }),
+  });
+  assert.equal(dupGlobal.status, 200, "全局查重应允许不传 projectId");
+  const dupBody = await dupGlobal.json();
+  assert.ok(dupBody.duplicates.some((d) => d.id === tokenAsset.id), "应命中刚上传的素材");
+  assert.equal(dupBody.duplicates[0].inProject, 0, "不传 projectId 时 inProject 应为 0");
+
+  // 令牌列表：不得返回明文
+  const listed = await json(await fetch(`${base}/api/auth/tokens`));
+  assert.ok(listed.tokens.some((t) => t.id === createdBody.id), "列表应包含刚生成的令牌");
+  assert.ok(!("token" in listed.tokens[0]), "列表不得返回令牌明文");
+
+  // 吊销后立即失效
+  const revoked = await fetch(`${base}/api/auth/tokens?id=${createdBody.id}`, { method: "DELETE" });
+  assert.equal(revoked.status, 200, "应能吊销令牌");
+  assert.equal((await tokenFetch(`${base}/api/projects`)).status, 401, "吊销后令牌应失效");
+  const revokedList = await json(await fetch(`${base}/api/auth/tokens`));
+  assert.equal(revokedList.tokens.length, 0, "吊销后列表应为空");
+
+  // 伪造令牌 / 未登录管理令牌均应 401
+  assert.equal((await originalFetch(`${base}/api/projects`, { headers: { authorization: "Bearer artdb_fake" } })).status, 401, "伪造令牌应 401");
+  assert.equal((await originalFetch(`${base}/api/auth/tokens`)).status, 401, "未登录不能查看令牌");
+}
+
 // 退出登录后会话失效
 const logoutRes = await fetch(`${base}/api/auth/logout`, { method: "POST" });
 assert.equal(logoutRes.status, 200);
@@ -708,6 +761,7 @@ assert.ok(videoEntry.duration > 0, "转码后应写入时长");
 assert.equal(videoEntry.mimeType, "video/mp4", "转码后 mime 应为 video/mp4");
 assert.ok(videoEntry.width > 0 && videoEntry.height > 0, "转码后应写入分辨率");
 assert.ok(videoEntry.thumbnailUrl, "转码后应有封面");
+assert.equal(videoEntry.transcodeProgress, 100, "转码完成后进度应为 100");
 
 const vOriginal = await fetch(`${base}/api/media?id=${videoUpload.id}`);
 assert.equal(vOriginal.status, 200);
@@ -735,5 +789,45 @@ assert.equal((await fetch(`${base}/api/assets/image`, { method: "POST", body: cr
 assert.equal((await post(`${base}/api/assets/ai-tags`, { id: videoUpload.id })).status, 400, "视频素材应拒绝 AI 打标");
 assert.equal((await post(`${base}/api/assets/retranscode`, { id: memberAsset.id })).status, 400, "图片素材应拒绝重新转码");
 
-console.log("✓ 全部通过：项目 / 工作区 / 上传 / 缩略图 / 原图 / 去重 / 改元数据 / 改维度名称 / 画板迁移与重复实例 / 安全替换图片 / 旧库标签迁移 / AI 打标(复用·裁决·降级·上传前建议) / 标签管理(重命名·合并·删除·清理) / AI 服务配置(状态·保存·掩码·测试连接·模型列表·环境变量覆盖) / 回收站(软删-列出-恢复-彻底删) / 登录页公告(公开读取·仅管理员可写·启用开关) / 账号系统(首次初始化·登录·权限隔离·成员管理·停用踢下线·重置密码·删除保留素材·登录审计·退出) / 视频(上传·异步转码·时长·封面·Range/206·同类型替换·AI 拦截)");
+// 16) 扩展图片格式：GIF 与 SVG 走同一上传/缩略图链路（TIFF/HEIC 白名单同源，不再逐一生成）
+const gifBuffer = await sharp({ create: { width: 120, height: 80, channels: 3, background: { r: 60, g: 160, b: 90 } } }).gif().toBuffer();
+const gifForm = new FormData();
+gifForm.set("file", new File([gifBuffer], "smoke.gif", { type: "image/gif" }));
+gifForm.set("projectId", "project-visual-direction");
+gifForm.set("name", "冒烟测试 GIF");
+const gifUp = await fetch(`${base}/api/uploads`, { method: "POST", body: gifForm });
+assert.equal(gifUp.status, 201, `GIF 上传应 201，实际 ${gifUp.status}`);
+const gifAsset = (await gifUp.json()).asset;
+{
+  const gifWs = await json(await fetch(`${base}/api/workspace?projectId=project-visual-direction`));
+  const gifEntry = gifWs.assets.find((item) => item.id === gifAsset.id);
+  assert.equal(gifEntry.mimeType, "image/gif", "GIF 素材 mime 应保留");
+  assert.ok(gifEntry.thumbnailUrl, "GIF 应有 WebP 缩略图");
+  assert.equal(gifEntry.transcodeStatus, null, "图片素材不应有转码状态");
+}
+const gifThumb = await fetch(`${base}/api/media?id=${gifAsset.id}&variant=thumbnail`);
+assert.equal(gifThumb.status, 200);
+assert.equal((await sharp(Buffer.from(await gifThumb.arrayBuffer())).metadata()).format, "webp", "GIF 缩略图应为 WebP");
+const gifOrig = await fetch(`${base}/api/media?id=${gifAsset.id}`);
+assert.equal(gifOrig.status, 200);
+assert.match(gifOrig.headers.get("content-type") || "", /image\/gif/, "GIF 原图 content-type 应正确");
+
+const svgForm = new FormData();
+svgForm.set("file", new File(["<svg xmlns='http://www.w3.org/2000/svg' width='40' height='30'><rect width='40' height='30' fill='#2f6f4f'/></svg>"], "smoke.svg", { type: "image/svg+xml" }));
+svgForm.set("projectId", "project-visual-direction");
+svgForm.set("name", "冒烟测试 SVG");
+const svgUp = await fetch(`${base}/api/uploads`, { method: "POST", body: svgForm });
+assert.equal(svgUp.status, 201, `SVG 上传应 201，实际 ${svgUp.status}`);
+const svgAsset = (await svgUp.json()).asset;
+const svgThumb = await fetch(`${base}/api/media?id=${svgAsset.id}&variant=thumbnail`);
+assert.equal(svgThumb.status, 200, "SVG 应生成 WebP 缩略图");
+assert.equal((await sharp(Buffer.from(await svgThumb.arrayBuffer())).metadata()).format, "webp");
+
+// 仍拒绝未知类型
+const badFormatForm = new FormData();
+badFormatForm.set("file", new File(["x"], "x.bmp", { type: "image/bmp" }));
+badFormatForm.set("projectId", "project-visual-direction");
+assert.equal((await fetch(`${base}/api/uploads`, { method: "POST", body: badFormatForm })).status, 400, "BMP（未支持格式）应被拒绝");
+
+console.log("✓ 全部通过：项目 / 工作区 / 上传 / 缩略图 / 原图 / 去重 / 改元数据 / 改维度名称 / 画板迁移与重复实例 / 安全替换图片 / 旧库标签迁移 / AI 打标(复用·裁决·降级·上传前建议) / 标签管理(重命名·合并·删除·清理) / AI 服务配置(状态·保存·掩码·测试连接·模型列表·环境变量覆盖) / 回收站(软删-列出-恢复-彻底删) / 登录页公告(公开读取·仅管理员可写·启用开关) / 账号系统(首次初始化·登录·权限隔离·成员管理·停用踢下线·重置密码·删除保留素材·登录审计·退出) / 视频(上传·异步转码·进度·时长·封面·Range/206·同类型替换·AI 拦截) / 扩展图片格式(GIF·SVG·拒绝未知类型)");
 process.exit(0);

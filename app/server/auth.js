@@ -1,4 +1,4 @@
-import { randomBytes, randomUUID, scryptSync, timingSafeEqual } from "node:crypto";
+import { createHash, randomBytes, randomUUID, scryptSync, timingSafeEqual } from "node:crypto";
 
 export const SESSION_COOKIE = "artdb_session";
 const REMEMBER_MS = 30 * 24 * 60 * 60 * 1000; // 记住我：30 天
@@ -160,4 +160,67 @@ export function backfillLegacyAssets(db, adminId, adminDisplayName) {
 export function logLogin(db, { username, success, ip, userAgent, message }) {
   db.prepare("INSERT INTO login_logs (username, success, ip, user_agent, message) VALUES (?, ?, ?, ?, ?)")
     .run(username || "", success ? 1 : 0, ip || "", (userAgent || "").slice(0, 400), message || "");
+}
+
+// ---- 插件令牌（浏览器扩展等外部客户端 Bearer 认证）----
+
+function hashToken(raw) {
+  return createHash("sha256").update(raw).digest("hex");
+}
+
+/**
+ * 生成插件令牌。明文只在生成时返回一次，数据库仅存哈希。
+ * 令牌无过期时间，只能吊销（由账号设置页管理）。
+ */
+export function createApiToken(db, userId, name) {
+  const raw = "artdb_" + randomBytes(24).toString("base64url");
+  const id = randomUUID();
+  db.prepare("INSERT INTO api_tokens (id, user_id, name, token_hash) VALUES (?, ?, ?, ?)")
+    .run(id, userId, name, hashToken(raw));
+  return { id, name, raw };
+}
+
+/** 列出某用户未吊销的令牌（不含哈希）。 */
+export function listApiTokens(db, userId) {
+  return db.prepare(`
+    SELECT id, name, created_at AS createdAt, last_used_at AS lastUsedAt
+    FROM api_tokens WHERE user_id = ? AND revoked_at IS NULL
+    ORDER BY created_at DESC
+  `).all(userId);
+}
+
+/** 吊销令牌（软删除）。只能吊销自己的令牌。返回是否吊销成功。 */
+export function revokeApiToken(db, userId, id) {
+  const result = db.prepare(`
+    UPDATE api_tokens SET revoked_at = CURRENT_TIMESTAMP
+    WHERE id = ? AND user_id = ? AND revoked_at IS NULL
+  `).run(id, userId);
+  return result.changes > 0;
+}
+
+/**
+ * 根据 Authorization: Bearer <token> 解析当前用户；令牌不存在、已吊销或
+ * 用户被停用/删除时返回 null。命中时节流更新 last_used_at（10 分钟一次）。
+ */
+export function resolveUserFromToken(db, request) {
+  const header = request.headers.get("authorization") || "";
+  const match = /^Bearer\s+(.+)$/i.exec(header);
+  const raw = match ? match[1].trim() : "";
+  if (!raw) return null;
+  const row = db.prepare(`
+    SELECT t.id AS tokenId, t.last_used_at AS lastUsedAt,
+      u.id, u.username, u.display_name AS displayName, u.role, u.active
+    FROM api_tokens t INNER JOIN users u ON u.id = t.user_id
+    WHERE t.token_hash = ? AND t.revoked_at IS NULL LIMIT 1
+  `).get(hashToken(raw));
+  if (!row || !row.active) return null;
+  const stale = !row.lastUsedAt || new Date(row.lastUsedAt).getTime() < Date.now() - 10 * 60 * 1000;
+  if (stale) db.prepare("UPDATE api_tokens SET last_used_at = CURRENT_TIMESTAMP WHERE id = ?").run(row.tokenId);
+  return {
+    id: row.id,
+    username: row.username,
+    displayName: row.displayName || row.username,
+    role: row.role,
+    active: true,
+  };
 }

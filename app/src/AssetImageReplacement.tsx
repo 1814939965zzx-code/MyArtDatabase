@@ -5,7 +5,16 @@ import { useEffect, useRef, useState } from "react";
 import { notifyUnauthorized } from "./api";
 import { isVideoMime } from "./assetMedia";
 
-const ALLOWED_IMAGE_TYPES = new Set(["image/jpeg", "image/png", "image/webp"]);
+const ALLOWED_IMAGE_TYPES = new Set([
+  "image/jpeg",
+  "image/png",
+  "image/webp",
+  "image/gif",
+  "image/svg+xml",
+  "image/tiff",
+  "image/heic",
+  "image/heif",
+]);
 const ALLOWED_VIDEO_TYPES = new Set([
   "video/mp4",
   "video/webm",
@@ -50,6 +59,7 @@ export function AssetImageReplacement({
   const [candidate, setCandidate] = useState<ReplacementCandidate | null>(null);
   const [preparing, setPreparing] = useState(false);
   const [error, setError] = useState("");
+  const [previewFailed, setPreviewFailed] = useState(false);
 
   // 同类型替换：图片换图片、视频换视频
   const assetIsVideo = isVideoMime(asset.mimeType);
@@ -63,8 +73,9 @@ export function AssetImageReplacement({
 
   async function prepareFile(rawFile: File) {
     setError("");
+    setPreviewFailed(false);
     if (!allowedTypes.has(rawFile.type)) {
-      setError(assetIsVideo ? "仅支持 mp4/mov/webm/mkv 等视频" : "仅支持 JPEG、PNG 和 WebP 图片");
+      setError(assetIsVideo ? "仅支持 mp4/mov/webm/mkv 等视频" : "仅支持 JPEG/PNG/WebP/GIF/SVG/TIFF/HEIC 图片");
       return;
     }
     if (rawFile.size <= 0 || rawFile.size > maxBytes) {
@@ -171,7 +182,7 @@ export function AssetImageReplacement({
             </div>
             <div className="replacement-compare">
               <figure><figcaption>当前素材</figcaption>{asset.thumbnailUrl ? <img src={asset.thumbnailUrl} alt={asset.name} /> : <span>无预览</span>}</figure>
-              <figure><figcaption>替换后</figcaption>{candidate.isVideo ? <video src={candidate.previewUrl} controls muted playsInline /> : <img src={candidate.previewUrl} alt="待替换素材预览" />}</figure>
+              <figure><figcaption>替换后</figcaption>{candidate.isVideo ? <video src={candidate.previewUrl} controls muted playsInline /> : previewFailed ? <span>该格式无法预览</span> : <img src={candidate.previewUrl} alt="待替换素材预览" onError={() => setPreviewFailed(true)} />}</figure>
             </div>
             <div className="replacement-file-facts">
               <strong>{candidate.file.name}</strong>

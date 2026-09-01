@@ -35,6 +35,7 @@ CREATE TABLE IF NOT EXISTS assets (
   mime_type TEXT NOT NULL DEFAULT 'image/jpeg',
   duration INTEGER NOT NULL DEFAULT 0,
   transcode_status TEXT,
+  transcode_progress INTEGER NOT NULL DEFAULT 0,
   description TEXT NOT NULL DEFAULT '',
   notes TEXT NOT NULL DEFAULT '',
   source_url TEXT NOT NULL DEFAULT '',
@@ -133,6 +134,16 @@ CREATE TABLE IF NOT EXISTS app_settings (
   value TEXT NOT NULL DEFAULT '',
   updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+CREATE TABLE IF NOT EXISTS api_tokens (
+  id TEXT PRIMARY KEY NOT NULL,
+  user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  name TEXT NOT NULL DEFAULT '',
+  token_hash TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  last_used_at TEXT,
+  revoked_at TEXT
+);
+CREATE INDEX IF NOT EXISTS api_tokens_user_idx ON api_tokens(user_id);
 `;
 
 function allowRepeatedCanvasAssets(db) {
@@ -168,7 +179,7 @@ function allowRepeatedCanvasAssets(db) {
   }
 }
 
-const SCHEMA_VERSION = 6;
+const SCHEMA_VERSION = 8;
 
 /**
  * v1：把素材上的逗号分隔标签字符串迁入 tags/asset_tags 标签字典。
@@ -182,6 +193,9 @@ const SCHEMA_VERSION = 6;
  *     保证标记图层（shape/text）可写入 asset_id 为 NULL 的元素。
  * v6：视频素材支持。assets 新增 duration（转码后时长，毫秒，图片恒为 0）与
  *     transcode_status（NULL=图片 / processing / ready / failed）。
+ * v7：插件令牌。新增 api_tokens（浏览器扩展等外部客户端以 Bearer 令牌认证），
+ *     只存 token_hash 不存明文；CREATE TABLE IF NOT EXISTS 已覆盖新旧库。
+ * v8：转码进度可视化。assets 新增 transcode_progress（0～100 整数，图片恒为 0）。
  */
 function migrateSchema(db) {
   const { user_version: version } = db.prepare("PRAGMA user_version").get();
@@ -281,6 +295,10 @@ function migrateSchema(db) {
     const columns = db.prepare("PRAGMA table_info(assets)").all().map((column) => column.name);
     if (!columns.includes("duration")) db.exec("ALTER TABLE assets ADD COLUMN duration INTEGER NOT NULL DEFAULT 0");
     if (!columns.includes("transcode_status")) db.exec("ALTER TABLE assets ADD COLUMN transcode_status TEXT");
+  }
+  if (version < 8) {
+    const columns = db.prepare("PRAGMA table_info(assets)").all().map((column) => column.name);
+    if (!columns.includes("transcode_progress")) db.exec("ALTER TABLE assets ADD COLUMN transcode_progress INTEGER NOT NULL DEFAULT 0");
   }
   db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
 }
