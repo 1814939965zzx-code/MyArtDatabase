@@ -23,11 +23,11 @@
 
 ## 项目快照
 
-- 产品：团队使用的图片素材库，按项目引用全局素材，并通过项目维度和自由画板组织素材。
-- 运行时：单个原生 Node.js 进程，同时提供 React 页面、`/api/*` 接口、SQLite 数据库和本地图片存储。
+- 产品：团队使用的图片/视频素材库，按项目引用全局素材，并通过项目维度和自由画板组织素材。
+- 运行时：单个原生 Node.js 进程，同时提供 React 页面、`/api/*` 接口、SQLite 数据库和本地图片/视频存储。
 - 账号：两级角色（管理员/成员）；除健康检查与登录相关接口外，全部 `/api/*` 需要登录（HttpOnly Cookie Session）；首次启动在界面引导创建管理员。
 - 前端：React 19、TypeScript、Vite、Tailwind CSS v4。
-- 后端：`node:http`、Node 内置 `node:sqlite`、`sharp`。
+- 后端：`node:http`、Node 内置 `node:sqlite`、`sharp`、`ffmpeg-static`（视频转码与抽帧）。
 - 环境要求：Node.js `>=23.4.0`，建议 Node.js 24。
 - 默认开发地址：`http://localhost:3000`。
 
@@ -52,7 +52,8 @@
 | `app/server/db.js` | SQLite 表结构、迁移与示例数据（含 users/sessions/login_logs） |
 | `app/server/tags.js` | 标签字典与素材-标签关联的共享读写 |
 | `app/server/ai.js` | AI 打标：配置读取、OpenAI 兼容调用、两轮标签复用裁决 |
-| `app/server/storage.js` | 原图和缩略图存储 |
+| `app/server/storage.js` | 原图/原视频和缩略图存储（图片走 sharp；视频原文件与转码产物共用存储键） |
+| `app/server/transcode.js` | 视频转码队列（上传后异步压码率、抽帧封面、状态推进） |
 | `app/src/TagManager.tsx` | 标签管理面板（全局：重命名/合并/删除/清理/AI 配置；项目：该项目标签，重命名/删除） |
 | `app/test/api-smoke.mjs` | API 全链路冒烟测试（含账号系统用例） |
 | `scripts/deploy.sh` | 服务器部署与版本校验 |
@@ -92,6 +93,8 @@ npm run build
 - 项目维度数量不限；一次维度预览最多选择三个维度。
 - 维度值以整数 `0～1000` 存储，对应界面上的 `0.00～10.00`。
 - 软删除只更新 `deleted_at`；只有彻底删除才能移除磁盘文件。
+- 视频统一转码为低码率 H.264 MP4（最长边 ≤1280、码率上限 2Mbps）；**转码成功且数据库已切换到转码产物后才删除原文件**，失败/中断/切换失败必须保留原文件。
+- 视频转码异步单并发执行（不阻塞上传）；`processing` 不可播放，`ready` 才可播放，`failed` 保留原文件供重新转码。
 - 保持现有 `/api/*` URL 契约，除非需求明确要求破坏性变更。
 
 ## 文档维护
