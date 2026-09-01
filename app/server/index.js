@@ -21,6 +21,8 @@ const db = openDatabase(DB_PATH, { seedDemo });
 const store = createLocalDiskStore({ root: STORE_ROOT });
 // 上次进程中断时遗留的转码中记录重置为 failed（原文件仍在，用户可重新转码）
 resetStaleTranscodes(db, store);
+// Chrome 扩展安装包目录（仓库 extension/release/，随仓库分发，供页面下载）
+const extensionReleaseDir = path.resolve(appRoot, "..", "extension", "release");
 
 let vite;
 if (dev) {
@@ -146,7 +148,7 @@ const server = createServer(async (req, res) => {
       const clientIp = typeof forwarded === "string" && forwarded.trim()
         ? forwarded.split(",")[0].trim()
         : req.socket.remoteAddress || "";
-      const response = await handleApi(request, { db, store, clientIp });
+      const response = await handleApi(request, { db, store, clientIp, extensionReleaseDir });
       sendResponse(res, response);
       return;
     }

@@ -132,6 +132,7 @@ globalThis.fetch = async (input, init = {}) => {
 
 assert.equal((await fetch(`${base}/api/projects`)).status, 401, "未登录访问业务接口应 401");
 assert.equal((await fetch(`${base}/api/media?id=asset-01`)).status, 401, "未登录访问媒体应 401");
+assert.equal((await fetch(`${base}/api/extension`)).status, 401, "未登录下载扩展应 401");
 assert.deepEqual(await json(await fetch(`${base}/api/health`)), { ok: true }, "健康检查无需登录");
 const authStatusBefore = await json(await fetch(`${base}/api/auth/status`));
 assert.equal(authStatusBefore.needsSetup, true, "无用户时应提示首次初始化");
@@ -851,6 +852,14 @@ const badFormatForm = new FormData();
 badFormatForm.set("file", new File(["x"], "x.bmp", { type: "image/bmp" }));
 badFormatForm.set("projectId", "project-visual-direction");
 assert.equal((await fetch(`${base}/api/uploads`, { method: "POST", body: badFormatForm })).status, 400, "BMP（未支持格式）应被拒绝");
+
+// 17) 扩展安装包下载：登录后可下载 zip（账号设置页「下载 Chrome 扩展」入口）
+const extZip = await fetch(`${base}/api/extension`);
+assert.equal(extZip.status, 200, "扩展安装包应可下载");
+assert.match(extZip.headers.get("content-type") || "", /application\/zip/, "扩展下载 content-type 应为 zip");
+assert.match(extZip.headers.get("content-disposition") || "", /attachment/, "扩展下载应声明 attachment");
+const zipBytes = Buffer.from(await extZip.arrayBuffer());
+assert.equal(zipBytes.slice(0, 2).toString(), "PK", "下载内容应为 zip 文件");
 
 console.log("✓ 全部通过：项目 / 工作区 / 上传 / 缩略图 / 原图 / 去重 / 改元数据 / 改维度名称 / 画板迁移与重复实例 / 安全替换图片 / 旧库标签迁移 / AI 打标(复用·裁决·降级·上传前建议) / 标签管理(重命名·合并·删除·清理) / AI 服务配置(状态·保存·掩码·测试连接·模型列表·环境变量覆盖) / 回收站(软删-列出-恢复-彻底删) / 登录页公告(公开读取·仅管理员可写·启用开关) / 账号系统(首次初始化·登录·权限隔离·成员管理·停用踢下线·重置密码·删除保留素材·登录审计·退出) / 视频(上传·异步转码·进度·时长·封面·Range/206·同类型替换·AI 拦截) / 扩展图片格式(GIF·SVG·AVIF·拒绝未知类型)");
 process.exit(0);

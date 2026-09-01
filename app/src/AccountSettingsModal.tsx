@@ -168,6 +168,10 @@ export function AccountSettingsModal({
           <p className="eyebrow">PLUGIN TOKEN</p>
           <h3>插件令牌</h3>
           <p>供 Chrome 扩展等外部客户端以 <code>Authorization: Bearer</code> 认证调用 API。令牌只存哈希，可随时吊销。</p>
+          <div className="extension-download-row">
+            <span>配合使用：浏览器采集扩展（网页右键保存图片/视频到素材库），解压后在 chrome://extensions 以「加载已解压的扩展程序」安装，令牌即在上方生成。</span>
+            <a className="secondary-button" href="/api/extension" download>下载 Chrome 扩展 (.zip)</a>
+          </div>
           {tokenMessage ? <div className={`user-manager-message ${tokenMessage.kind === "error" ? "error" : ""}`}>{tokenMessage.text}</div> : null}
           {freshToken ? (
             <div className="fresh-token">

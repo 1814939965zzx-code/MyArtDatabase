@@ -358,6 +358,10 @@ button:focus-visible, input:focus-visible, textarea:focus-visible {
 .primary-button { border: 1px solid var(--accent); background: var(--accent); color: white; }
 .primary-button:hover { background: var(--accent-dark); border-color: var(--accent-dark); }
 .secondary-button { border: 1px solid var(--line); background: white; }
+/* 账号设置：插件令牌区块的扩展下载入口 */
+.extension-download-row { margin: 12px 0 16px; padding: 11px 12px; border: 1px dashed var(--line); border-radius: 8px; display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.extension-download-row span { color: var(--muted); font-size: 12px; line-height: 1.5; }
+.extension-download-row a.secondary-button { flex: none; text-decoration: none; }
 .primary-button:disabled, .secondary-button:disabled { opacity: .55; cursor: wait; }
 .danger-zone { margin-top: 5px; padding: 12px; display: flex; align-items: center; justify-content: space-between; border: 1px solid #ead7d1; background: #fbf3f0; }
 .danger-zone button { border: 0; background: transparent; color: #b34127; display: flex; align-items: center; gap: 6px; font-size: 12px; cursor: pointer; }

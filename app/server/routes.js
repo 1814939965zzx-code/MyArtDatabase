@@ -1,4 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
+import { createReadStream } from "node:fs";
+import { readdir, stat } from "node:fs/promises";
+import path from "node:path";
 import { Readable } from "node:stream";
 import {
   backfillLegacyAssets,
@@ -463,6 +466,41 @@ async function replaceAssetMedia(request, { db, store }) {
   } catch (error) {
     if (storedId) await store.remove(storedId).catch(() => {});
     return Response.json({ error: errorMessage(error, "替换素材失败") }, { status: 500 });
+  }
+}
+
+// ---- 扩展安装包 ----
+/** 下载 Chrome 采集扩展安装包（zip）：取 extension/release/ 下最新的 artdb-extension-*.zip。 */
+async function downloadExtension(_request, { extensionReleaseDir }) {
+  try {
+    const entries = await readdir(extensionReleaseDir).catch(() => []);
+    const zips = (await Promise.all(entries
+      .filter((name) => /^artdb-extension-.*\.zip$/i.test(name))
+      .map(async (name) => {
+        const full = path.join(extensionReleaseDir, name);
+        try {
+          const info = await stat(full);
+          return { name, full, mtimeMs: info.mtimeMs, size: info.size };
+        } catch {
+          return null;
+        }
+      })))
+      .filter(Boolean)
+      .sort((a, b) => b.mtimeMs - a.mtimeMs);
+    const newest = zips[0];
+    if (!newest) return Response.json({ error: "扩展安装包不存在" }, { status: 404 });
+    const stream = createReadStream(newest.full);
+    stream.on("error", () => {});
+    return new Response(Readable.toWeb(stream), {
+      headers: {
+        "content-type": "application/zip",
+        "content-disposition": `attachment; filename="${newest.name}"`,
+        "content-length": String(newest.size),
+        "cache-control": "private, max-age=300",
+      },
+    });
+  } catch (error) {
+    return Response.json({ error: errorMessage(error, "扩展下载失败") }, { status: 500 });
   }
 }
 
@@ -1313,6 +1351,7 @@ export async function handleApi(request, ctx) {
     if (pathname === "/api/uploads" && method === "POST") return await upload(request, ctx);
 
     if (pathname === "/api/media" && method === "GET") return await media(request, ctx);
+    if (pathname === "/api/extension" && method === "GET") return await downloadExtension(request, ctx);
 
     if (pathname === "/api/assets/restore" && method === "POST") return await restoreAsset(request, ctx);
     if (pathname === "/api/assets/retranscode" && method === "POST") return await retranscodeAsset(request, ctx);
