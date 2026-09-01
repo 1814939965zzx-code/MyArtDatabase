@@ -9,6 +9,7 @@ import {
   LayoutGrid,
   List,
   LoaderCircle,
+  RotateCcw,
   Trash2,
   X,
 } from "lucide-react";
@@ -16,6 +17,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { AssetMetadataEditor, type AssetMetadataEditorHandle, type AssetMetadataUpdate } from "./AssetMetadataEditor";
 import { AssetImageReplacement } from "./AssetImageReplacement";
 import { notifyUnauthorized } from "./api";
+import { formatDuration, isVideoMime, videoStatusOf } from "./assetMedia";
 import { TagFilterBar } from "./TagFilterBar";
 import type { TagEntry } from "./TagManager";
 import { useProgressiveImage } from "./useProgressiveImage";
@@ -42,6 +44,8 @@ export type LibraryAsset = {
   width: number;
   height: number;
   mimeType: string;
+  duration: number;
+  transcodeStatus: string | null;
   createdAt: string;
   projects: Array<{ id: string; name: string }>;
 };
@@ -148,6 +152,21 @@ export function AllAssetsView({
   async function closeAssetDetail() {
     const saved = await metadataEditorRef.current?.save();
     if (saved !== false) setSelectedAssetId(null);
+  }
+
+  /** 转码失败后重新转码（原文件仍在，服务端置回 processing 并入队）。 */
+  async function retranscodeVideo(asset: LibraryAsset) {
+    setBusy(true);
+    setError("");
+    try {
+      await request("/api/assets/retranscode", { method: "POST", body: JSON.stringify({ id: asset.id }) });
+      await onRefresh();
+      onMessage("已开始重新转码，完成后自动可播放");
+    } catch (reason) {
+      onMessage(reason instanceof Error ? reason.message : "重新转码失败");
+    } finally {
+      setBusy(false);
+    }
   }
 
   function openAssign(asset: LibraryAsset) {
@@ -281,13 +300,35 @@ export function AllAssetsView({
       {selectedAsset ? (
         <aside className="asset-drawer" aria-label="全局素材详情">
           <div className="asset-detail-stage" role="button" tabIndex={0} aria-label="关闭素材详情" onClick={() => void closeAssetDetail()} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); void closeAssetDetail(); } }}>
-            {detailImage ? <span className="drawer-image-frame"><img key={detailImage} className="drawer-image" src={detailImage} alt={selectedAsset.name} onClick={(event) => event.stopPropagation()} /></span> : <span className="drawer-image-fallback" onClick={(event) => event.stopPropagation()}><ImageIcon size={40} /></span>}
+            {(() => {
+              const isVideo = isVideoMime(selectedAsset.mimeType);
+              if (isVideo) {
+                const status = videoStatusOf(selectedAsset.mimeType, selectedAsset.transcodeStatus);
+                if (status === "ready" && selectedAsset.originalUrl) {
+                  return <span className="drawer-image-frame" onClick={(event) => event.stopPropagation()}><video key={selectedAsset.originalUrl} className="drawer-image" src={selectedAsset.originalUrl} controls playsInline onClick={(event) => event.stopPropagation()} /></span>;
+                }
+                return (
+                  <span className="drawer-image-fallback" onClick={(event) => event.stopPropagation()}>
+                    {status === "failed"
+                      ? <><AlertTriangle size={30} /><small>转码失败，原文件已保留</small><button className="secondary-button" type="button" onClick={(event) => { event.stopPropagation(); void retranscodeVideo(selectedAsset); }}><RotateCcw size={13} />重新转码</button></>
+                      : <><LoaderCircle className="spin" size={30} /><small>视频转码中…</small></>}
+                  </span>
+                );
+              }
+              return detailImage ? <span className="drawer-image-frame"><img key={detailImage} className="drawer-image" src={detailImage} alt={selectedAsset.name} onClick={(event) => event.stopPropagation()} /></span> : <span className="drawer-image-fallback" onClick={(event) => event.stopPropagation()}><ImageIcon size={40} /></span>;
+            })()}
           </div>
           <div className="drawer-panel">
             <div className="drawer-heading"><div><p className="eyebrow">GLOBAL ASSET</p><h2>素材详情</h2></div><button className="icon-button" type="button" onClick={() => void closeAssetDetail()} aria-label="关闭素材详情"><X size={18} /></button></div>
             <div className="drawer-scroll">
               <div className="drawer-file"><small>文件名</small><span>{selectedAsset.fileName}</span></div>
-              <div className="drawer-facts"><span>{selectedAsset.width && selectedAsset.height ? `${selectedAsset.width} × ${selectedAsset.height}` : "尺寸未知"}</span><span>{selectedAsset.fileSize ? `${(selectedAsset.fileSize / 1024 / 1024).toFixed(2)} MB` : "大小未知"}</span><span>{selectedAsset.mimeType || "image"}</span></div>
+              <div className="drawer-facts">
+                <span>{isVideoMime(selectedAsset.mimeType)
+                  ? (videoStatusOf(selectedAsset.mimeType, selectedAsset.transcodeStatus) === "ready" ? formatDuration(selectedAsset.duration) : "转码中")
+                  : selectedAsset.width && selectedAsset.height ? `${selectedAsset.width} × ${selectedAsset.height}` : "尺寸未知"}</span>
+                <span>{selectedAsset.fileSize ? `${(selectedAsset.fileSize / 1024 / 1024).toFixed(2)} MB` : "大小未知"}</span>
+                <span>{selectedAsset.mimeType || "image"}</span>
+              </div>
               {error ? <div className="form-error"><AlertTriangle size={15} />{error}</div> : null}
               <AssetImageReplacement
                 asset={selectedAsset}

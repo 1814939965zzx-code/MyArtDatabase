@@ -2,6 +2,7 @@
 
 import { ImageIcon, LoaderCircle, RotateCcw, Trash2, Trash } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
+import { formatDuration, isVideoMime } from "./assetMedia";
 
 export type TrashedAsset = {
   id: string;
@@ -13,6 +14,8 @@ export type TrashedAsset = {
   width: number;
   height: number;
   mimeType: string;
+  duration: number;
+  transcodeStatus: string | null;
   deletedAt: string;
   projects: Array<{ id: string; name: string }>;
 };
@@ -121,6 +124,7 @@ export function TrashView({
                       onChange={(event) => toggleOne(asset.id, event.target.checked)}
                     />
                     {asset.thumbnailUrl ? <img src={asset.thumbnailUrl} alt="" /> : <span className="asset-fallback"><ImageIcon /></span>}
+                    {isVideoMime(asset.mimeType) && asset.transcodeStatus === "ready" ? <span className="trash-duration-badge">{formatDuration(asset.duration)}</span> : null}
                     <span className="project-count-badge">{asset.projects.length} 个项目</span>
                   </span>
                   <span className="asset-meta">

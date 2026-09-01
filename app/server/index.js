@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import { openDatabase } from "./db.js";
 import { createLocalDiskStore } from "./storage.js";
 import { handleApi } from "./routes.js";
+import { resetStaleTranscodes } from "./transcode.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const appRoot = path.resolve(__dirname, "..");
@@ -18,6 +19,8 @@ const seedDemo = dev || process.env.SEED_DEMO === "1";
 
 const db = openDatabase(DB_PATH, { seedDemo });
 const store = createLocalDiskStore({ root: STORE_ROOT });
+// 上次进程中断时遗留的转码中记录重置为 failed（原文件仍在，用户可重新转码）
+resetStaleTranscodes(db, store);
 
 let vite;
 if (dev) {

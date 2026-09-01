@@ -19,16 +19,20 @@ type PreparedFile = {
 
 const MAX_TAGS = 50;
 
-async function prepareImage(file: File, projectId: string): Promise<PreparedFile> {
+async function prepareFile(file: File, projectId: string): Promise<PreparedFile> {
   const buffer = await file.arrayBuffer();
   const digest = globalThis.crypto?.subtle
     ? new Uint8Array(await globalThis.crypto.subtle.digest("SHA-256", buffer))
     : sha256(new Uint8Array(buffer));
   const hash = bytesToHex(digest);
-  const bitmap = await createImageBitmap(file);
-  const width = bitmap.width;
-  const height = bitmap.height;
-  bitmap.close();
+  let width = 0;
+  let height = 0;
+  if (!file.type.startsWith("video/")) {
+    const bitmap = await createImageBitmap(file);
+    width = bitmap.width;
+    height = bitmap.height;
+    bitmap.close();
+  }
   const response = await fetch("/api/uploads/check", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -74,12 +78,12 @@ export function UploadModal({
   useEffect(() => {
     let active = true;
     let previewUrl = "";
-    void prepareImage(file, projectId).then((result) => {
+    void prepareFile(file, projectId).then((result) => {
       previewUrl = result.previewUrl;
       if (active) setPrepared(result);
       else URL.revokeObjectURL(result.previewUrl);
     }).catch((reason) => {
-      if (active) setError(reason instanceof Error ? reason.message : "图片读取失败");
+      if (active) setError(reason instanceof Error ? reason.message : "文件读取失败");
     });
     return () => {
       active = false;
@@ -104,7 +108,7 @@ export function UploadModal({
       const data = await response.json() as { error?: string };
       if (!response.ok) throw new Error(data.error || "引用失败");
       await onComplete();
-      onMessage("已引用素材库中的现有图片");
+      onMessage("已引用素材库中的现有素材");
       onClose();
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "引用失败");
@@ -175,7 +179,7 @@ export function UploadModal({
       const data = await response.json() as { error?: string };
       if (!response.ok) throw new Error(data.error || "上传失败");
       await onComplete();
-      onMessage("图片已上传并加入项目");
+      onMessage("素材已上传并加入项目");
       onClose();
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "上传失败");
@@ -185,20 +189,21 @@ export function UploadModal({
   }
 
   const baseName = file.name.replace(/\.[^.]+$/, "");
+  const isVideo = file.type.startsWith("video/");
   return (
     <div className="modal-backdrop upload-backdrop">
       <section className="modal-card upload-modal" role="dialog" aria-modal="true" aria-labelledby="upload-title">
         <div className="modal-heading">
-          <div><p className="eyebrow">NEW ASSET</p><h2 id="upload-title">上传图片</h2><p>提交前补充全局 Metadata 和项目维度位置。</p></div>
+          <div><p className="eyebrow">NEW ASSET</p><h2 id="upload-title">上传素材</h2><p>提交前补充全局 Metadata 和项目维度位置{isVideo ? "（视频上传后会自动压缩为低码率版本）" : ""}。</p></div>
           <button className="icon-button" type="button" onClick={onClose} aria-label="关闭上传"><X size={18} /></button>
         </div>
-        {!prepared && !error ? <div className="upload-preparing"><LoaderCircle className="spin" /> 正在读取图片并检查重复…</div> : null}
+        {!prepared && !error ? <div className="upload-preparing"><LoaderCircle className="spin" /> 正在读取文件并检查重复…</div> : null}
         {error ? <div className="form-error"><AlertTriangle size={15} />{error}</div> : null}
         {prepared ? (
           <form className="upload-layout" onSubmit={submit}>
             <div className="upload-preview-column">
-              <img src={prepared.previewUrl} alt="待上传图片预览" />
-              <div className="file-facts"><FileImage size={15} /><span>{file.name}</span><small>{Math.round(prepared.width)} × {Math.round(prepared.height)} · {(file.size / 1024 / 1024).toFixed(2)}MB</small></div>
+              {isVideo ? <video src={prepared.previewUrl} controls muted playsInline /> : <img src={prepared.previewUrl} alt="待上传素材预览" />}
+              <div className="file-facts"><FileImage size={15} /><span>{file.name}</span><small>{isVideo ? "视频" : `${Math.round(prepared.width)} × ${Math.round(prepared.height)}`} · {(file.size / 1024 / 1024).toFixed(2)}MB</small></div>
               {prepared.duplicates.length ? (
                 <div className={`duplicate-card ${allowDuplicate ? "duplicate-confirmed" : ""}`}>
                   <div><AlertTriangle size={16} /><strong>发现完全相同的素材</strong></div>
@@ -210,7 +215,7 @@ export function UploadModal({
             <div className="upload-fields">
               <div className="upload-scroll">
                 <label>素材名称<input name="name" maxLength={120} defaultValue={baseName} /></label>
-                <label>全局标签<div className="upload-tags-row"><input name="tags" value={tagsText} onChange={(event) => setTagsText(event.target.value)} maxLength={4000} placeholder="用逗号分隔，例如：建筑, 暖色, 户外" /><button className="ai-tag-button" type="button" disabled={busy || aiTagBusy || !prepared} onClick={() => void runAiTag()} title="调用 AI 观察这张图片并自动补充标签">{aiTagBusy ? <><LoaderCircle className="spin" size={12} />AI 打标中…</> : <><Sparkles size={12} />AI 打标</>}</button></div></label>
+                <label>全局标签<div className="upload-tags-row"><input name="tags" value={tagsText} onChange={(event) => setTagsText(event.target.value)} maxLength={4000} placeholder="用逗号分隔，例如：建筑, 暖色, 户外" />{!isVideo ? <button className="ai-tag-button" type="button" disabled={busy || aiTagBusy || !prepared} onClick={() => void runAiTag()} title="调用 AI 观察这张图片并自动补充标签">{aiTagBusy ? <><LoaderCircle className="spin" size={12} />AI 打标中…</> : <><Sparkles size={12} />AI 打标</>}</button> : null}</div></label>
                 <label>描述<textarea name="description" rows={2} maxLength={2000} placeholder="描述图片内容或使用方向" /></label>
                 <div className="upload-two-fields"><label>来源链接<input name="sourceUrl" type="url" maxLength={1000} placeholder="https://" /></label><label>备注<input name="notes" maxLength={2000} placeholder="团队内部备注" /></label></div>
                 <div className="upload-dimensions">

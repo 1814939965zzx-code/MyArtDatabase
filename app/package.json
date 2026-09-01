@@ -15,6 +15,7 @@
   },
   "dependencies": {
     "@noble/hashes": "^2.0.1",
+    "ffmpeg-static": "^5.2.0",
     "lucide-react": "^0.468.0",
     "react": "19.2.6",
     "react-dom": "19.2.6",

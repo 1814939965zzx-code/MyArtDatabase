@@ -15,8 +15,28 @@ import {
 } from "./auth.js";
 import { AiError, listAiModels, readAiConfigDetails, saveAiConfig, suggestTagsForUpload, tagAssetWithAi, testAiConnection } from "./ai.js";
 import { findTagByName, listTags, mergeTags, replaceAssetTags } from "./tags.js";
+import { enqueueVideoTranscode } from "./transcode.js";
 
-const ALLOWED_TYPES = new Set(["image/jpeg", "image/png", "image/webp"]);
+const IMAGE_TYPES = new Set(["image/jpeg", "image/png", "image/webp"]);
+const VIDEO_TYPES = new Set([
+  "video/mp4",
+  "video/webm",
+  "video/quicktime",
+  "video/x-msvideo",
+  "video/x-matroska",
+  "video/mpeg",
+  "video/3gpp",
+  "video/3gpp2",
+]);
+const IMAGE_MAX_BYTES = 50 * 1024 * 1024;
+const VIDEO_MAX_BYTES = 200 * 1024 * 1024;
+const isVideoMime = (mime) => typeof mime === "string" && mime.startsWith("video/");
+/** 统一校验并返回 { kind: 'image' | 'video' }，非法类型返回 null。 */
+function mediaKind(type) {
+  if (IMAGE_TYPES.has(type)) return "image";
+  if (VIDEO_TYPES.has(type)) return "video";
+  return null;
+}
 
 function cleanText(value, maxLength) {
   return typeof value === "string" ? value.trim().slice(0, maxLength) : "";
@@ -88,7 +108,7 @@ function listProjects({ db }) {
   // 每个项目取前 4 张素材缩略图作为主页封面拼图
   const covers = db.prepare(`
     SELECT pa.project_id AS projectId, a.id,
-      CASE WHEN a.thumbnail_key IS NOT NULL OR a.storage_key IS NOT NULL
+      CASE WHEN (a.thumbnail_key IS NOT NULL OR a.storage_key IS NOT NULL) AND (a.transcode_status IS NULL OR a.transcode_status = 'ready')
         THEN '/api/media?id=' || a.id || '&variant=thumbnail&v=' || COALESCE(a.thumbnail_key, a.storage_key) ELSE a.thumbnail_url END AS thumbnailUrl
     FROM project_assets pa
     INNER JOIN assets a ON a.id = pa.asset_id AND a.deleted_at IS NULL
@@ -233,12 +253,13 @@ function workspace(request, { db }) {
   if (!project) return Response.json({ error: "项目不存在" }, { status: 404 });
   const dimensions = db.prepare("SELECT id, project_id AS projectId, left_label AS leftLabel, right_label AS rightLabel, sort_order AS sortOrder FROM project_dimensions WHERE project_id = ? ORDER BY sort_order").all(projectId);
   const assets = db.prepare(`SELECT a.id, a.name, a.file_name AS fileName,
-    CASE WHEN a.thumbnail_key IS NOT NULL OR a.storage_key IS NOT NULL
+    CASE WHEN (a.thumbnail_key IS NOT NULL OR a.storage_key IS NOT NULL) AND (a.transcode_status IS NULL OR a.transcode_status = 'ready')
       THEN '/api/media?id=' || a.id || '&variant=thumbnail&v=' || COALESCE(a.thumbnail_key, a.storage_key) ELSE a.thumbnail_url END AS thumbnailUrl,
     CASE WHEN a.storage_key IS NOT NULL
       THEN '/api/media?id=' || a.id || '&variant=original&v=' || a.storage_key ELSE a.thumbnail_url END AS originalUrl,
     a.description, a.notes, a.source_url AS sourceUrl,
     a.file_size AS fileSize, a.width, a.height, a.mime_type AS mimeType,
+    a.duration AS duration, a.transcode_status AS transcodeStatus,
     a.created_at AS createdAt, a.created_by_name AS createdByName
     FROM assets a
     INNER JOIN project_assets pa ON pa.asset_id = a.id
@@ -269,8 +290,9 @@ async function checkUpload(request, { db }) {
   if (!/^[a-f0-9]{64}$/.test(sha256) || !projectId) return Response.json({ error: "文件哈希或项目参数无效" }, { status: 400 });
   const duplicates = db.prepare(`
     SELECT a.id, a.name, a.file_name AS fileName,
-      CASE WHEN a.thumbnail_key IS NOT NULL OR a.storage_key IS NOT NULL
+      CASE WHEN (a.thumbnail_key IS NOT NULL OR a.storage_key IS NOT NULL) AND (a.transcode_status IS NULL OR a.transcode_status = 'ready')
         THEN '/api/media?id=' || a.id || '&variant=thumbnail&v=' || COALESCE(a.thumbnail_key, a.storage_key) ELSE a.thumbnail_url END AS thumbnailUrl,
+      a.mime_type AS mimeType, a.transcode_status AS transcodeStatus,
       EXISTS(SELECT 1 FROM project_assets pa WHERE pa.asset_id = a.id AND pa.project_id = ?) AS inProject
     FROM assets a
     WHERE a.sha256 = ? AND a.deleted_at IS NULL
@@ -284,11 +306,13 @@ async function upload(request, { db, store, user }) {
   try {
     const form = await request.formData();
     const file = form.get("file");
-    if (!(file instanceof File) || !ALLOWED_TYPES.has(file.type)) {
-      return Response.json({ error: "仅支持 JPEG、PNG 和 WebP 图片" }, { status: 400 });
+    const kind = file instanceof File ? mediaKind(file.type) : null;
+    if (!kind) {
+      return Response.json({ error: "仅支持 JPEG、PNG、WebP 图片或 mp4/mov/webm/mkv 等视频" }, { status: 400 });
     }
-    if (file.size <= 0 || file.size > 50 * 1024 * 1024) {
-      return Response.json({ error: "图片不能超过 50MB" }, { status: 400 });
+    const maxBytes = kind === "video" ? VIDEO_MAX_BYTES : IMAGE_MAX_BYTES;
+    if (file.size <= 0 || file.size > maxBytes) {
+      return Response.json({ error: kind === "video" ? "视频不能超过 200MB" : "图片不能超过 50MB" }, { status: 400 });
     }
     const projectId = cleanText(form.get("projectId"), 80);
     const name = cleanText(form.get("name"), 120) || file.name.slice(0, 120);
@@ -312,15 +336,24 @@ async function upload(request, { db, store, user }) {
     }
 
     const id = randomUUID();
-    const stored = await store.put(buffer, file.type);
+    const stored = kind === "video"
+      ? await store.putVideoOriginal(buffer, file.type)
+      : await store.put(buffer, file.type);
     storedId = stored.id;
 
     const dimensions = db.prepare("SELECT id FROM project_dimensions WHERE project_id = ? ORDER BY sort_order").all(projectId);
     try {
       transaction(db, () => {
-        db.prepare(`INSERT INTO assets (id, name, file_name, sha256, file_size, width, height, mime_type, description, notes, source_url, storage_key, thumbnail_key, created_by, created_by_name)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-          .run(id, name, file.name, sha256, file.size, stored.width, stored.height, file.type, description, notes, sourceUrl, stored.id, stored.id, user?.id ?? null, user?.displayName ?? "");
+        db.prepare(`INSERT INTO assets (id, name, file_name, sha256, file_size, width, height, mime_type, duration, transcode_status, description, notes, source_url, storage_key, thumbnail_key, created_by, created_by_name)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+          .run(
+            id, name, file.name, sha256, file.size,
+            stored.width ?? 0, stored.height ?? 0, file.type,
+            kind === "video" ? 0 : 0, kind === "video" ? "processing" : null,
+            description, notes, sourceUrl,
+            stored.id, kind === "video" ? null : stored.id,
+            user?.id ?? null, user?.displayName ?? "",
+          );
         replaceAssetTags(db, id, tags, { source: "manual", inTransaction: true });
         db.prepare("INSERT INTO project_assets (project_id, asset_id) VALUES (?, ?)").run(projectId, id);
         const insertValue = db.prepare("INSERT INTO asset_dimension_values (project_id, asset_id, dimension_id, value) VALUES (?, ?, ?, ?)");
@@ -335,40 +368,60 @@ async function upload(request, { db, store, user }) {
       await store.remove(stored.id).catch(() => {});
       throw error;
     }
-    return Response.json({ asset: { id, name, fileName: file.name, sha256 } }, { status: 201 });
+    // 视频入库后异步转码（不阻塞上传请求）
+    if (kind === "video") enqueueVideoTranscode({ db, store, assetId: id });
+    return Response.json({
+      asset: { id, name, fileName: file.name, sha256, transcodeStatus: kind === "video" ? "processing" : null },
+    }, { status: 201 });
   } catch (error) {
     if (storedId) await store.remove(storedId).catch(() => {});
     return Response.json({ error: errorMessage(error, "上传失败") }, { status: 500 });
   }
 }
 
-async function replaceAssetImage(request, { db, store }) {
+async function replaceAssetMedia(request, { db, store }) {
   let storedId = "";
   try {
     const form = await request.formData();
     const id = cleanId(form.get("id"));
     const file = form.get("file");
     if (!id) return Response.json({ error: "缺少素材 ID" }, { status: 400 });
-    if (!(file instanceof File) || !ALLOWED_TYPES.has(file.type)) {
-      return Response.json({ error: "仅支持 JPEG、PNG 和 WebP 图片" }, { status: 400 });
+    const kind = file instanceof File ? mediaKind(file.type) : null;
+    if (!kind) {
+      return Response.json({ error: "仅支持 JPEG、PNG、WebP 图片或 mp4/mov/webm/mkv 等视频" }, { status: 400 });
     }
-    if (file.size <= 0 || file.size > 50 * 1024 * 1024) {
-      return Response.json({ error: "图片不能为空或超过 50MB" }, { status: 400 });
-    }
-    const fileName = cleanText(file.name, 240) || `replacement.${file.type === "image/png" ? "png" : file.type === "image/webp" ? "webp" : "jpg"}`;
 
-    const existing = db.prepare(`SELECT id, storage_key AS storageKey, thumbnail_key AS thumbnailKey
+    const existing = db.prepare(`SELECT id, storage_key AS storageKey, thumbnail_key AS thumbnailKey, mime_type AS mimeType
       FROM assets WHERE id = ? AND deleted_at IS NULL`).get(id);
     if (!existing) return Response.json({ error: "素材不存在" }, { status: 404 });
 
+    // 同类型替换：图片换图片、视频换视频；跨类型不允许，避免预览/画板形态错乱。
+    const existingIsVideo = isVideoMime(existing.mimeType);
+    if (existingIsVideo !== (kind === "video")) {
+      return Response.json({ error: existingIsVideo ? "请选择视频文件替换" : "请选择图片文件替换" }, { status: 400 });
+    }
+
+    const maxBytes = kind === "video" ? VIDEO_MAX_BYTES : IMAGE_MAX_BYTES;
+    if (file.size <= 0 || file.size > maxBytes) {
+      return Response.json({ error: kind === "video" ? "视频不能为空或超过 200MB" : "图片不能为空或超过 50MB" }, { status: 400 });
+    }
+    const fileName = cleanText(file.name, 240) || `replacement.${kind === "video" ? "mp4" : file.type === "image/png" ? "png" : file.type === "image/webp" ? "webp" : "jpg"}`;
+
     const buffer = Buffer.from(await file.arrayBuffer());
-    const stored = await store.put(buffer, file.type);
+    const stored = kind === "video"
+      ? await store.putVideoOriginal(buffer, file.type)
+      : await store.put(buffer, file.type);
     storedId = stored.id;
     const result = db.prepare(`UPDATE assets SET
       file_name = ?, sha256 = ?, file_size = ?, width = ?, height = ?, mime_type = ?,
-      storage_key = ?, thumbnail_key = ?, thumbnail_url = NULL
+      duration = ?, transcode_status = ?, storage_key = ?, thumbnail_key = ?, thumbnail_url = NULL
       WHERE id = ? AND deleted_at IS NULL`)
-      .run(fileName, stored.sha256, stored.size, stored.width, stored.height, stored.mimeType, stored.id, stored.id, id);
+      .run(
+        fileName, stored.sha256, stored.size,
+        stored.width ?? 0, stored.height ?? 0, stored.mimeType,
+        kind === "video" ? 0 : 0, kind === "video" ? "processing" : null,
+        stored.id, kind === "video" ? null : stored.id, id,
+      );
     if (!result.changes) {
       await store.remove(stored.id).catch(() => {});
       storedId = "";
@@ -380,14 +433,21 @@ async function replaceAssetImage(request, { db, store }) {
     storedId = "";
     const oldKeys = [...new Set([existing.storageKey, existing.thumbnailKey].filter(Boolean))];
     const cleanup = await Promise.allSettled(oldKeys.map((key) => store.remove(key)));
+
+    // 视频替换后重新进入转码流程
+    if (kind === "video") enqueueVideoTranscode({ db, store, assetId: id });
     return Response.json({
       ok: true,
-      asset: { id, fileName, sha256: stored.sha256, fileSize: stored.size, width: stored.width, height: stored.height, mimeType: stored.mimeType },
+      asset: {
+        id, fileName, sha256: stored.sha256, fileSize: stored.size,
+        width: stored.width ?? 0, height: stored.height ?? 0, mimeType: stored.mimeType,
+        transcodeStatus: kind === "video" ? "processing" : null,
+      },
       cleanupWarning: cleanup.some((entry) => entry.status === "rejected"),
     });
   } catch (error) {
     if (storedId) await store.remove(storedId).catch(() => {});
-    return Response.json({ error: errorMessage(error, "替换图片失败") }, { status: 500 });
+    return Response.json({ error: errorMessage(error, "替换素材失败") }, { status: 500 });
   }
 }
 
@@ -401,17 +461,43 @@ async function media(request, { db, store }) {
     const asset = db.prepare("SELECT storage_key AS storageKey, thumbnail_key AS thumbnailKey, mime_type AS mimeType FROM assets WHERE id = ? AND deleted_at IS NULL").get(id);
     if (!asset) return new Response("Not found", { status: 404 });
     const key = variant === "thumbnail" ? (asset.thumbnailKey || asset.storageKey) : asset.storageKey;
+    // 缩略图只允许在真正生成后提供：转码中的视频 thumbnail_key 为空，
+    // 此时绝不能把原视频字节按 image/webp 返回（前端会拿到坏图）。
+    if (variant === "thumbnail" && !asset.thumbnailKey) return new Response("Not found", { status: 404 });
     if (!key) return new Response("Not found", { status: 404 });
     const opened = await store.open(key, variant);
     if (!opened) return new Response("Not found", { status: 404 });
-    return new Response(Readable.toWeb(opened.stream), {
-      headers: {
-        "content-type": variant === "thumbnail" ? "image/webp" : asset.mimeType,
-        "content-length": String(opened.size),
-        "cache-control": "private, max-age=3600",
-        "etag": `"${opened.size}-${Math.round(opened.mtimeMs)}"`,
-      },
-    });
+    const total = opened.size;
+    const baseHeaders = {
+      "content-type": variant === "thumbnail" ? "image/webp" : asset.mimeType,
+      "cache-control": "private, max-age=3600",
+      "etag": `"${opened.size}-${Math.round(opened.mtimeMs)}"`,
+      "accept-ranges": "bytes",
+    };
+
+    // HTTP Range（206 Partial Content）：浏览器 <video> seek/拖进度条依赖此能力。
+    const range = request.headers.get("range");
+    const rangeMatch = range ? /^bytes=(\d*)-(\d*)$/.exec(range.trim()) : null;
+    if (rangeMatch && (rangeMatch[1] !== "" || rangeMatch[2] !== "")) {
+      const start = rangeMatch[1] === "" ? Math.max(0, total - Number(rangeMatch[2])) : Number(rangeMatch[1]);
+      const requestedEnd = rangeMatch[2] === "" ? total - 1 : Number(rangeMatch[2]);
+      if (!Number.isFinite(start) || !Number.isFinite(requestedEnd) || start >= total || start > requestedEnd) {
+        return new Response(null, { status: 416, headers: { "content-range": `bytes */${total}`, ...baseHeaders } });
+      }
+      const end = Math.min(requestedEnd, total - 1);
+      const sliced = await store.open(key, variant, { start, end });
+      if (!sliced) return new Response("Not found", { status: 404 });
+      return new Response(Readable.toWeb(sliced.stream), {
+        status: 206,
+        headers: {
+          ...baseHeaders,
+          "content-range": `bytes ${start}-${end}/${total}`,
+          "content-length": String(end - start + 1),
+        },
+      });
+    }
+
+    return new Response(Readable.toWeb(opened.stream), { headers: baseHeaders });
   } catch (error) {
     return new Response(errorMessage(error, "Media error"), { status: 500 });
   }
@@ -479,12 +565,13 @@ async function restoreAsset(request, { db }) {
 // ---- 全局素材库 ----
 function library({ db }) {
   const assets = db.prepare(`SELECT a.id, a.name, a.file_name AS fileName,
-    CASE WHEN a.thumbnail_key IS NOT NULL OR a.storage_key IS NOT NULL
+    CASE WHEN (a.thumbnail_key IS NOT NULL OR a.storage_key IS NOT NULL) AND (a.transcode_status IS NULL OR a.transcode_status = 'ready')
       THEN '/api/media?id=' || a.id || '&variant=thumbnail&v=' || COALESCE(a.thumbnail_key, a.storage_key) ELSE a.thumbnail_url END AS thumbnailUrl,
     CASE WHEN a.storage_key IS NOT NULL
       THEN '/api/media?id=' || a.id || '&variant=original&v=' || a.storage_key ELSE a.thumbnail_url END AS originalUrl,
     a.description, a.notes, a.source_url AS sourceUrl,
     a.file_size AS fileSize, a.width, a.height, a.mime_type AS mimeType,
+    a.duration AS duration, a.transcode_status AS transcodeStatus,
     a.created_at AS createdAt, a.created_by_name AS createdByName
     FROM assets a
     WHERE a.deleted_at IS NULL
@@ -512,9 +599,10 @@ function library({ db }) {
 // ---- 回收站 ----
 function trash({ db }) {
   const assets = db.prepare(`SELECT a.id, a.name, a.file_name AS fileName,
-    CASE WHEN a.thumbnail_key IS NOT NULL OR a.storage_key IS NOT NULL
+    CASE WHEN (a.thumbnail_key IS NOT NULL OR a.storage_key IS NOT NULL) AND (a.transcode_status IS NULL OR a.transcode_status = 'ready')
       THEN '/api/media?id=' || a.id || '&variant=thumbnail&v=' || COALESCE(a.thumbnail_key, a.storage_key) ELSE a.thumbnail_url END AS thumbnailUrl,
     a.file_size AS fileSize, a.width, a.height, a.mime_type AS mimeType,
+    a.duration AS duration, a.transcode_status AS transcodeStatus,
     a.deleted_at AS deletedAt, a.created_by_name AS createdByName
     FROM assets a
     WHERE a.deleted_at IS NOT NULL
@@ -629,7 +717,7 @@ function getCanvas(request, { db }) {
   if (!canvas) return Response.json({ error: "画板不存在" }, { status: 404 });
   const rows = db.prepare(`SELECT ci.id, ci.canvas_id AS canvasId, ci.asset_id AS assetId, ci.type, ci.parent_frame_id AS parentFrameId,
     ci.x, ci.y, ci.width, ci.height, ci.z_index AS zIndex, ci.rotation, ci.payload,
-    a.name, CASE WHEN a.thumbnail_key IS NOT NULL OR a.storage_key IS NOT NULL
+    a.name, CASE WHEN (a.thumbnail_key IS NOT NULL OR a.storage_key IS NOT NULL) AND (a.transcode_status IS NULL OR a.transcode_status = 'ready')
       THEN '/api/media?id=' || a.id || '&variant=thumbnail&v=' || COALESCE(a.thumbnail_key, a.storage_key) ELSE a.thumbnail_url END AS thumbnailUrl
     FROM canvas_items ci LEFT JOIN assets a ON a.id = ci.asset_id
     WHERE ci.canvas_id = ? AND (ci.asset_id IS NULL OR a.deleted_at IS NULL) ORDER BY ci.z_index, ci.id`).all(canvasId);
@@ -717,12 +805,30 @@ function deleteCanvasItem(request, { db }) {
   return Response.json({ ok: true, revision });
 }
 
+// ---- 视频重新转码 ----
+/** 转码失败（failed）后重新入队；processing 视为已在进行，直接返回。 */
+async function retranscodeAsset(request, { db, store }) {
+  const payload = await request.json();
+  const id = cleanText(payload.id, 80);
+  if (!id) return Response.json({ error: "缺少素材 ID" }, { status: 400 });
+  const asset = db.prepare("SELECT id, mime_type AS mimeType, transcode_status AS transcodeStatus FROM assets WHERE id = ? AND deleted_at IS NULL").get(id);
+  if (!asset) return Response.json({ error: "素材不存在" }, { status: 404 });
+  if (!isVideoMime(asset.mimeType)) return Response.json({ error: "只有视频素材需要转码" }, { status: 400 });
+  if (asset.transcodeStatus === "processing") return Response.json({ ok: true, status: "processing" });
+  db.prepare("UPDATE assets SET transcode_status = 'processing' WHERE id = ?").run(id);
+  enqueueVideoTranscode({ db, store, assetId: id });
+  return Response.json({ ok: true, status: "processing" });
+}
+
 // ---- AI 打标 ----
 async function aiTagAsset(request, { db, store }) {
   try {
     const payload = await request.json();
     const id = cleanText(payload.id, 80);
     if (!id) return Response.json({ error: "缺少素材 ID" }, { status: 400 });
+    const asset = db.prepare("SELECT mime_type AS mimeType FROM assets WHERE id = ? AND deleted_at IS NULL").get(id);
+    if (!asset) return Response.json({ error: "素材不存在" }, { status: 404 });
+    if (isVideoMime(asset.mimeType)) return Response.json({ error: "视频素材不支持 AI 打标" }, { status: 400 });
     const result = await tagAssetWithAi(db, store, id);
     return Response.json({ ok: true, ...result });
   } catch (error) {
@@ -736,10 +842,10 @@ async function aiTagUploadImage(request, { db }) {
   try {
     const form = await request.formData();
     const file = form.get("file");
-    if (!(file instanceof File) || !ALLOWED_TYPES.has(file.type)) {
+    if (!(file instanceof File) || !IMAGE_TYPES.has(file.type)) {
       return Response.json({ error: "仅支持 JPEG、PNG 和 WebP 图片" }, { status: 400 });
     }
-    if (file.size <= 0 || file.size > 50 * 1024 * 1024) {
+    if (file.size <= 0 || file.size > IMAGE_MAX_BYTES) {
       return Response.json({ error: "图片不能超过 50MB" }, { status: 400 });
     }
     const buffer = Buffer.from(await file.arrayBuffer());
@@ -1166,7 +1272,8 @@ export async function handleApi(request, ctx) {
     if (pathname === "/api/media" && method === "GET") return await media(request, ctx);
 
     if (pathname === "/api/assets/restore" && method === "POST") return await restoreAsset(request, ctx);
-    if (pathname === "/api/assets/image" && method === "POST") return await replaceAssetImage(request, ctx);
+    if (pathname === "/api/assets/retranscode" && method === "POST") return await retranscodeAsset(request, ctx);
+    if (pathname === "/api/assets/image" && method === "POST") return await replaceAssetMedia(request, ctx);
     if (pathname === "/api/assets/ai-tags" && method === "POST") return await aiTagAsset(request, ctx);
     if (pathname === "/api/assets" && method === "PATCH") return await updateAsset(request, ctx);
     if (pathname === "/api/assets" && method === "DELETE") return await deleteAsset(request, ctx);

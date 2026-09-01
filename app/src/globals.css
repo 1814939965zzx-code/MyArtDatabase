@@ -138,6 +138,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible {
 .asset-card:hover img { transform: scale(1.025); filter: saturate(1); }
 .asset-index { position: absolute; top: 9px; left: 9px; padding: 4px 6px; background: rgba(28, 31, 28, .75); color: white; font-size: 10px; letter-spacing: .08em; }
 .project-count-badge { position: absolute; right: 9px; bottom: 9px; padding: 4px 7px; background: rgba(251, 250, 247, .9); color: #555a54; font-size: 10px; box-shadow: 0 2px 8px rgba(22, 26, 22, .1); }
+.trash-duration-badge { position: absolute; left: 9px; bottom: 9px; padding: 4px 7px; background: rgba(22, 26, 22, .72); color: #fff; font-size: 10px; border-radius: 4px; }
 .asset-fallback { width: 100%; height: 100%; display: grid; place-items: center; color: #9a9d96; }
 /* 【全部素材】页面：所有图片显示为圆角矩形（5px 弯曲度） */
 .library-collection .asset-image-wrap,
@@ -356,7 +357,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible {
 .upload-preparing { min-height: 240px; display: flex; align-items: center; justify-content: center; gap: 9px; color: var(--muted); font-size: 14px; }
 .form-error { margin-bottom: 12px; padding: 9px 11px; border: 1px solid #e6b8aa; background: #fff1ed; color: #a33d25; display: flex; align-items: center; gap: 7px; font-size: 12px; }
 .upload-layout { display: grid; grid-template-columns: minmax(250px, .8fr) minmax(420px, 1.25fr); gap: 22px; }
-.upload-preview-column > img { width: 100%; max-height: 390px; display: block; object-fit: contain; background: #e7e6e0; }
+.upload-preview-column > img, .upload-preview-column > video { width: 100%; max-height: 390px; display: block; object-fit: contain; background: #e7e6e0; }
 .file-facts { padding: 11px 0; display: grid; grid-template-columns: auto 1fr; gap: 3px 7px; align-items: center; border-bottom: 1px solid var(--soft-line); }
 .file-facts svg { grid-row: 1 / 3; color: var(--muted); }
 .file-facts span { overflow: hidden; text-overflow: ellipsis; font-size: 12px; white-space: nowrap; }
@@ -714,7 +715,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible {
   .surface-tabs { margin-left: 24px; margin-right: 24px; }
   .drop-overlay { left: 22px; }
   .upload-layout { grid-template-columns: 1fr; }
-  .upload-preview-column > img { max-height: 280px; }
+  .upload-preview-column > img, .upload-preview-column > video { max-height: 280px; }
   .preview-layout { grid-template-columns: 190px minmax(0, 1fr); }
 }
 

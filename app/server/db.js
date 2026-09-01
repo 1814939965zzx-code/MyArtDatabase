@@ -33,6 +33,8 @@ CREATE TABLE IF NOT EXISTS assets (
   width INTEGER NOT NULL DEFAULT 0,
   height INTEGER NOT NULL DEFAULT 0,
   mime_type TEXT NOT NULL DEFAULT 'image/jpeg',
+  duration INTEGER NOT NULL DEFAULT 0,
+  transcode_status TEXT,
   description TEXT NOT NULL DEFAULT '',
   notes TEXT NOT NULL DEFAULT '',
   source_url TEXT NOT NULL DEFAULT '',
@@ -166,7 +168,7 @@ function allowRepeatedCanvasAssets(db) {
   }
 }
 
-const SCHEMA_VERSION = 5;
+const SCHEMA_VERSION = 6;
 
 /**
  * v1：把素材上的逗号分隔标签字符串迁入 tags/asset_tags 标签字典。
@@ -178,6 +180,8 @@ const SCHEMA_VERSION = 5;
  *     asset_id 改为可空（文本与图形元素不引用素材）。既有图片元素迁移为 type='image'。
  * v5：为旧库重建 canvas_items，真正去掉 asset_id 的 NOT NULL 约束（v4 只加列未改约束），
  *     保证标记图层（shape/text）可写入 asset_id 为 NULL 的元素。
+ * v6：视频素材支持。assets 新增 duration（转码后时长，毫秒，图片恒为 0）与
+ *     transcode_status（NULL=图片 / processing / ready / failed）。
  */
 function migrateSchema(db) {
   const { user_version: version } = db.prepare("PRAGMA user_version").get();
@@ -272,6 +276,11 @@ function migrateSchema(db) {
     } else {
       db.exec("UPDATE canvas_items SET type = 'image' WHERE type IS NULL OR type = ''");
     }
+  }
+  if (version < 6) {
+    const columns = db.prepare("PRAGMA table_info(assets)").all().map((column) => column.name);
+    if (!columns.includes("duration")) db.exec("ALTER TABLE assets ADD COLUMN duration INTEGER NOT NULL DEFAULT 0");
+    if (!columns.includes("transcode_status")) db.exec("ALTER TABLE assets ADD COLUMN transcode_status TEXT");
   }
   db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
 }

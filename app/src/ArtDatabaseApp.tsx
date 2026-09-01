@@ -1,6 +1,7 @@
 "use client";
 
 import {
+  AlertTriangle,
   Archive,
   ArrowLeft,
   ChevronDown,
@@ -17,6 +18,7 @@ import {
   PanelLeftOpen,
   Pencil,
   Plus,
+  RotateCcw,
   Search,
   Settings2,
   SlidersHorizontal,
@@ -30,6 +32,7 @@ import {
 } from "lucide-react";
 import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { apiFetch } from "./api";
+import { formatDuration, isVideoMime, videoStatusOf } from "./assetMedia";
 import type { SessionUser } from "./AuthGate";
 import { AccountSettingsModal } from "./AccountSettingsModal";
 import { AllAssetsView, type LibraryAsset } from "./AllAssetsView";
@@ -80,6 +83,8 @@ type Asset = {
   width: number;
   height: number;
   mimeType: string;
+  duration: number;
+  transcodeStatus: string | null;
   createdAt: string;
   createdByName?: string;
   dimensionValues: Record<string, number>;
@@ -570,15 +575,35 @@ export function ArtDatabaseApp({ user, onLogout }: { user: SessionUser; onLogout
   function acceptUpload(file?: File) {
     if (activeArea !== "project") return; // 上传只发生在项目内
     if (!file) return;
-    if (!["image/jpeg", "image/png", "image/webp"].includes(file.type)) {
-      setMessage("仅支持 JPEG、PNG 和 WebP 图片");
+    const isVideo = file.type.startsWith("video/");
+    if (!isVideo && !["image/jpeg", "image/png", "image/webp"].includes(file.type)) {
+      setMessage("仅支持 JPEG、PNG、WebP 图片或 mp4/mov/webm/mkv 等视频");
       return;
     }
-    if (file.size > 50 * 1024 * 1024) {
-      setMessage("图片不能超过 50MB");
+    if (isVideo && !["video/mp4", "video/webm", "video/quicktime", "video/x-msvideo", "video/x-matroska", "video/mpeg", "video/3gpp", "video/3gpp2"].includes(file.type)) {
+      setMessage("仅支持 mp4/mov/webm/mkv 等视频格式");
+      return;
+    }
+    if (file.size > (isVideo ? 200 * 1024 * 1024 : 50 * 1024 * 1024)) {
+      setMessage(isVideo ? "视频不能超过 200MB" : "图片不能超过 50MB");
       return;
     }
     setUploadFile(file);
+  }
+
+  /** 转码失败后重新转码（原文件仍在，服务端置回 processing 并入队）。 */
+  async function retranscodeVideo(asset: Asset) {
+    if (!workspace) return;
+    setBusy(true);
+    try {
+      await apiFetch("/api/assets/retranscode", { method: "POST", body: JSON.stringify({ id: asset.id }) });
+      setMessage("已开始重新转码，完成后自动可播放");
+      await loadWorkspace(workspace.project.id);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "重新转码失败");
+    } finally {
+      setBusy(false);
+    }
   }
 
   async function removeAssetFromProject(asset: Asset) {
@@ -761,7 +786,7 @@ export function ArtDatabaseApp({ user, onLogout }: { user: SessionUser; onLogout
         onDragLeave={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node)) setDragActive(false); }}
         onDrop={(event) => { event.preventDefault(); setDragActive(false); acceptUpload(event.dataTransfer.files[0]); }}
       >
-        <input ref={fileInputRef} className="visually-hidden" type="file" accept="image/jpeg,image/png,image/webp" onChange={(event) => { acceptUpload(event.target.files?.[0]); event.currentTarget.value = ""; }} />
+        <input ref={fileInputRef} className="visually-hidden" type="file" accept="image/jpeg,image/png,image/webp,video/mp4,video/webm,video/quicktime,video/x-msvideo,video/x-matroska,video/mpeg,video/3gpp,video/3gpp2" onChange={(event) => { acceptUpload(event.target.files?.[0]); event.currentTarget.value = ""; }} />
         {dragActive ? <div className="drop-overlay"><Upload size={28} /><strong>松开即可添加图片</strong><span>上传前会先填写 Metadata 和维度值</span></div> : null}
         <header className="topbar">
           <div className="topbar-leading">
@@ -807,7 +832,7 @@ export function ArtDatabaseApp({ user, onLogout }: { user: SessionUser; onLogout
           <div className="topbar-actions">
             {activeArea === "library" ? <button className="tag-manager-open-button" type="button" onClick={() => setTagManagerOpen(true)}><Tags size={14} />标签管理</button> : null}
             <div className="search-box"><Search size={17} /><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder={activeArea === "home" ? "搜索项目名称或说明" : "搜索名称、文件或标签"} aria-label={activeArea === "home" ? "搜索项目" : "搜索素材"} /></div>
-            {activeArea === "project" && workspace ? <button className="upload-button" type="button" onClick={() => fileInputRef.current?.click()}><Upload size={15} />上传图片</button> : null}
+            {activeArea === "project" && workspace ? <button className="upload-button" type="button" onClick={() => fileInputRef.current?.click()}><Upload size={15} />上传素材</button> : null}
             <div className="user-menu" ref={userMenuRef}>
               <button className="user-menu-trigger" type="button" onClick={() => setUserMenuOpen((open) => !open)} aria-haspopup="menu" aria-expanded={userMenuOpen}>
                 <span className="user-avatar">{currentUser.displayName.slice(0, 1).toUpperCase()}</span>
@@ -909,7 +934,7 @@ export function ArtDatabaseApp({ user, onLogout }: { user: SessionUser; onLogout
                 ))}
               </div>
             ) : (
-              <div className="empty-state"><Grid2X2 size={25} /><h3>{search || projectTagFilter.length ? "没有匹配的素材" : "项目还是空的"}</h3><p>{search || projectTagFilter.length ? "换一个关键词或标签试试。" : "拖入、粘贴或选择一张图片开始。"}</p><button className="primary-button" type="button" onClick={() => fileInputRef.current?.click()}><Upload size={15} />上传图片</button></div>
+              <div className="empty-state"><Grid2X2 size={25} /><h3>{search || projectTagFilter.length ? "没有匹配的素材" : "项目还是空的"}</h3><p>{search || projectTagFilter.length ? "换一个关键词或标签试试。" : "拖入、粘贴或选择图片/视频开始。"}</p><button className="primary-button" type="button" onClick={() => fileInputRef.current?.click()}><Upload size={15} />上传素材</button></div>
             )}</> : surface === "preview" ? <DimensionPreview key={workspace.project.id} dimensions={workspace.dimensions} assets={workspace.assets} onSelectAsset={setSelectedAssetId} onUpdateAssetDimensions={savePreviewDimensionValues} onAddDimension={() => setDimensionOpen(true)} onEditDimension={(dimension) => setEditingDimensionId(dimension.id)} /> : <BoardView key={workspace.project.id} projectId={workspace.project.id} assets={workspace.assets} onMessage={setMessage} onSelectAsset={setSelectedAssetId} />}
           </>
         ) : (
@@ -920,14 +945,38 @@ export function ArtDatabaseApp({ user, onLogout }: { user: SessionUser; onLogout
       {activeArea === "project" && selectedAsset && workspace ? (
         <aside className="asset-drawer" aria-label="素材详情">
           <div className="asset-detail-stage" role="button" tabIndex={0} aria-label="关闭素材详情" onClick={() => void closeAssetDetail()} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); void closeAssetDetail(); } }}>
-            {detailImage ? <span className="drawer-image-frame"><img key={detailImage} className="drawer-image" src={detailImage} alt={selectedAsset.name} onClick={(event) => event.stopPropagation()} /></span> : <span className="drawer-image-fallback" onClick={(event) => event.stopPropagation()}><ImageIcon size={40} /></span>}
+            {(() => {
+              const isVideo = isVideoMime(selectedAsset.mimeType);
+              if (isVideo) {
+                const status = videoStatusOf(selectedAsset.mimeType, selectedAsset.transcodeStatus);
+                if (status === "ready" && selectedAsset.originalUrl) {
+                  return <span className="drawer-image-frame" onClick={(event) => event.stopPropagation()}><video key={selectedAsset.originalUrl} className="drawer-image" src={selectedAsset.originalUrl} controls playsInline onClick={(event) => event.stopPropagation()} /></span>;
+                }
+                return (
+                  <span className="drawer-image-fallback" onClick={(event) => event.stopPropagation()}>
+                    {status === "failed"
+                      ? <><AlertTriangle size={30} /><small>转码失败，原文件已保留</small><button className="secondary-button" type="button" onClick={(event) => { event.stopPropagation(); void retranscodeVideo(selectedAsset); }}><RotateCcw size={13} />重新转码</button></>
+                      : <><LoaderCircle className="spin" size={30} /><small>视频转码中…</small></>}
+                  </span>
+                );
+              }
+              return detailImage ? <span className="drawer-image-frame"><img key={detailImage} className="drawer-image" src={detailImage} alt={selectedAsset.name} onClick={(event) => event.stopPropagation()} /></span> : <span className="drawer-image-fallback" onClick={(event) => event.stopPropagation()}><ImageIcon size={40} /></span>;
+            })()}
           </div>
           <div className="drawer-panel">
             <div className="drawer-heading"><div><p className="eyebrow">ASSET DETAIL</p><h2>素材详情</h2></div><button className="icon-button" type="button" onClick={() => void closeAssetDetail()} aria-label="关闭素材详情"><X size={18} /></button></div>
             <div className="drawer-scroll">
               <div className="drawer-file"><small>文件名</small><span>{selectedAsset.fileName}</span></div>
               {selectedAsset.createdByName ? <div className="drawer-file"><small>上传者</small><span>{selectedAsset.createdByName}</span></div> : null}
-              {selectedAsset.width || selectedAsset.fileSize ? <div className="drawer-facts"><span>{selectedAsset.width && selectedAsset.height ? `${selectedAsset.width} × ${selectedAsset.height}` : "尺寸未知"}</span><span>{selectedAsset.fileSize ? `${(selectedAsset.fileSize / 1024 / 1024).toFixed(2)} MB` : "演示素材"}</span><span>{selectedAsset.mimeType || "image"}</span></div> : null}
+              {selectedAsset.width || selectedAsset.fileSize || isVideoMime(selectedAsset.mimeType) ? (
+                <div className="drawer-facts">
+                  <span>{isVideoMime(selectedAsset.mimeType)
+                    ? (videoStatusOf(selectedAsset.mimeType, selectedAsset.transcodeStatus) === "ready" ? formatDuration(selectedAsset.duration) : "转码中")
+                    : selectedAsset.width && selectedAsset.height ? `${selectedAsset.width} × ${selectedAsset.height}` : "尺寸未知"}</span>
+                  <span>{selectedAsset.fileSize ? `${(selectedAsset.fileSize / 1024 / 1024).toFixed(2)} MB` : "演示素材"}</span>
+                  <span>{selectedAsset.mimeType || "image"}</span>
+                </div>
+              ) : null}
               <AssetImageReplacement
                 asset={selectedAsset}
                 busy={busy}

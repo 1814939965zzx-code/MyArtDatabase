@@ -1,9 +1,12 @@
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
+import { closeSync, openSync } from "node:fs";
 import { mkdtemp, readdir, readFile, writeFile } from "node:fs/promises";
 import { createServer, request as httpRequest } from "node:http";
 import { DatabaseSync } from "node:sqlite";
 import os from "node:os";
 import path from "node:path";
+import ffmpegPath from "ffmpeg-static";
 import sharp from "sharp";
 import { openDatabase } from "../server/db.js";
 import { createLocalDiskStore } from "../server/storage.js";
@@ -664,5 +667,73 @@ assert.equal((await fetch(`${base}/api/projects`)).status, 401, "退出后原会
 const reLogin = await post(`${base}/api/auth/login`, { username: "admin", password: "admin5678" });
 assert.equal(reLogin.status, 200, "退出后可重新登录");
 
-console.log("✓ 全部通过：项目 / 工作区 / 上传 / 缩略图 / 原图 / 去重 / 改元数据 / 改维度名称 / 画板迁移与重复实例 / 安全替换图片 / 旧库标签迁移 / AI 打标(复用·裁决·降级·上传前建议) / 标签管理(重命名·合并·删除·清理) / AI 服务配置(状态·保存·掩码·测试连接·模型列表·环境变量覆盖) / 回收站(软删-列出-恢复-彻底删) / 登录页公告(公开读取·仅管理员可写·启用开关) / 账号系统(首次初始化·登录·权限隔离·成员管理·停用踢下线·重置密码·删除保留素材·登录审计·退出)");
+// 15) 视频素材：上传 → 异步转码 → 时长/封面/Range 播放（解码在浏览器端，服务端只喂字节）
+// 用 ffmpeg-static 生成 1 秒测试视频（320x240, 10fps），stderr 走文件描述符避免管道
+function runFfmpeg(args) {
+  return new Promise((resolve, reject) => {
+    const logPath = path.join(tmp, `ffmpeg-${Math.random().toString(36).slice(2)}.log`);
+    const fd = openSync(logPath, "w");
+    const child = spawn(ffmpegPath, args, { stdio: ["ignore", "ignore", fd] });
+    child.on("error", (error) => { try { closeSync(fd); } catch { /* 忽略 */ } reject(error); });
+    child.on("close", (code) => { try { closeSync(fd); } catch { /* 忽略 */ } if (code === 0) resolve(); else reject(new Error(`ffmpeg 退出码 ${code}`)); });
+  });
+}
+const smokeVideoPath = path.join(tmp, "smoke-video.mp4");
+await runFfmpeg(["-y", "-f", "lavfi", "-i", "testsrc=duration=1:size=320x240:rate=10", "-pix_fmt", "yuv420p", "-c:v", "libx264", "-preset", "ultrafast", smokeVideoPath]);
+
+const videoForm = new FormData();
+videoForm.set("file", new File([await readFile(smokeVideoPath)], "smoke-video.mp4", { type: "video/mp4" }));
+videoForm.set("projectId", "project-visual-direction");
+videoForm.set("name", "冒烟测试视频");
+const vup = await fetch(`${base}/api/uploads`, { method: "POST", body: videoForm });
+assert.equal(vup.status, 201, `视频上传应 201，实际 ${vup.status}`);
+const videoUpload = (await vup.json()).asset;
+assert.equal(videoUpload.transcodeStatus, "processing", "视频上传后应处于转码中");
+
+// 等待异步转码完成（processing 不可播放，ready 后可播放）
+let videoEntry;
+{
+  const deadline = Date.now() + 60000;
+  for (;;) {
+    const wsVideo = await json(await fetch(`${base}/api/workspace?projectId=project-visual-direction`));
+    videoEntry = wsVideo.assets.find((item) => item.id === videoUpload.id);
+    assert.ok(videoEntry, "视频素材应出现在工作区");
+    if (videoEntry.transcodeStatus === "ready") break;
+    if (videoEntry.transcodeStatus === "failed") throw new Error(`视频转码失败：${JSON.stringify(videoEntry)}`);
+    if (Date.now() > deadline) throw new Error("视频转码超时");
+    await new Promise((resolve) => setTimeout(resolve, 300));
+  }
+}
+assert.ok(videoEntry.duration > 0, "转码后应写入时长");
+assert.equal(videoEntry.mimeType, "video/mp4", "转码后 mime 应为 video/mp4");
+assert.ok(videoEntry.width > 0 && videoEntry.height > 0, "转码后应写入分辨率");
+assert.ok(videoEntry.thumbnailUrl, "转码后应有封面");
+
+const vOriginal = await fetch(`${base}/api/media?id=${videoUpload.id}`);
+assert.equal(vOriginal.status, 200);
+assert.match(vOriginal.headers.get("content-type") || "", /video\/mp4/);
+assert.equal(vOriginal.headers.get("accept-ranges"), "bytes", "媒体接口应声明 accept-ranges");
+
+// HTTP Range：206 与 content-range（浏览器 <video> seek 依赖）
+const rangeRes = await fetch(`${base}/api/media?id=${videoUpload.id}`, { headers: { Range: "bytes=0-99" } });
+assert.equal(rangeRes.status, 206, "Range 请求应返回 206");
+assert.match(rangeRes.headers.get("content-range") || "", /^bytes 0-99\/\d+$/, "content-range 应正确");
+const rangeBytes = Buffer.from(await rangeRes.arrayBuffer());
+assert.equal(rangeBytes.length, 100, "Range 响应体长度应等于请求区间");
+
+const vThumb = await fetch(`${base}/api/media?id=${videoUpload.id}&variant=thumbnail`);
+assert.equal(vThumb.status, 200);
+assert.match(vThumb.headers.get("content-type") || "", /image\/webp/);
+
+// 同类型替换限制：图片换视频应被拒绝
+const crossTypeForm = new FormData();
+crossTypeForm.set("id", videoUpload.id);
+crossTypeForm.set("file", new File([buffer], "cross-type.png", { type: "image/png" }));
+assert.equal((await fetch(`${base}/api/assets/image`, { method: "POST", body: crossTypeForm })).status, 400, "跨类型替换应被拒绝");
+
+// 视频不支持 AI 打标；图片素材不需要转码
+assert.equal((await post(`${base}/api/assets/ai-tags`, { id: videoUpload.id })).status, 400, "视频素材应拒绝 AI 打标");
+assert.equal((await post(`${base}/api/assets/retranscode`, { id: memberAsset.id })).status, 400, "图片素材应拒绝重新转码");
+
+console.log("✓ 全部通过：项目 / 工作区 / 上传 / 缩略图 / 原图 / 去重 / 改元数据 / 改维度名称 / 画板迁移与重复实例 / 安全替换图片 / 旧库标签迁移 / AI 打标(复用·裁决·降级·上传前建议) / 标签管理(重命名·合并·删除·清理) / AI 服务配置(状态·保存·掩码·测试连接·模型列表·环境变量覆盖) / 回收站(软删-列出-恢复-彻底删) / 登录页公告(公开读取·仅管理员可写·启用开关) / 账号系统(首次初始化·登录·权限隔离·成员管理·停用踢下线·重置密码·删除保留素材·登录审计·退出) / 视频(上传·异步转码·时长·封面·Range/206·同类型替换·AI 拦截)");
 process.exit(0);

@@ -12,6 +12,7 @@ export type EditableAssetMetadata = {
   description: string;
   notes: string;
   sourceUrl: string;
+  mimeType?: string;
 };
 
 export type AssetMetadataUpdate = Omit<EditableAssetMetadata, "id">;
@@ -243,7 +244,7 @@ export const AssetMetadataEditor = forwardRef<AssetMetadataEditorHandle, {
             <button type="button" aria-label="添加标签" disabled={!tagQuery.trim() || tags.length >= MAX_TAGS} onClick={() => addTag()}>
               <Plus size={13} />
             </button>
-            {onAiTag ? (
+            {onAiTag && !(asset.mimeType ?? "").startsWith("video/") ? (
               <button
                 className="ai-tag-button"
                 type="button"
