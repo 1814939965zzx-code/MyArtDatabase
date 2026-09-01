@@ -138,7 +138,48 @@
       showPanel(message.payload);
       return;
     }
+    if (message.type === "find-video-urls") {
+      sendResponse({ ok: true, urls: findVideoUrls() });
+      return;
+    }
   });
+
+  /**
+   * 扫描页面可用的视频直链（mp4 优先，其次 m3u8），用于 MSE/blob 流式播放页面
+   * （如 Pinterest）右键抓不到视频时的回退：<video>/<source>、资源条目、页面内嵌 JSON。
+   */
+  function findVideoUrls() {
+    const candidates = new Set();
+    try {
+      document.querySelectorAll("video").forEach((video) => {
+        for (const src of [video.currentSrc, video.src]) {
+          if (typeof src === "string" && /^https?:/i.test(src)) candidates.add(src);
+        }
+        video.querySelectorAll("source").forEach((source) => {
+          if (typeof source.src === "string" && /^https?:/i.test(source.src)) candidates.add(source.src);
+        });
+      });
+    } catch { /* 忽略 */ }
+    try {
+      performance.getEntriesByType("resource").forEach((entry) => {
+        if (/\.(mp4|m3u8)(\?|#|$)/i.test(entry.name)) candidates.add(entry.name);
+      });
+    } catch { /* 忽略 */ }
+    try {
+      const html = document.documentElement.outerHTML;
+      const re = /https:\/\/[^\s"'\\<>]+?\.(?:mp4|m3u8)(?:[^\s"'\\<>]*)?/gi;
+      let match;
+      while ((match = re.exec(html))) candidates.add(match[0]);
+    } catch { /* 忽略 */ }
+    const score = (url) => {
+      const lower = url.toLowerCase();
+      if (lower.endsWith(".m3u8")) return 1;
+      // 命名上像标准编码的直链（expMp4 等）优先于 HEVC 变体
+      if (/expmp4|hls|_720w|_1080w/.test(lower)) return 3;
+      return 2;
+    };
+    return [...candidates].filter((url) => /^https?:/i.test(url)).sort((a, b) => score(b) - score(a));
+  }
 
   /** 向后台发消息并等待回复；带超时兜底，绝不永久挂起。 */
   function send(message, timeoutMs = 12000) {

@@ -141,32 +141,22 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
       return;
     }
 
-    // 1. 下载图片/视频
-    if (!info.srcUrl) {
-      notify(tabId, { type: "toast", message: "无法获取素材（该元素没有可用地址，可能是懒加载未完成）", kind: "error" });
-      return;
-    }
-    let bytes, declaredMime;
-    try {
-      ({ bytes, mime: declaredMime } = await fetchMedia(info.srcUrl, tabId));
-    } catch (error) {
-      notify(tabId, { type: "toast", message: "无法获取素材：" + error.message, kind: "error" });
-      return;
-    }
-
-    // 2. 校验格式与大小（图片 50MB / 视频 200MB，与服务端一致）
-    const imageMime = detectImage(bytes, declaredMime);
-    const videoMime = imageMime ? null : detectVideo(bytes, declaredMime);
-    const mime = imageMime || videoMime;
-    const kind = imageMime ? "image" : videoMime ? "video" : null;
-    if (!kind) {
+    // 1. 下载并识别素材（图片/视频）；
+    //    视频上下文（MSE/blob 流式、懒加载无 src）直接抓不到时回退扫描页面直链
+    const capture = await captureMedia(info, tabId);
+    if (!capture) {
       notify(tabId, {
         type: "toast",
-        message: "仅支持 JPEG/PNG/WebP/GIF/SVG/TIFF/HEIC 图片或 mp4/webm/mov/mkv/avi 等视频",
+        message: info.mediaType === "video"
+          ? "无法获取素材：该页面使用流式播放（blob:/HLS），且未在页面中找到可下载的视频直链"
+          : "无法获取素材：该元素没有可用地址，可能是懒加载未完成",
         kind: "error",
       });
       return;
     }
+    const { bytes, mime, kind } = capture;
+
+    // 2. 校验大小（图片 50MB / 视频 200MB，与服务端一致）
     const maxBytes = kind === "video" ? MAX_VIDEO_BYTES : MAX_IMAGE_BYTES;
     if (bytes.byteLength > maxBytes) {
       notify(tabId, { type: "toast", message: kind === "video" ? "视频超过 200MB，无法保存" : "图片超过 50MB，无法保存", kind: "error" });
@@ -229,6 +219,36 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
 });
 
 // ---- 素材下载与校验 ----
+
+/**
+ * 下载并识别素材：先抓 info.srcUrl；视频上下文抓取失败或无法识别时，
+ * 回退请求内容脚本扫描页面直链（mp4 优先，其次 m3u8），逐个尝试下载识别。
+ */
+async function captureMedia(info, tabId) {
+  if (info.srcUrl) {
+    try {
+      const { bytes, mime } = await fetchMedia(info.srcUrl, tabId);
+      const imageMime = detectImage(bytes, mime);
+      const videoMime = imageMime ? null : detectVideo(bytes, mime);
+      if (imageMime || videoMime) return { bytes, mime: imageMime || videoMime, kind: imageMime ? "image" : "video" };
+    } catch {
+      // 落到页面直链回退
+    }
+  }
+  if (info.mediaType === "video") {
+    const reply = await chrome.tabs.sendMessage(tabId, { type: "find-video-urls" }).catch(() => null);
+    for (const url of reply?.urls || []) {
+      try {
+        const { bytes, mime } = await fetchMedia(url, tabId);
+        const videoMime = detectVideo(bytes, mime);
+        if (videoMime) return { bytes, mime: videoMime, kind: "video" };
+      } catch {
+        // 尝试下一个候选
+      }
+    }
+  }
+  return null;
+}
 
 async function fetchMedia(srcUrl, tabId) {
   if (/^data:/i.test(srcUrl)) {
