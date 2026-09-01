@@ -15,7 +15,6 @@
 
   let host = null;
   let panelEl = null;
-  let previewUrl = null;
   let panelState = null;
 
   const STYLES = `
@@ -248,19 +247,13 @@
     });
     document.addEventListener("keydown", onPanelKeydown);
 
-    // 预览：图片由后台传来的字节在本地构建 Blob；视频/超大图只显示占位（不跨上下文传大字节）
+    // 预览：图片由后台传来的 dataURL 直接显示（扩展消息通道传二进制不可靠，见 background.js）；
+    // 视频/超大图只显示占位（不跨上下文传大字节）
     const previewBox = overlay.querySelector(".preview");
-    if (payload.bytes) {
-      try {
-        previewUrl = URL.createObjectURL(new Blob([payload.bytes], { type: payload.mime }));
-        const img = document.createElement("img");
-        img.src = previewUrl;
-        previewBox.appendChild(img);
-      } catch {
-        showToast("图片预览失败，请重新右键采集", "error");
-        closePanel();
-        return;
-      }
+    if (payload.previewDataUrl) {
+      const img = document.createElement("img");
+      img.src = payload.previewDataUrl;
+      previewBox.appendChild(img);
     } else if (panelState.kind === "video") {
       previewBox.innerHTML = `
         <div class="video-placeholder">
@@ -302,10 +295,6 @@
     panelEl.remove();
     panelEl = null;
     panelState = null;
-    if (previewUrl) {
-      URL.revokeObjectURL(previewUrl);
-      previewUrl = null;
-    }
     if (!skipNotify) send({ type: "close-panel" }); // 通知后台释放采集会话（尽力而为，不阻塞关闭）
   }
 

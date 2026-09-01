@@ -204,9 +204,13 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
     }
 
     // 4. 字节保留在 SW 会话中，派发确认面板
-    //    图片把字节一并发给内容脚本做预览（>20MB 的降级为占位，避免消息通道超限）；
-    //    视频不传大字节，只显示占位
+    //    图片预览以 dataURL（base64 字符串）随消息下发：扩展消息通道在旧版 Chrome
+    //    （<134）按 JSON 序列化，ArrayBuffer 会变成 {} 导致预览损坏；dataURL 字符串
+    //    在所有版本都安全。>20MB 的降级为占位，避免消息通道超限。
     sessions.set(tabId, { bytes, mime, sha256, kind, at: Date.now() });
+    const previewDataUrl = kind === "image" && bytes.byteLength <= 20 * 1024 * 1024
+      ? arrayBufferToDataUrl(bytes, mime)
+      : null;
     notify(tabId, {
       type: "show-panel",
       payload: {
@@ -216,7 +220,7 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
         pageUrl: info.pageUrl || "",
         srcUrl: info.srcUrl || "",
         fileSize: bytes.byteLength,
-        ...(kind === "image" && bytes.byteLength <= 20 * 1024 * 1024 ? { bytes } : {}),
+        ...(previewDataUrl ? { previewDataUrl } : {}),
       },
     });
   } catch (error) {
@@ -293,6 +297,17 @@ function detectVideo(bytes, declaredMime) {
   ]);
   if (DECLARED_VIDEO_MIMES.has(declaredMime)) return declaredMime;
   return null;
+}
+
+/** ArrayBuffer → data URL（base64），分块拼接避免大数组展开爆栈；扩展消息通道只能安全传字符串。 */
+function arrayBufferToDataUrl(buffer, mime) {
+  const bytes = new Uint8Array(buffer);
+  let binary = "";
+  const CHUNK = 0x8000;
+  for (let i = 0; i < bytes.length; i += CHUNK) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + CHUNK));
+  }
+  return `data:${mime || "application/octet-stream"};base64,${btoa(binary)}`;
 }
 
 async function sha256Hex(bytes) {
