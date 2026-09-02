@@ -27,7 +27,7 @@
 - 运行时：单个原生 Node.js 进程，同时提供 React 页面、`/api/*` 接口、SQLite 数据库和本地图片/视频存储。
 - 账号：两级角色（管理员/成员）；除健康检查与登录相关接口外，全部 `/api/*` 需要登录（HttpOnly Cookie Session 或插件令牌 Bearer 二选一）；首次启动在界面引导创建管理员。
 - 前端：React 19、TypeScript、Vite、Tailwind CSS v4。
-- 浏览器采集：`extension/` 目录是独立的 Chrome 扩展（Manifest V3、原生 JS 零构建、unpacked 加载），右键保存网页图片/视频到素材库，经「插件令牌」（账号设置页生成）认证。
+- 浏览器采集：`extension/` 目录是独立的 Chrome 扩展（Manifest V3、原生 JS 零构建、unpacked 加载），右键保存网页图片/视频到素材库，经「插件令牌」（顶部用户菜单 → 插件令牌面板生成）认证。
 - 后端：`node:http`、Node 内置 `node:sqlite`、`sharp`、`ffmpeg-static`（视频转码与抽帧）。
 - 环境要求：Node.js `>=23.4.0`，建议 Node.js 24。
 - 默认开发地址：`http://localhost:3000`。
@@ -47,7 +47,8 @@
 | `app/src/TagFilterBar.tsx` | 素材标签筛选模块（全部素材页与项目素材页共用） |
 | `app/src/AiConfigModal.tsx` | AI 服务配置页（key 服务端保存、测试连接；仅管理员可见入口） |
 | `app/src/UserManagerModal.tsx` | 成员管理面板（仅管理员：创建/停用/重置密码/删除/改角色/登录审计） |
-| `app/src/AccountSettingsModal.tsx` | 账号设置（改显示名/密码、插件令牌管理） |
+| `app/src/AccountSettingsModal.tsx` | 账号设置（改显示名/密码） |
+| `app/src/TokenSettingsModal.tsx` | 插件令牌面板（生成/吊销/复制令牌、浏览器扩展下载与使用说明） |
 | `app/server/routes.js` | 全部 `/api/*` 路由（含登录、用户管理、权限校验、插件令牌 CRUD） |
 | `app/server/auth.js` | 密码哈希（scrypt）、会话创建/解析、cookie、登录审计与插件令牌（创建/列表/吊销/Bearer 解析） |
 | `app/server/db.js` | SQLite 表结构、迁移与示例数据（含 users/sessions/login_logs/api_tokens） |

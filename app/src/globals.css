@@ -325,7 +325,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible {
 .announcement-toggle input { width: auto !important; margin: 0 !important; accent-color: var(--accent); }
 .modal-actions { margin-top: 6px; display: flex; justify-content: flex-end; gap: 8px; }
 /* 账号设置：插件令牌 */
-.account-settings-card { max-height: calc(100vh - 40px); overflow-y: auto; }
+.account-settings-card, .token-settings-card { max-height: calc(100vh - 40px); overflow-y: auto; }
 .api-tokens-section { margin-top: 22px; padding-top: 18px; border-top: 1px solid var(--soft-line); }
 .api-tokens-section h3 { margin: 0; font-size: 14px; }
 .api-tokens-section > .eyebrow { margin: 0 0 4px; }
@@ -358,10 +358,17 @@ button:focus-visible, input:focus-visible, textarea:focus-visible {
 .primary-button { border: 1px solid var(--accent); background: var(--accent); color: white; }
 .primary-button:hover { background: var(--accent-dark); border-color: var(--accent-dark); }
 .secondary-button { border: 1px solid var(--line); background: white; }
-/* 账号设置：插件令牌区块的扩展下载入口 */
-.extension-download-row { margin: 12px 0 16px; padding: 11px 12px; border: 1px dashed var(--line); border-radius: 8px; display: flex; align-items: center; justify-content: space-between; gap: 12px; }
-.extension-download-row span { color: var(--muted); font-size: 12px; line-height: 1.5; }
-.extension-download-row a.secondary-button { flex: none; text-decoration: none; }
+/* 账号设置：插件令牌区块的扩展下载入口（无外框：标题行 + 使用说明有序列表 + 支持浏览器） */
+.extension-download-row { margin: 14px 0 18px; display: flex; flex-direction: column; align-items: stretch; gap: 4px; }
+.extension-download-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 6px; }
+.extension-download-head strong { font-size: 13px; font-weight: 650; color: var(--ink); }
+.extension-download-label { margin: 4px 0 0; font-size: 12px; font-weight: 650; color: var(--ink); }
+.extension-steps { margin: 4px 0 0; padding-left: 0; list-style: decimal; list-style-position: inside; display: flex; flex-direction: column; gap: 3px; }
+.extension-steps li { color: var(--muted); font-size: 12px; line-height: 1.65; }
+.extension-steps li::marker { color: var(--muted); font-weight: 600; }
+.extension-browsers { margin: 6px 0 0; color: var(--muted); font-size: 12px; line-height: 1.65; }
+.extension-browsers b { color: var(--ink); font-weight: 650; }
+.extension-download-row a.secondary-button, .extension-download-row a.primary-button { flex: none; text-decoration: none; }
 .primary-button:disabled, .secondary-button:disabled { opacity: .55; cursor: wait; }
 .danger-zone { margin-top: 5px; padding: 12px; display: flex; align-items: center; justify-content: space-between; border: 1px solid #ead7d1; background: #fbf3f0; }
 .danger-zone button { border: 0; background: transparent; color: #b34127; display: flex; align-items: center; gap: 6px; font-size: 12px; cursor: pointer; }

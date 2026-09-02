@@ -8,6 +8,7 @@ import {
   Grid2X2,
   ImageIcon,
   ImagePlus,
+  KeyRound,
   LayoutGrid,
   List,
   LoaderCircle,
@@ -47,6 +48,7 @@ import { DimensionPreview } from "./DimensionPreview";
 import { HomeView } from "./HomeView";
 import { TagFilterBar } from "./TagFilterBar";
 import { TagManager, type TagEntry } from "./TagManager";
+import { TokenSettingsModal } from "./TokenSettingsModal";
 import { TrashView, type TrashedAsset } from "./TrashView";
 import { UploadModal } from "./UploadModal";
 import { UserManagerModal } from "./UserManagerModal";
@@ -168,6 +170,7 @@ export function ArtDatabaseApp({ user, onLogout }: { user: SessionUser; onLogout
   const [projectTagManagerOpen, setProjectTagManagerOpen] = useState(false);
   const [userMenuOpen, setUserMenuOpen] = useState(false);
   const [accountOpen, setAccountOpen] = useState(false);
+  const [tokenSettingsOpen, setTokenSettingsOpen] = useState(false);
   const [userManagerOpen, setUserManagerOpen] = useState(false);
   const [announcementOpen, setAnnouncementOpen] = useState(false);
   const [currentUser, setCurrentUser] = useState<SessionUser>(user);
@@ -896,6 +899,7 @@ export function ArtDatabaseApp({ user, onLogout }: { user: SessionUser; onLogout
               {userMenuOpen ? (
                 <div className="user-menu-dropdown" role="menu">
                   <button type="button" role="menuitem" onClick={() => { setAccountOpen(true); setUserMenuOpen(false); }}><UserCog size={15} />账号设置</button>
+                  <button type="button" role="menuitem" onClick={() => { setTokenSettingsOpen(true); setUserMenuOpen(false); }}><KeyRound size={15} />插件令牌</button>
                   {currentUser.role === "admin" ? (
                     <button type="button" role="menuitem" onClick={() => { setUserManagerOpen(true); setUserMenuOpen(false); }}><Users size={15} />成员管理</button>
                   ) : null}
@@ -1101,6 +1105,10 @@ export function ArtDatabaseApp({ user, onLogout }: { user: SessionUser; onLogout
           onClose={() => setAccountOpen(false)}
           onUserChange={(next) => { setCurrentUser(next); }}
         />
+      ) : null}
+
+      {tokenSettingsOpen ? (
+        <TokenSettingsModal onClose={() => setTokenSettingsOpen(false)} />
       ) : null}
 
       {userManagerOpen ? (
