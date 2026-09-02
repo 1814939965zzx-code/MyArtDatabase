@@ -46,7 +46,9 @@ sudo INIT_EMPTY_DB=1 ./scripts/setup-server.sh
   ↓
 git fetch + fast-forward（本地有未提交修改、分支不对或无法 ff 则停止）
   ↓
-npm ci + typecheck + test + build
+依赖安装（package.json / package-lock.json 或 Node 版本未变、且 node_modules 完整时跳过 npm ci）
+  ↓
+typecheck + test + build
   ↓
 重启 systemd
   ↓
@@ -56,6 +58,8 @@ npm ci + typecheck + test + build
 ```
 
 **任何一项异常都以非零退出并输出恢复指引**，不会出现“有警告但仍成功”。服务器无需先手动 `git pull`。
+
+依赖不会每次部署都全量重装：`npm ci` 会删除 `node_modules` 重建并重跑 postinstall（ffmpeg-static 会重新下载二进制），所以仅在 `package.json`/`package-lock.json` 或 Node 版本变化、或 `node_modules` 不完整时才执行。上次成功安装的依赖指纹记录在仓库 `tmp/installed-deps.sha256`（`npm ci` 成功后写入，中断/失败不会污染），纯代码提交的部署会跳过安装；依赖真正变化时仍从锁文件精确重装。
 
 ## 生产检查：`./scripts/check-production.sh`
 
@@ -91,7 +95,7 @@ npm ci + typecheck + test + build
 
 ### 视频转码（内置）
 
-视频素材上传后由服务端异步统一转码为低码率 H.264 MP4（最长边 ≤1280、码率上限 2Mbps）。转码依赖 **`ffmpeg-static`**（npm 依赖，自带静态二进制），`npm ci` 即完成安装，**无需在服务器系统层面安装 ffmpeg**；`deploy.sh` 的预检/构建流程不变。
+视频素材上传后由服务端异步统一转码为低码率 H.264 MP4（最长边 ≤1280、码率上限 2Mbps）。转码依赖 **`ffmpeg-static`**（npm 依赖，自带静态二进制），首次安装由 `npm ci` 完成（日常部署依赖未变化时会跳过 `npm ci`，见上文），**无需在服务器系统层面安装 ffmpeg**；`deploy.sh` 的预检/构建流程不变。
 
 - 转码队列在单进程内单并发串行执行，不阻塞上传请求；
 - 转码成功且数据库切换到转码产物后才删除原文件；失败保留原文件，详情页可“重新转码”；

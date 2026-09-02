@@ -2,7 +2,8 @@
 # 日常一键部署。服务器上唯一的部署命令：./scripts/deploy.sh
 # 配置从 /etc/artdatabase/env 读取（由 setup-server.sh 生成），无需手动传参。
 #
-# 流程：数据预检 → git fetch + fast-forward → npm ci + typecheck + test + build
+# 流程：数据预检 → git fetch + fast-forward → 依赖安装（package.json/package-lock.json
+#       或 Node 版本未变、且 node_modules 完整时跳过 npm ci）→ typecheck + test + build
 #       → 重启 systemd → 页面/API/数据库/图片校验 → 输出部署成功。
 # 任何一步失败都以非零退出并输出恢复指引，绝不“有警告但仍成功”。
 
@@ -71,10 +72,43 @@ log "已对齐提交 ${LOCAL_COMMIT}"
 require_supported_node
 
 # ---------------- 构建与测试 ----------------
-log "安装锁定依赖、类型检查、测试并构建前端"
+# npm ci 每次都会删除 node_modules 并从 package-lock.json 全量重装（含 postinstall，
+# 如 ffmpeg-static 重新下载二进制），所以只在依赖真正变化时执行。指纹文件
+# tmp/installed-deps.sha256 记录上次 npm ci 成功时的依赖状态（package.json +
+# package-lock.json + Node 版本），且只在成功后写入：中断或失败不会污染它，
+# 下次部署仍会安全地全量重装。
+log "类型检查、测试并构建前端"
 (
   cd "${APP_DIR}"
-  npm ci --no-audit --no-fund
+
+  DEPS_STATE_FILE="${REPO_DIR}/tmp/installed-deps.sha256"
+  deps_fingerprint() {
+    node -e '
+      const fs = require("node:fs");
+      const crypto = require("node:crypto");
+      const hash = crypto.createHash("sha256");
+      for (const file of ["package.json", "package-lock.json"]) hash.update(fs.readFileSync(file));
+      hash.update(process.versions.node); // Node 版本变化会改变 sharp 等原生依赖的 ABI
+      process.stdout.write(hash.digest("hex"));
+    '
+  }
+  # npm ls 校验树满足 package.json；sharp 走 optional 平台包、ffmpeg 二进制由
+  # postinstall 下载，npm ls 都看不见，需单独探测（与本项目运行时用法一致）。
+  deps_usable() {
+    npm ls --depth=0 >/dev/null 2>&1 || return 1
+    node -e 'require("sharp"); const fs = require("node:fs"); if (!fs.existsSync(require("ffmpeg-static"))) process.exit(1);' || return 1
+  }
+
+  if [[ -f "${DEPS_STATE_FILE}" && -d "node_modules" ]] \
+    && [[ "$(deps_fingerprint)" == "$(<"${DEPS_STATE_FILE}")" ]] \
+    && deps_usable; then
+    log "依赖未变化且 node_modules 完整，跳过 npm ci"
+  else
+    log "依赖清单已变化或依赖树不完整，执行 npm ci"
+    npm ci --no-audit --no-fund
+    deps_fingerprint > "${DEPS_STATE_FILE}"
+  fi
+
   npm run typecheck
   npm test
   npm run build
