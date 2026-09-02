@@ -81,12 +81,56 @@ export function AccountSettingsModal({
 
   async function copyToken() {
     if (!freshToken) return;
-    try {
-      await navigator.clipboard.writeText(freshToken.token);
-      setTokenMessage({ kind: "ok", text: "已复制到剪贴板" });
-    } catch {
-      setTokenMessage({ kind: "error", text: "复制失败，请手动选择复制" });
+    const token = freshToken.token;
+
+    // 1) Clipboard API 只在 https / localhost（安全上下文）可用；
+    //    局域网 http（如 http://192.168.x.x:3000）访问时 navigator.clipboard 不存在，必须走兜底。
+    if (window.isSecureContext && navigator.clipboard) {
+      try {
+        await navigator.clipboard.writeText(token);
+        setTokenMessage({ kind: "ok", text: "已复制到剪贴板" });
+        return;
+      } catch {
+        // 继续走兜底
+      }
     }
+
+    // 2) 兜底：临时 textarea + execCommand("copy")，非安全上下文也可用（需在用户手势内调用）
+    try {
+      const textarea = document.createElement("textarea");
+      textarea.value = token;
+      textarea.setAttribute("readonly", "");
+      textarea.style.position = "fixed";
+      textarea.style.top = "0";
+      textarea.style.left = "0";
+      textarea.style.opacity = "0";
+      document.body.appendChild(textarea);
+      textarea.focus();
+      textarea.select();
+      const ok = document.execCommand("copy");
+      textarea.remove();
+      if (ok) {
+        setTokenMessage({ kind: "ok", text: "已复制到剪贴板" });
+        return;
+      }
+    } catch {
+      // 忽略，走最后兜底
+    }
+
+    // 3) 最后兜底：全选令牌文本，提示手动 Ctrl+C
+    selectTokenText();
+    setTokenMessage({ kind: "error", text: "自动复制不可用，已为你选中令牌，请按 Ctrl+C 复制" });
+  }
+
+  /** 选中令牌文本，便于用户手动复制。 */
+  function selectTokenText() {
+    const code = document.getElementById("fresh-token-text");
+    if (!code) return;
+    const range = document.createRange();
+    range.selectNodeContents(code);
+    const selection = window.getSelection();
+    selection?.removeAllRanges();
+    selection?.addRange(range);
   }
 
   async function save(event: FormEvent<HTMLFormElement>) {
@@ -177,7 +221,7 @@ export function AccountSettingsModal({
             <div className="fresh-token">
               <p>令牌已生成，明文只显示这一次，请立即复制保存：</p>
               <div className="fresh-token-row">
-                <code>{freshToken.token}</code>
+                <code id="fresh-token-text">{freshToken.token}</code>
                 <button className="secondary-button" type="button" onClick={() => void copyToken()}>
                   <Copy size={13} /> 复制
                 </button>

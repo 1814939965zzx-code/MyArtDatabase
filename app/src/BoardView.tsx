@@ -2,7 +2,7 @@
 
 /* eslint-disable react-hooks/exhaustive-deps, react-hooks/set-state-in-effect */
 
-import { AlignCenter, AlignLeft, AlignRight, ArrowDownToLine, ArrowUpToLine, Bold, Check, ChevronDown, Circle, Eye, EyeOff, Frame, ImagePlus, Italic, LoaderCircle, Minus, MousePointer2, MoveHorizontal, MoveVertical, MoveUpRight, Pencil, Plus, Search, Square, Strikethrough, Tag, Trash2, Type, Underline } from "lucide-react";
+import { AlignCenter, AlignLeft, AlignRight, ArrowDownToLine, ArrowUpToLine, Bold, Check, ChevronDown, Circle, Eye, EyeOff, Frame, ImagePlus, Italic, LoaderCircle, Maximize2, Minimize2, Minus, MousePointer2, MoveHorizontal, MoveVertical, MoveUpRight, Pencil, Plus, Search, Square, Strikethrough, Tag, Trash2, Type, Underline } from "lucide-react";
 import { DragEvent, KeyboardEvent, MouseEvent, PointerEvent, useEffect, useRef, useState, type CSSProperties } from "react";
 import { notifyUnauthorized } from "./api";
 
@@ -43,10 +43,10 @@ type Interaction = {
   direction?: ResizeDirection;
 };
 type PanState = { pointerId: number; startX: number; startY: number; originX: number; originY: number };
-type FrameMoveState = { pointerId: number; frameId: string; startX: number; startY: number; x: number; y: number; itemStarts: Record<string, { x: number; y: number }> };
+type FrameMoveState = { pointerId: number; frameIds: string[]; startX: number; startY: number; frameStarts: Record<string, { x: number; y: number }>; itemStarts: Record<string, { x: number; y: number }>; group: boolean };
 type ResizeDirection = "n" | "ne" | "e" | "se" | "s" | "sw" | "w" | "nw";
 type FrameResizeState = { pointerId: number; frameId: string; direction: ResizeDirection; startX: number; startY: number; frame: PageFrame };
-type MarqueeState = { pointerId: number; startX: number; startY: number; currentX: number; currentY: number; preservedIds: string[] };
+type MarqueeState = { pointerId: number; startX: number; startY: number; currentX: number; currentY: number; preservedItemIds: string[]; preservedFrameIds: string[] };
 type SnapGuides = { vertical: number[]; horizontal: number[] };
 type LegacyFrameSettings = { name: string; width: number; height: number };
 type DrawState = { pointerId: number; tool: Tool; start: Point; current: Point; points: Point[] };
@@ -60,7 +60,6 @@ const MIN_ZOOM = .2;
 const MAX_ZOOM = 4;
 /** 自动宽度文本的限宽：短文本贴合内容，长文本在限宽内自动换行。 */
 const AUTO_WIDTH_MAX = 360;
-const FRAME_GAP = 160;
 const SNAP_DISTANCE_PX = 7;
 const RESIZE_DIRECTIONS: ResizeDirection[] = ["nw", "n", "ne", "e", "se", "s", "sw", "w"];
 const TOOLS: { id: Tool; icon: typeof MousePointer2; label: string; shortcut?: string }[] = [
@@ -126,6 +125,7 @@ export function BoardView({ projectId, assets, onMessage, onSelectAsset }: { pro
   const [items, setItems] = useState<CanvasItem[]>([]);
   const [framesByCanvas, setFramesByCanvas] = useState<Record<string, PageFrame[]>>({});
   const [selectedFrameId, setSelectedFrameId] = useState<string | null>(null);
+  const [selectedFrameIds, setSelectedFrameIds] = useState<string[]>([]);
   const [selectedItemId, setSelectedItemId] = useState<string | null>(null);
   const [selectedItemIds, setSelectedItemIds] = useState<string[]>([]);
   const [marquee, setMarquee] = useState<MarqueeState | null>(null);
@@ -133,6 +133,8 @@ export function BoardView({ projectId, assets, onMessage, onSelectAsset }: { pro
   const [view, setView] = useState({ zoom: INITIAL_ZOOM, x: 0, y: 0 });
   const [loading, setLoading] = useState(true);
   const [assetTrayOpen, setAssetTrayOpen] = useState(true);
+  // 专注/全屏模式：与维度预览工具栏的“放大”一致——画板以固定层覆盖整个浏览器可视区（页面内部实现，不调用浏览器 Fullscreen）
+  const [focusMode, setFocusMode] = useState(false);
   const [panning, setPanning] = useState(false);
   const [spaceHeld, setSpaceHeld] = useState(false);
   const [editingPageId, setEditingPageId] = useState<string | null>(null);
@@ -141,7 +143,9 @@ export function BoardView({ projectId, assets, onMessage, onSelectAsset }: { pro
   const [frameNameDraft, setFrameNameDraft] = useState("");
   const [frameMenu, setFrameMenu] = useState<{ frameId: string; x: number; y: number } | null>(null);
   const [itemMenu, setItemMenu] = useState<{ itemId: string; x: number; y: number } | null>(null);
-  const [confirmFrameDeleteId, setConfirmFrameDeleteId] = useState<string | null>(null);
+  const [confirmFrameDeleteIds, setConfirmFrameDeleteIds] = useState<string[]>([]);
+  // 正在被拖动（移动/缩放）的 Frame：其尺寸文本只在拖动时显示
+  const [frameDragId, setFrameDragId] = useState<string | null>(null);
   // ---- 标记元素（与图片混排，仅有一键隐藏开关） ----
   const [markupHidden, setMarkupHidden] = useState(false);
   const [tool, setTool] = useState<Tool>("pointer");
@@ -150,6 +154,9 @@ export function BoardView({ projectId, assets, onMessage, onSelectAsset }: { pro
   const [fontSize, setFontSize] = useState(18);
   const [drawPreview, setDrawPreview] = useState<{ kind: ShapeKind; start: Point; current: Point; points: Point[]; stroke: string; strokeWidth: number } | null>(null);
   const [editingTextId, setEditingTextId] = useState<string | null>(null);
+  // ---- “新建 Frame”拖拽创建态：点击按钮后按住左键拖动自定义大小，不再固定默认尺寸 ----
+  const [frameMode, setFrameMode] = useState(false);
+  const [frameDraft, setFrameDraft] = useState<{ start: Point; current: Point } | null>(null);
   // ---- 托盘搜索 / 标签 ----
   const [searchInput, setSearchInput] = useState("");
   const [tagFilter, setTagFilter] = useState("");
@@ -162,6 +169,7 @@ export function BoardView({ projectId, assets, onMessage, onSelectAsset }: { pro
   const frameResizeRef = useRef<FrameResizeState | null>(null);
   const marqueeRef = useRef<MarqueeState | null>(null);
   const drawRef = useRef<DrawState | null>(null);
+  const frameDrawRef = useRef<{ pointerId: number; start: Point; clientX: number; clientY: number } | null>(null);
   const batchRef = useRef(false);
   const creatingDefaultPage = useRef(false);
   const viewportRef = useRef<HTMLDivElement>(null);
@@ -177,10 +185,28 @@ export function BoardView({ projectId, assets, onMessage, onSelectAsset }: { pro
   const drawingTool = tool !== "pointer" && tool !== "text";
 
   function selectItems(ids: string[], primaryId: string | null = ids.at(-1) ?? null) {
+    // 只设置素材元素选择；是否清 Frame 由调用方按“单选/多选混合”语义决定
     const unique = [...new Set(ids)];
     setSelectedItemIds(unique);
     setSelectedItemId(primaryId && unique.includes(primaryId) ? primaryId : unique.at(-1) ?? null);
   }
+  /** 选择 Frame（可多选）：同时清掉素材元素选择（单选 Frame 语义） */
+  function selectFrames(ids: string[], primaryId: string | null = ids.at(-1) ?? null) {
+    const unique = [...new Set(ids)];
+    setSelectedItemIds([]); setSelectedItemId(null);
+    setSelectedFrameIds(unique);
+    setSelectedFrameId(primaryId && unique.includes(primaryId) ? primaryId : unique.at(-1) ?? null);
+  }
+  /** 素材元素与 Frame 同时选中（混合多选，供框选与整体拖动使用） */
+  function selectMixed(itemIds: string[], frameIds: string[]) {
+    const itemsUnique = [...new Set(itemIds)];
+    const framesUnique = [...new Set(frameIds)];
+    setSelectedItemIds(itemsUnique);
+    setSelectedItemId(itemsUnique.at(-1) ?? null);
+    setSelectedFrameIds(framesUnique);
+    setSelectedFrameId(framesUnique.at(-1) ?? null);
+  }
+  function clearFrameSelection() { setSelectedFrameIds([]); setSelectedFrameId(null); }
 
   function nearestSnap(moving: number[], targets: number[], threshold: number) {
     let best: { delta: number; guide: number } | null = null;
@@ -247,6 +273,12 @@ export function BoardView({ projectId, assets, onMessage, onSelectAsset }: { pro
     } catch { setFramesByCanvas({}); }
   }, [frameStorageKey, legacyFrameStorageKey]);
 
+  // 全屏专注时锁定页面滚动（与维度预览专注模式一致）
+  useEffect(() => {
+    document.body.classList.toggle("board-focus-active", focusMode);
+    return () => document.body.classList.remove("board-focus-active");
+  }, [focusMode]);
+
   // 旧数据一次性迁移：把旧的“相对 Frame”坐标换算为自由画布绝对坐标，并标记 parentFrameId。
   // 另：始终按“真实几何与 Frame 相交”归一化元素的归属（跟随 Frame 位移/删除）。
   useEffect(() => {
@@ -293,14 +325,14 @@ export function BoardView({ projectId, assets, onMessage, onSelectAsset }: { pro
   useEffect(() => { void loadCanvases().catch((error) => { onMessage(error instanceof Error ? error.message : "Page 载入失败"); setLoading(false); }); }, [projectId]);
 
   useEffect(() => {
-    setSelectedFrameId(null); selectItems([]); setMarkupHidden(false); setEditingTextId(null); setDrawPreview(null);
+    clearFrameSelection(); selectItems([]); setMarkupHidden(false); setEditingTextId(null); setDrawPreview(null); setFrameDraft(null); setFrameMode(false); setFrameDragId(null); frameDrawRef.current = null;
     void loadCanvas(canvasId).catch((error) => onMessage(error instanceof Error ? error.message : "Page 载入失败"));
   }, [canvasId]);
 
   useEffect(() => {
     if (!canvasId) return;
     const timer = window.setInterval(() => {
-      if (!interaction.current && !panRef.current && !frameMoveRef.current && !frameResizeRef.current && !drawRef.current && !batchRef.current) void loadCanvas(canvasId, true).catch(() => undefined);
+      if (!interaction.current && !panRef.current && !frameMoveRef.current && !frameResizeRef.current && !drawRef.current && !frameDrawRef.current && !batchRef.current) void loadCanvas(canvasId, true).catch(() => undefined);
     }, 900);
     return () => window.clearInterval(timer);
   }, [canvasId, canvas?.revision]);
@@ -323,20 +355,23 @@ export function BoardView({ projectId, assets, onMessage, onSelectAsset }: { pro
     const toolByKey: Record<string, Tool> = { v: "pointer", t: "text", r: "rect", o: "ellipse" };
     const down = (event: globalThis.KeyboardEvent) => {
       if (event.code === "Space" && !editable(event.target)) { event.preventDefault(); setSpaceHeld(true); }
-      if (event.key === "Escape") { setFrameMenu(null); setItemMenu(null); if (drawRef.current) drawRef.current = null; setDrawPreview(null); setTool("pointer"); }
+      if (event.key === "Escape") { setFrameMenu(null); setItemMenu(null); if (drawRef.current) drawRef.current = null; setDrawPreview(null); frameDrawRef.current = null; setFrameDraft(null); setFrameMode(false); setTool("pointer"); }
       if (event.key === "Delete" || event.key === "Backspace") {
         if (editable(event.target)) return;
-        if (selectedItemIds.length) { event.preventDefault(); void deleteCanvasItems(selectedItemIds); }
+        if (!selectedItemIds.length && !selectedFrameIds.length) return;
+        event.preventDefault();
+        if (selectedItemIds.length) void deleteCanvasItems(selectedItemIds);
+        if (selectedFrameIds.length) requestFrameDeletionMany(selectedFrameIds);
       }
       if (!editable(event.target)) {
         const tool = toolByKey[event.key.toLowerCase()];
-        if (tool) { setTool(tool); if (tool !== "pointer") setMarkupHidden(false); }
+        if (tool) { setTool(tool); setFrameMode(false); setFrameDraft(null); if (tool !== "pointer") setMarkupHidden(false); }
       }
     };
     const up = (event: globalThis.KeyboardEvent) => { if (event.code === "Space") setSpaceHeld(false); };
     window.addEventListener("keydown", down); window.addEventListener("keyup", up);
     return () => { window.removeEventListener("keydown", down); window.removeEventListener("keyup", up); };
-  }, [selectedItemIds]);
+  }, [selectedItemIds, selectedFrameIds]);
 
   useEffect(() => {
     if (!frameMenu && !itemMenu) return;
@@ -373,17 +408,48 @@ export function BoardView({ projectId, assets, onMessage, onSelectAsset }: { pro
     } catch (error) { onMessage(error instanceof Error ? error.message : "创建失败"); }
   }
 
-  function createFrame() {
+  // ---- “新建 Frame”：点击按钮进入创建态，按住左键拖动出自定义大小/位置的 Frame（不再固定默认尺寸） ----
+  function startFrameCreateMode() {
     if (!canvasId) return;
-    const right = Math.max(0, ...frames.map((entry) => entry.x + entry.width));
-    const frame: PageFrame = { id: `frame-${canvasId}-${Date.now()}`, name: `Frame ${frames.length + 1}`, x: right + (frames.length ? FRAME_GAP : 0), y: 0, width: DEFAULT_FRAME_WIDTH, height: DEFAULT_FRAME_HEIGHT };
+    if (frameMode) { setFrameMode(false); setFrameDraft(null); return; }
+    setTool("pointer");
+    selectItems([]); clearFrameSelection();
+    setFrameMode(true);
+    onMessage("在画布上按住左键拖动，松手创建自定义大小的 Frame（Esc 或再次点击按钮取消）");
+  }
+  function beginFrameDraw(event: PointerEvent<HTMLDivElement>) {
+    if (event.button !== 0) return;
+    event.preventDefault();
+    const raw = toCanvas(event.clientX, event.clientY);
+    const point = { x: Math.round(raw.x), y: Math.round(raw.y) }; // 对齐像素网格
+    frameDrawRef.current = { pointerId: event.pointerId, start: point, clientX: event.clientX, clientY: event.clientY };
+    setFrameDraft({ start: point, current: point });
+    event.currentTarget.setPointerCapture(event.pointerId);
+  }
+  function moveFrameDraw(event: PointerEvent<HTMLDivElement>) {
+    const active = frameDrawRef.current; if (!active || active.pointerId !== event.pointerId) return;
+    const raw = toCanvas(event.clientX, event.clientY);
+    const point = { x: Math.round(raw.x), y: Math.round(raw.y) }; // 对齐像素网格
+    setFrameDraft({ start: active.start, current: point });
+  }
+  function endFrameDraw(event: PointerEvent<HTMLDivElement>) {
+    const active = frameDrawRef.current; if (!active || active.pointerId !== event.pointerId) return;
+    frameDrawRef.current = null; setFrameDraft(null);
+    // 几乎没拖动（误点）视为取消，仍停留在创建态可重新拖动
+    if (Math.abs(event.clientX - active.clientX) < 4 && Math.abs(event.clientY - active.clientY) < 4) return;
+    commitDrawnFrame(active.start, toCanvas(event.clientX, event.clientY));
+    setFrameMode(false); // 创建完成自动回到指针工具
+  }
+  function commitDrawnFrame(start: Point, end: Point) {
+    if (!canvasId) return;
+    // 坐标与尺寸自动取整，对齐像素网格
+    const left = Math.round(Math.min(start.x, end.x)); const top = Math.round(Math.min(start.y, end.y));
+    const right = Math.round(Math.max(start.x, end.x)); const bottom = Math.round(Math.max(start.y, end.y));
+    const width = right - left; const height = bottom - top;
+    if (!(width > 0) || !(height > 0)) return;
+    const frame: PageFrame = { id: `frame-${canvasId}-${Date.now()}`, name: `Frame ${frames.length + 1}`, x: left, y: top, width, height };
     persistFrames({ ...framesByCanvas, [canvasId]: [...frames, frame] });
-    selectItems([]); setSelectedFrameId(frame.id);
-    const element = viewportRef.current;
-    if (element) {
-      const zoom = Math.max(MIN_ZOOM, Math.min(INITIAL_ZOOM, (element.clientWidth - 120) / frame.width, (element.clientHeight - 120) / frame.height));
-      setView({ zoom, x: (element.clientWidth - frame.width * zoom) / 2 - frame.x * zoom, y: (element.clientHeight - frame.height * zoom) / 2 - frame.y * zoom });
-    }
+    selectFrames([frame.id], frame.id);
     onMessage(`${frame.name} 已创建，把素材拖进去即可归属该 Frame`);
   }
 
@@ -400,7 +466,7 @@ export function BoardView({ projectId, assets, onMessage, onSelectAsset }: { pro
     if (!canvas || !window.confirm(`删除 Page“${canvas.name}”？其中的画板布局也会删除。`)) return;
     try {
       await json(`/api/canvases?id=${encodeURIComponent(canvas.id)}`, { method: "DELETE" });
-      setCanvas(null); setItems([]); setCanvasId(""); setSelectedFrameId(null);
+      setCanvas(null); setItems([]); setCanvasId(""); clearFrameSelection();
       await loadCanvases(); onMessage("Page 已删除");
     } catch (error) { onMessage(error instanceof Error ? error.message : "删除失败"); }
   }
@@ -441,9 +507,15 @@ export function BoardView({ projectId, assets, onMessage, onSelectAsset }: { pro
   function startPan(event: PointerEvent<HTMLDivElement>) {
     if (event.button === 0 && !spaceHeld) {
       const rect = event.currentTarget.getBoundingClientRect();
-      const next = { pointerId: event.pointerId, startX: event.clientX - rect.left, startY: event.clientY - rect.top, currentX: event.clientX - rect.left, currentY: event.clientY - rect.top, preservedIds: event.shiftKey ? selectedItemIds : [] };
-      marqueeRef.current = next; setMarquee(next); setSelectedFrameId(null);
-      if (!event.shiftKey) selectItems([]);
+      const next = {
+        pointerId: event.pointerId,
+        startX: event.clientX - rect.left, startY: event.clientY - rect.top,
+        currentX: event.clientX - rect.left, currentY: event.clientY - rect.top,
+        preservedItemIds: event.shiftKey ? selectedItemIds : [],
+        preservedFrameIds: event.shiftKey ? selectedFrameIds : [],
+      };
+      marqueeRef.current = next; setMarquee(next);
+      if (!event.shiftKey) { selectItems([]); clearFrameSelection(); }
       event.currentTarget.setPointerCapture(event.pointerId);
       return;
     }
@@ -463,8 +535,14 @@ export function BoardView({ projectId, assets, onMessage, onSelectAsset }: { pro
       const top = (Math.min(next.startY, currentY) - view.y) / view.zoom;
       const bottom = (Math.max(next.startY, currentY) - view.y) / view.zoom;
       const selectable = markupHidden ? imageItems : items;
-      const hitIds = selectable.filter((item) => item.x + item.width >= left && item.x <= right && item.y + item.height >= top && item.y <= bottom).map((item) => item.id);
-      selectItems([...next.preservedIds, ...hitIds]);
+      const hitItemIds = selectable.filter((item) => item.x + item.width >= left && item.x <= right && item.y + item.height >= top && item.y <= bottom).map((item) => item.id);
+      const hitFrameIds = frames.filter((entry) => entry.x + entry.width >= left && entry.x <= right && entry.y + entry.height >= top && entry.y <= bottom).map((entry) => entry.id);
+      // 框选支持图片/标记与 Frame 混合多选：矩形内的素材元素与 Frame 一并选中
+      if (hitItemIds.length || hitFrameIds.length || next.preservedItemIds.length || next.preservedFrameIds.length) {
+        selectMixed([...next.preservedItemIds, ...hitItemIds], [...next.preservedFrameIds, ...hitFrameIds]);
+      } else {
+        selectItems([]); clearFrameSelection();
+      }
       return;
     }
     const active = panRef.current; if (!active || active.pointerId !== event.pointerId) return;
@@ -504,36 +582,81 @@ export function BoardView({ projectId, assets, onMessage, onSelectAsset }: { pro
       setCanvas((current) => current ? { ...current, revision } : current);
     } catch (error) { onMessage(error instanceof Error ? error.message : "布局保存失败"); }
   }
+  /** 多 Frame 整体拖动落点：按最终位置逐个保存被移动的元素（各自所属 Frame 不变，不做重归属） */
+  async function persistMovedFrameItems(active: FrameMoveState) {
+    if (!canvas) return;
+    const ids = new Set(Object.keys(active.itemStarts));
+    if (!ids.size) return;
+    const moved = items.filter((item) => ids.has(item.id));
+    if (!moved.length) return;
+    try {
+      let revision = canvas.revision;
+      for (const item of moved) {
+        const data = await json<{ revision: number }>("/api/canvas-items", { method: "PATCH", body: JSON.stringify(item) });
+        revision = data.revision;
+      }
+      setCanvas((current) => current ? { ...current, revision } : current);
+    } catch (error) { onMessage(error instanceof Error ? error.message : "布局保存失败"); }
+  }
 
   function startFrameMove(event: PointerEvent<HTMLElement>, frame: PageFrame) {
     if (isPanGesture(event)) return;
-    event.stopPropagation(); selectItems([]);
-    if (selectedFrameId !== frame.id) { setSelectedFrameId(frame.id); return; }
+    event.stopPropagation();
+    // Shift + 点击：增删 Frame 多选（不启动拖动；保留已选的素材元素，可继续 Shift 点素材构成混合选择）
+    if (event.shiftKey) {
+      const current = selectedFrameIds;
+      const ids = current.includes(frame.id) ? current.filter((id) => id !== frame.id) : [...current, frame.id];
+      setSelectedFrameIds(ids); setSelectedFrameId(ids.at(-1) ?? null);
+      return;
+    }
+    // 与图片一致：未选中的 Frame 在按下瞬间先选中，随后即可直接拖动
+    const inSelection = selectedFrameIds.includes(frame.id);
+    if (!inSelection) selectFrames([frame.id], frame.id);
     if (event.button !== 0 || spaceHeld || editingFrameId === frame.id) return;
     event.currentTarget.setPointerCapture(event.pointerId);
-    // 拖动开始即锁定跟随集合与各自的起点：与 Frame 有交集或已归属该 Frame 的元素一起平移。
-    const itemStarts = Object.fromEntries(items.filter((item) => item.parentFrameId === frame.id || itemFrameId(item) === frame.id).map((item) => [item.id, { x: item.x, y: item.y }]));
-    frameMoveRef.current = { pointerId: event.pointerId, frameId: frame.id, startX: event.clientX, startY: event.clientY, x: frame.x, y: frame.y, itemStarts };
+    // group = 多 Frame，或 Frame 与素材元素混合选中 → 整组拖动（不吸附）；单选 Frame 走原吸附路径
+    const group = inSelection && (selectedFrameIds.length > 1 || selectedItemIds.length > 0);
+    const frameIds = inSelection ? [...selectedFrameIds] : [frame.id];
+    const frameStarts = Object.fromEntries(frames.filter((entry) => frameIds.includes(entry.id)).map((entry) => [entry.id, { x: entry.x, y: entry.y }]));
+    // 拖动开始即锁定跟随元素起点：group 锁定选中的素材元素 + Frame 内部元素；单选沿用“真实几何相交”锁定
+    const lockedItems = group
+      ? items.filter((item) => selectedItemIds.includes(item.id) || (item.parentFrameId && frameIds.includes(item.parentFrameId)))
+      : items.filter((item) => item.parentFrameId === frame.id || itemFrameId(item) === frame.id);
+    const itemStarts = Object.fromEntries(lockedItems.map((item) => [item.id, { x: item.x, y: item.y }]));
+    frameMoveRef.current = { pointerId: event.pointerId, frameIds, startX: event.clientX, startY: event.clientY, frameStarts, itemStarts, group };
+    setFrameDragId(frame.id);
   }
   function moveFrame(event: PointerEvent<HTMLElement>) {
     const active = frameMoveRef.current; if (!active || active.pointerId !== event.pointerId) return;
-    const frame = frames.find((entry) => entry.id === active.frameId); if (!frame) return;
-    let x = active.x + (event.clientX - active.startX) / view.zoom; let y = active.y + (event.clientY - active.startY) / view.zoom;
-    const targets = frames.filter((entry) => entry.id !== active.frameId);
+    const dx = (event.clientX - active.startX) / view.zoom; const dy = (event.clientY - active.startY) / view.zoom;
+    // 整组拖动（多 Frame / 混合选择）：统一平移选中 Frame 并同步选中元素与 Frame 内部元素（不参与吸附）
+    if (active.group) {
+      persistFrames({ ...framesByCanvas, [canvasId]: frames.map((entry) => active.frameStarts[entry.id] ? { ...entry, x: active.frameStarts[entry.id].x + dx, y: active.frameStarts[entry.id].y + dy } : entry) });
+      shiftFrameItems(active.itemStarts, dx, dy);
+      return;
+    }
+    const frameId = active.frameIds[0];
+    const frame = frames.find((entry) => entry.id === frameId); if (!frame) return;
+    const origin = active.frameStarts[frameId];
+    let x = origin.x + dx; let y = origin.y + dy;
+    const targets = frames.filter((entry) => entry.id !== frameId);
     const threshold = SNAP_DISTANCE_PX / view.zoom;
     const snapX = event.altKey ? null : nearestSnap([x, x + frame.width / 2, x + frame.width], targets.flatMap((entry) => [entry.x, entry.x + entry.width / 2, entry.x + entry.width]), threshold);
     const snapY = event.altKey ? null : nearestSnap([y, y + frame.height / 2, y + frame.height], targets.flatMap((entry) => [entry.y, entry.y + entry.height / 2, entry.y + entry.height]), threshold);
     if (snapX) x += snapX.delta; if (snapY) y += snapY.delta;
     setSnapGuides({ vertical: snapX ? [snapX.guide] : [], horizontal: snapY ? [snapY.guide] : [] });
-    updateFrame(active.frameId, { x, y });
-    if (x !== active.x || y !== active.y) shiftFrameItems(active.itemStarts, x - active.x, y - active.y);
+    updateFrame(frameId, { x, y });
+    if (x !== origin.x || y !== origin.y) shiftFrameItems(active.itemStarts, x - origin.x, y - origin.y);
   }
   function endFrameMove(event: PointerEvent<HTMLElement>) {
-    if (frameMoveRef.current?.pointerId === event.pointerId) {
-      const { frameId, itemStarts } = frameMoveRef.current;
-      frameMoveRef.current = null; setSnapGuides({ vertical: [], horizontal: [] });
-      void persistFrameItems(frameId, itemStarts);
-    }
+    const active = frameMoveRef.current;
+    if (!active || active.pointerId !== event.pointerId) return;
+    frameMoveRef.current = null; setSnapGuides({ vertical: [], horizontal: [] }); setFrameDragId(null);
+    // 纯点击（几乎无位移）只负责选中，不落盘
+    const dragged = Math.abs(event.clientX - active.startX) > 1 || Math.abs(event.clientY - active.startY) > 1;
+    if (!dragged) return;
+    if (active.group) { void persistMovedFrameItems(active); return; }
+    void persistFrameItems(active.frameIds[0], active.itemStarts);
   }
 
   function frameContentBounds() {
@@ -543,8 +666,9 @@ export function BoardView({ projectId, assets, onMessage, onSelectAsset }: { pro
   function startFrameResize(event: PointerEvent<HTMLButtonElement>, frame: PageFrame, direction: ResizeDirection) {
     if (isPanGesture(event)) return;
     event.stopPropagation(); event.currentTarget.setPointerCapture(event.pointerId);
-    selectItems([]); setSelectedFrameId(frame.id);
+    selectFrames([frame.id], frame.id);
     frameResizeRef.current = { pointerId: event.pointerId, frameId: frame.id, direction, startX: event.clientX, startY: event.clientY, frame };
+    setFrameDragId(frame.id);
   }
   function moveFrameResize(event: PointerEvent<HTMLButtonElement>) {
     const active = frameResizeRef.current; if (!active || active.pointerId !== event.pointerId) return;
@@ -556,35 +680,40 @@ export function BoardView({ projectId, assets, onMessage, onSelectAsset }: { pro
     if (active.direction.includes("n")) { height = Math.max(bounds.height, Math.round(active.frame.height - dy)); y = active.frame.y + active.frame.height - height; }
     updateFrame(active.frameId, { x, y, width, height });
   }
-  function endFrameResize(event: PointerEvent<HTMLButtonElement>) { if (frameResizeRef.current?.pointerId === event.pointerId) { frameResizeRef.current = null; } }
+  function endFrameResize(event: PointerEvent<HTMLButtonElement>) { if (frameResizeRef.current?.pointerId === event.pointerId) { frameResizeRef.current = null; setFrameDragId(null); } }
 
   function openFrameMenu(event: MouseEvent<HTMLDivElement>, frame: PageFrame) {
     event.preventDefault(); event.stopPropagation();
-    selectItems([]); setSelectedFrameId(frame.id);
+    selectFrames([frame.id], frame.id);
     setItemMenu(null);
     setFrameMenu({ frameId: frame.id, x: event.clientX, y: event.clientY });
   }
 
   function openItemMenu(event: MouseEvent<HTMLElement>, item: CanvasItem) {
     event.preventDefault(); event.stopPropagation();
-    setSelectedFrameId(null);
+    clearFrameSelection();
     if (!selectedItemIds.includes(item.id)) selectItems([item.id], item.id);
     setFrameMenu(null);
     setItemMenu({ itemId: item.id, x: event.clientX, y: event.clientY });
   }
 
-  function requestFrameDeletion(frameId: string) {
-    const hasItems = items.some((item) => item.parentFrameId === frameId);
+  /** 请求删除一批 Frame：含素材时先弹确认，空 Frame 直接删除。供右键单删 / Delete 键 / 底部工具条调用 */
+  function requestFrameDeletionMany(frameIds: string[]) {
+    const ids = frameIds.filter((id) => frames.some((entry) => entry.id === id));
+    if (!ids.length) return;
     setFrameMenu(null);
-    if (hasItems) setConfirmFrameDeleteId(frameId);
-    else void deleteFrame(frameId);
+    const hasItems = ids.some((id) => items.some((item) => item.parentFrameId === id));
+    if (hasItems) setConfirmFrameDeleteIds(ids);
+    else void deleteFrames(ids);
   }
+  function requestFrameDeletion(frameId: string) { requestFrameDeletionMany([frameId]); }
 
-  async function deleteFrame(frameId: string) {
+  async function deleteFrames(frameIds: string[]) {
     if (!canvasId || !canvas) return;
-    const frame = frames.find((entry) => entry.id === frameId);
-    if (!frame) return;
-    const frameItems = items.filter((item) => item.parentFrameId === frameId);
+    const set = new Set(frameIds);
+    const targetFrames = frames.filter((entry) => set.has(entry.id));
+    if (!targetFrames.length) { setConfirmFrameDeleteIds([]); return; }
+    const frameItems = items.filter((item) => item.parentFrameId && set.has(item.parentFrameId));
     try {
       let latestRevision = canvas.revision;
       for (const item of frameItems) {
@@ -592,17 +721,37 @@ export function BoardView({ projectId, assets, onMessage, onSelectAsset }: { pro
         latestRevision = data.revision;
       }
       const removedIds = new Set(frameItems.map((item) => item.id));
-      persistFrames({ ...framesByCanvas, [canvasId]: frames.filter((entry) => entry.id !== frameId) });
+      persistFrames({ ...framesByCanvas, [canvasId]: frames.filter((entry) => !set.has(entry.id)) });
       setItems((current) => current.filter((item) => !removedIds.has(item.id)));
       setCanvas((current) => current ? { ...current, revision: latestRevision } : current);
-      setSelectedFrameId(null); selectItems([]); setFrameMenu(null); setConfirmFrameDeleteId(null);
+      clearFrameSelection(); selectItems([]); setFrameMenu(null); setConfirmFrameDeleteIds([]);
       if (frameItems.length) await loadCanvases(canvasId);
-      onMessage(frameItems.length ? `Frame 已删除，${frameItems.length} 个素材仍保留在项目素材中` : "空 Frame 已删除");
+      onMessage(targetFrames.length === 1
+        ? (frameItems.length ? `Frame 已删除，${frameItems.length} 个素材仍保留在项目素材中` : "空 Frame 已删除")
+        : `已删除 ${targetFrames.length} 个 Frame，其中 ${frameItems.length} 个素材的画板布局一并移除（素材原文件仍保留）`);
     } catch (error) {
-      setFrameMenu(null); setConfirmFrameDeleteId(null);
+      setFrameMenu(null); setConfirmFrameDeleteIds([]);
       onMessage(error instanceof Error ? error.message : "删除 Frame 失败");
       await loadCanvas(canvas.id);
     }
+  }
+  /** 删除当前选中的 Frame（底部工具条按钮） */
+  function deleteSelectedFrames() { if (selectedFrameIds.length) requestFrameDeletionMany(selectedFrameIds); }
+  /** 删除当前混合选中的素材元素与 Frame（底部工具条按钮） */
+  function deleteMixedSelection() {
+    if (selectedItemIds.length) void deleteCanvasItems(selectedItemIds);
+    if (selectedFrameIds.length) requestFrameDeletionMany(selectedFrameIds);
+  }
+
+  /** 素材元素 + Frame 混合整体拖动：锁定全部选中 Frame、选中的素材元素及 Frame 内部元素 */
+  function startMixedDrag(event: PointerEvent<HTMLElement>) {
+    const frameIds = [...selectedFrameIds];
+    const frameStarts = Object.fromEntries(frames.filter((entry) => frameIds.includes(entry.id)).map((entry) => [entry.id, { x: entry.x, y: entry.y }]));
+    const internalIds = new Set(items.filter((item) => item.parentFrameId && frameIds.includes(item.parentFrameId)).map((item) => item.id));
+    const itemIds = [...new Set([...selectedItemIds, ...internalIds])];
+    const itemStarts = Object.fromEntries(items.filter((entry) => itemIds.includes(entry.id)).map((entry) => [entry.id, { x: entry.x, y: entry.y }]));
+    frameMoveRef.current = { pointerId: event.pointerId, frameIds, startX: event.clientX, startY: event.clientY, frameStarts, itemStarts, group: true };
+    setFrameDragId(null); // 从素材元素发起的混合拖动：不在某个 Frame 标题上显示尺寸
   }
 
   // ---- 图片元素移动 / 缩放 ----
@@ -612,19 +761,24 @@ export function BoardView({ projectId, assets, onMessage, onSelectAsset }: { pro
     if (event.button !== 0) return;
     let movingIds: string[];
     if (mode === "resize") {
-      movingIds = [item.id]; selectItems(movingIds, item.id);
+      movingIds = [item.id]; selectItems(movingIds, item.id); clearFrameSelection();
     } else if (event.shiftKey) {
       if (selectedItemIds.includes(item.id)) { selectItems(selectedItemIds.filter((id) => id !== item.id)); return; }
-      movingIds = [...selectedItemIds, item.id]; selectItems(movingIds, item.id);
+      movingIds = [...selectedItemIds, item.id]; selectItems(movingIds, item.id); // 保留 Frame 选择，可构成混合多选
+    } else if (selectedItemIds.includes(item.id) && selectedFrameIds.length) {
+      // 图片与 Frame 混合选中：拖动任一成员整组移动
+      event.currentTarget.setPointerCapture(event.pointerId);
+      startMixedDrag(event);
+      return;
     } else if (selectedItemIds.includes(item.id)) movingIds = selectedItemIds;
-    else { movingIds = [item.id]; selectItems(movingIds, item.id); }
+    else { movingIds = [item.id]; selectItems(movingIds, item.id); clearFrameSelection(); }
     event.currentTarget.setPointerCapture(event.pointerId);
     const topZ = Math.max(0, ...imageItems.map((entry) => entry.zIndex));
     interaction.current = { itemId: item.id, pointerId: event.pointerId, mode, direction, startX: event.clientX, startY: event.clientY, x: item.x, y: item.y, width: item.width, height: item.height, itemStarts: Object.fromEntries(items.filter((entry) => movingIds.includes(entry.id)).map((entry) => [entry.id, { x: entry.x, y: entry.y }])) };
-    setSelectedFrameId(null);
     if (item.zIndex < topZ) setItems((current) => current.map((entry) => entry.id === item.id ? { ...entry, zIndex: topZ + 1 } : entry));
   }
   function moveInteraction(event: PointerEvent<HTMLElement>) {
+    if (frameMoveRef.current?.pointerId === event.pointerId) { moveFrame(event); return; } // 混合整体拖动
     const active = interaction.current; if (!active || active.pointerId !== event.pointerId) return;
     let dx = (event.clientX - active.startX) / view.zoom; let dy = (event.clientY - active.startY) / view.zoom;
     const movingIds = Object.keys(active.itemStarts);
@@ -665,6 +819,7 @@ export function BoardView({ projectId, assets, onMessage, onSelectAsset }: { pro
     }));
   }
   async function endInteraction(event: PointerEvent<HTMLElement>) {
+    if (frameMoveRef.current?.pointerId === event.pointerId) { endFrameMove(event); return; } // 混合整体拖动落点
     const active = interaction.current; if (!active || active.pointerId !== event.pointerId) return;
     interaction.current = null; setSnapGuides({ vertical: [], horizontal: [] });
     const changedItems = items.filter((entry) => active.mode === "move" ? Boolean(active.itemStarts[entry.id]) : entry.id === active.itemId);
@@ -795,6 +950,7 @@ export function BoardView({ projectId, assets, onMessage, onSelectAsset }: { pro
   function addAnnotatedItem(item: CanvasItem, revision: number) {
     setItems((current) => [...current, item]);
     setCanvas((current) => current ? { ...current, revision } : current);
+    clearFrameSelection();
     selectItems([item.id], item.id);
   }
 
@@ -809,6 +965,7 @@ export function BoardView({ projectId, assets, onMessage, onSelectAsset }: { pro
       setItems((current) => [...current, created]);
       setCanvas((current) => current ? { ...current, revision: data.revision } : current);
       setEditingTextId(created.id);
+      clearFrameSelection();
       selectItems([created.id], created.id);
     } catch (error) { onMessage(error instanceof Error ? error.message : "创建文本失败"); }
   }
@@ -842,12 +999,17 @@ export function BoardView({ projectId, assets, onMessage, onSelectAsset }: { pro
     if (editingTextId === item.id) return;
     let movingIds: string[];
     if (mode === "resize") {
-      movingIds = [item.id]; selectItems(movingIds, item.id);
+      movingIds = [item.id]; selectItems(movingIds, item.id); clearFrameSelection();
     } else if (event.shiftKey) {
       if (selectedItemIds.includes(item.id)) { selectItems(selectedItemIds.filter((id) => id !== item.id)); return; }
-      movingIds = [...selectedItemIds, item.id]; selectItems(movingIds, item.id);
+      movingIds = [...selectedItemIds, item.id]; selectItems(movingIds, item.id); // 保留 Frame 选择，可构成混合多选
+    } else if (selectedItemIds.includes(item.id) && selectedFrameIds.length) {
+      // 标记元素与 Frame 混合选中：拖动任一成员整组移动
+      event.currentTarget.setPointerCapture(event.pointerId);
+      startMixedDrag(event);
+      return;
     } else if (selectedItemIds.includes(item.id)) movingIds = selectedItemIds;
-    else { movingIds = [item.id]; selectItems(movingIds, item.id); }
+    else { movingIds = [item.id]; selectItems(movingIds, item.id); clearFrameSelection(); }
     // 自动宽/高的文本：被拖动的轴从当前内容尺寸开始缩放，而不是旧的存储尺寸
     let baseWidth = item.width; let baseHeight = item.height;
     const textPayload = item.payload && "text" in item.payload ? item.payload as TextPayload : null;
@@ -863,6 +1025,7 @@ export function BoardView({ projectId, assets, onMessage, onSelectAsset }: { pro
     interaction.current = { itemId: item.id, pointerId: event.pointerId, mode, direction, startX: event.clientX, startY: event.clientY, x: item.x, y: item.y, width: baseWidth, height: baseHeight, itemStarts: Object.fromEntries(items.filter((entry) => movingIds.includes(entry.id)).map((entry) => [entry.id, { x: entry.x, y: entry.y }])) };
   }
   function moveAnnotation(event: PointerEvent<HTMLElement>) {
+    if (frameMoveRef.current?.pointerId === event.pointerId) { moveFrame(event); return; } // 混合整体拖动
     const active = interaction.current; if (!active || active.pointerId !== event.pointerId) return;
     const dx = (event.clientX - active.startX) / view.zoom; const dy = (event.clientY - active.startY) / view.zoom;
     setItems((current) => current.map((item) => {
@@ -905,6 +1068,7 @@ export function BoardView({ projectId, assets, onMessage, onSelectAsset }: { pro
     }));
   }
   async function endAnnotation(event: PointerEvent<HTMLElement>) {
+    if (frameMoveRef.current?.pointerId === event.pointerId) { endFrameMove(event); return; } // 混合整体拖动落点
     const active = interaction.current; if (!active || active.pointerId !== event.pointerId) return;
     interaction.current = null;
     if (!canvas) return;
@@ -1201,7 +1365,7 @@ export function BoardView({ projectId, assets, onMessage, onSelectAsset }: { pro
   }
 
   return (
-    <section className="board-shell">
+    <section className={`board-shell ${focusMode ? "focus-mode" : ""}`}>
       <div className="board-toolbar">
         <div className="board-pages" aria-label="Pages">
           <span className="board-pages-label">Pages</span>
@@ -1209,11 +1373,13 @@ export function BoardView({ projectId, assets, onMessage, onSelectAsset }: { pro
             <input key={entry.id} className="board-page-name-input" value={pageNameDraft} maxLength={50} autoFocus aria-label="修改 Page 名称" onChange={(event) => setPageNameDraft(event.target.value)} onBlur={() => void renameCanvas(entry.id, entry.name, pageNameDraft)} onKeyDown={(event) => handlePageNameKeyDown(event, entry)} />
           ) : <button type="button" className={entry.id === canvasId ? "active" : ""} key={entry.id} onClick={() => setCanvasId(entry.id)} onDoubleClick={() => startPageRename(entry)} title="双击修改 Page 名称">{entry.name}<span>{entry.itemCount}</span></button>)}<button className="board-add" type="button" onClick={() => void createCanvas()}><Plus size={14} />新建 Page</button></div>
         </div>
-        <div className="board-actions">{canvas ? <><button className="add-frame-button" type="button" onClick={createFrame}><Frame size={14} /><Plus size={11} />Frame</button><span className="sync-state"><Check size={13} />素材布局已同步</span><button type="button" onClick={() => void deleteCanvas()} aria-label="删除 Page"><Trash2 size={15} /></button></> : null}</div>
+        <div className="board-actions">{canvas ? <><span className="sync-state"><Check size={13} />素材布局已同步</span><button type="button" onClick={() => void deleteCanvas()} aria-label="删除 Page"><Trash2 size={15} /></button></> : null}<button className="fullscreen-button" type="button" onClick={() => setFocusMode((active) => !active)} aria-label={focusMode ? "退出专注模式" : "专注显示视图"} title={focusMode ? "退出专注模式" : "专注显示视图"}>{focusMode ? <Minimize2 size={15} /> : <Maximize2 size={15} />}</button></div>
       </div>
       <div className="board-toolbar board-annotate-toolbar">
         <div className="annotate-tools" role="toolbar" aria-label="标记工具">
-          {TOOLS.map((entry) => { const Icon = entry.icon; return <button key={entry.id} type="button" title={entry.shortcut ? `${entry.label}（${entry.shortcut}）` : entry.label} className={tool === entry.id ? "active" : ""} onClick={() => { setTool(entry.id); if (entry.id !== "pointer") setMarkupHidden(false); }}><Icon size={15} /></button>; })}
+          {TOOLS.slice(0, 1).map((entry) => { const Icon = entry.icon; return <button key={entry.id} type="button" title={entry.shortcut ? `${entry.label}（${entry.shortcut}）` : entry.label} className={tool === entry.id ? "active" : ""} onClick={() => { setTool(entry.id); setFrameMode(false); setFrameDraft(null); if (entry.id !== "pointer") setMarkupHidden(false); }}><Icon size={15} /></button>; })}
+          {canvas ? <button type="button" className={frameMode ? "active" : ""} title={frameMode ? "取消创建 Frame" : "新建 Frame：点击后按住左键拖动自定义大小"} aria-label="新建 Frame（按住拖动自定义大小）" onClick={startFrameCreateMode}><Frame size={15} /></button> : null}
+          {TOOLS.slice(1).map((entry) => { const Icon = entry.icon; return <button key={entry.id} type="button" title={entry.shortcut ? `${entry.label}（${entry.shortcut}）` : entry.label} className={tool === entry.id ? "active" : ""} onClick={() => { setTool(entry.id); setFrameMode(false); setFrameDraft(null); if (entry.id !== "pointer") setMarkupHidden(false); }}><Icon size={15} /></button>; })}
         </div>
         <label className="annotate-color" title="描边颜色"><input type="color" value={strokeColor} onChange={(event) => setStrokeColor(event.target.value)} /></label>
         <label className="annotate-width" title="描边粗细"><input type="range" min={1} max={12} value={strokeWidth} onChange={(event) => setStrokeWidth(Number(event.target.value))} /></label>
@@ -1234,17 +1400,17 @@ export function BoardView({ projectId, assets, onMessage, onSelectAsset }: { pro
               <div className="asset-tray-grid">{filteredAssets.map((asset) => <button key={asset.id} type="button" draggable title={asset.name} onDragStart={(event) => handleAssetDragStart(event, asset)}>{asset.thumbnailUrl ? <img src={asset.thumbnailUrl} alt="" draggable={false} /> : <span />}</button>)}</div>
             </div> : null}
           </aside>
-          <div ref={viewportRef} className={`board-viewport ${panning ? "panning" : ""} ${spaceHeld ? "space-held" : ""} ${tool !== "pointer" ? "tool-active" : ""}`} onPointerDown={(event) => { if (isPanGesture(event)) startPan(event); else if (tool !== "pointer") beginDraw(event); else startPan(event); }} onPointerMove={(event) => { movePan(event); moveDraw(event); }} onPointerUp={(event) => { endPan(event); endDraw(event); }} onPointerCancel={(event) => { endPan(event); endDraw(event); }} onDragOver={(event) => { const types = Array.from(event.dataTransfer.types); if (types.includes("application/x-artdb-asset") || types.includes("application/x-artdb-tag")) { event.preventDefault(); event.dataTransfer.dropEffect = "copy"; setDragHint({ x: event.clientX, y: event.clientY, text: types.includes("application/x-artdb-tag") ? "松开批量插入同标签素材" : "松开放入画板" }); } }} onDragLeave={() => setDragHint(null)} onDrop={(event) => { setDragHint(null); handleDrop(event); }}>
+          <div ref={viewportRef} className={`board-viewport ${panning ? "panning" : ""} ${spaceHeld ? "space-held" : ""} ${frameMode ? "frame-mode" : ""} ${tool !== "pointer" || frameMode ? "tool-active" : ""}`} onPointerDown={(event) => { if (frameMode) { if (isPanGesture(event)) startPan(event); else beginFrameDraw(event); } else if (isPanGesture(event)) startPan(event); else if (tool !== "pointer") beginDraw(event); else startPan(event); }} onPointerMove={(event) => { movePan(event); moveDraw(event); moveFrameDraw(event); }} onPointerUp={(event) => { endPan(event); endDraw(event); endFrameDraw(event); }} onPointerCancel={(event) => { endPan(event); endDraw(event); endFrameDraw(event); }} onDragOver={(event) => { const types = Array.from(event.dataTransfer.types); if (types.includes("application/x-artdb-asset") || types.includes("application/x-artdb-tag")) { event.preventDefault(); event.dataTransfer.dropEffect = "copy"; setDragHint({ x: event.clientX, y: event.clientY, text: types.includes("application/x-artdb-tag") ? "松开批量插入同标签素材" : "松开放入画板" }); } }} onDragLeave={() => setDragHint(null)} onDrop={(event) => { setDragHint(null); handleDrop(event); }}>
             <div className="board-page" style={{ transform: `translate(${view.x}px, ${view.y}px) scale(${view.zoom})` }}>
               {frames.map((frame) => {
-                const frameSelected = selectedFrameId === frame.id && !selectedItemIds.length;
+                const frameSelected = selectedFrameIds.includes(frame.id);
                 return <div className={`board-frame ${frameSelected ? "selected" : ""}`} key={frame.id} style={{ left: frame.x, top: frame.y, width: frame.width, height: frame.height }} onPointerDown={(event) => startFrameMove(event, frame)} onPointerMove={moveFrame} onPointerUp={endFrameMove} onPointerCancel={endFrameMove} onContextMenu={(event) => openFrameMenu(event, frame)}>
                   <div className="board-frame-title" style={{ transform: `scale(${titleScale})` }} onPointerDown={(event) => startFrameMove(event, frame)} onPointerMove={moveFrame} onPointerUp={endFrameMove}>
-                    {editingFrameId === frame.id ? <input value={frameNameDraft} maxLength={50} autoFocus aria-label="修改 Frame 名称" onPointerDown={(event) => { if (!isPanGesture(event)) event.stopPropagation(); }} onChange={(event) => setFrameNameDraft(event.target.value)} onBlur={() => finishFrameNameEdit(frame)} onKeyDown={(event) => { if (event.key === "Enter") event.currentTarget.blur(); if (event.key === "Escape") { setFrameNameDraft(frame.name); setEditingFrameId(null); } }} /> : <button type="button" onPointerDown={(event) => { if (!isPanGesture(event)) event.stopPropagation(); }} onClick={() => { if (panning || spaceHeld) return; selectItems([]); setSelectedFrameId(frame.id); }} onDoubleClick={(event) => { event.stopPropagation(); startFrameNameEdit(frame); }} title={frame.name}>{frame.name}</button>}
-                    <span>{frame.width} × {frame.height}</span>
+                    {editingFrameId === frame.id ? <input value={frameNameDraft} maxLength={50} autoFocus aria-label="修改 Frame 名称" onPointerDown={(event) => { if (!isPanGesture(event)) event.stopPropagation(); }} onChange={(event) => setFrameNameDraft(event.target.value)} onBlur={() => finishFrameNameEdit(frame)} onKeyDown={(event) => { if (event.key === "Enter") event.currentTarget.blur(); if (event.key === "Escape") { setFrameNameDraft(frame.name); setEditingFrameId(null); } }} /> : <button type="button" onPointerDown={(event) => { if (!isPanGesture(event)) event.stopPropagation(); }} onClick={(event) => { if (panning || spaceHeld) return; if (event.shiftKey) { const current = selectedFrameIds; if (current.includes(frame.id)) { const ids = current.filter((id) => id !== frame.id); setSelectedFrameIds(ids); setSelectedFrameId(ids.at(-1) ?? null); } else { setSelectedFrameIds([...current, frame.id]); setSelectedFrameId(frame.id); } } else { selectFrames([frame.id], frame.id); } }} onDoubleClick={(event) => { event.stopPropagation(); startFrameNameEdit(frame); }} title={frame.name}>{frame.name}</button>}
+                    {frameDragId === frame.id ? <span>{Math.round(frame.width)} × {Math.round(frame.height)}</span> : null}
                   </div>
                   <div className="board-grid" />
-                  {frameSelected ? RESIZE_DIRECTIONS.map((direction) => <button key={direction} className={`frame-selection-handle frame-handle-${direction}`} style={{ width: controlSize, height: controlSize }} type="button" aria-label={`从 ${direction} 方向调整 Frame 大小`} onPointerDown={(event) => startFrameResize(event, frame, direction)} onPointerMove={moveFrameResize} onPointerUp={endFrameResize} onPointerCancel={endFrameResize} />) : null}
+                  {frameSelected && !selectedItemIds.length && selectedFrameId === frame.id && selectedFrameIds.length === 1 ? RESIZE_DIRECTIONS.map((direction) => <button key={direction} className={`frame-selection-handle frame-handle-${direction}`} style={{ width: controlSize, height: controlSize }} type="button" aria-label={`从 ${direction} 方向调整 Frame 大小`} onPointerDown={(event) => startFrameResize(event, frame, direction)} onPointerMove={moveFrameResize} onPointerUp={endFrameResize} onPointerCancel={endFrameResize} />) : null}
                 </div>;
               })}
               {[...items].sort((a, b) => a.zIndex - b.zIndex).map((item) => {
@@ -1252,6 +1418,7 @@ export function BoardView({ projectId, assets, onMessage, onSelectAsset }: { pro
                 return item.type === "image" ? renderImageItem(item) : renderAnnotation(item);
               })}
               {!markupHidden && drawPreview ? renderPreviewShape() : null}
+              {frameDraft ? <div className="board-frame-draft" style={{ left: Math.min(frameDraft.start.x, frameDraft.current.x), top: Math.min(frameDraft.start.y, frameDraft.current.y), width: Math.abs(frameDraft.current.x - frameDraft.start.x), height: Math.abs(frameDraft.current.y - frameDraft.start.y) }} /> : null}
             </div>
             {marquee ? <div className="board-selection-marquee" style={{ left: Math.min(marquee.startX, marquee.currentX), top: Math.min(marquee.startY, marquee.currentY), width: Math.abs(marquee.currentX - marquee.startX), height: Math.abs(marquee.currentY - marquee.startY) }} /> : null}
             {dragHint ? <div className="board-drag-hint" style={{ left: dragHint.x + 12, top: dragHint.y + 14 }}>{dragHint.text}</div> : null}
@@ -1289,14 +1456,17 @@ export function BoardView({ projectId, assets, onMessage, onSelectAsset }: { pro
               );
             })() : null}
           </div>
-          {selectedItemIds.length ? <div className="canvas-selection-tools"><span className="selection-count">已选 {selectedItemIds.length} 个</span><button type="button" onClick={() => void updateSelected({ zIndex: topZ + 1 })} title="置于顶层"><ArrowUpToLine size={15} /></button><button type="button" onClick={() => void updateSelected({ zIndex: Math.max(0, bottomZ - 1) })} title="置于底层"><ArrowDownToLine size={15} /></button><button className="danger" type="button" onClick={() => void deleteSelected()} title="删除"><Trash2 size={15} /></button></div> : null}
+          {selectedItemIds.length && !selectedFrameIds.length ? <div className="canvas-selection-tools"><span className="selection-count">已选 {selectedItemIds.length} 个</span><button type="button" onClick={() => void updateSelected({ zIndex: topZ + 1 })} title="置于顶层"><ArrowUpToLine size={15} /></button><button type="button" onClick={() => void updateSelected({ zIndex: Math.max(0, bottomZ - 1) })} title="置于底层"><ArrowDownToLine size={15} /></button><button className="danger" type="button" onClick={() => void deleteSelected()} title="删除"><Trash2 size={15} /></button></div> : null}
+          {!selectedItemIds.length && selectedFrameIds.length ? <div className="canvas-selection-tools"><span className="selection-count">已选 {selectedFrameIds.length} 个 Frame</span><button className="danger" type="button" onClick={() => deleteSelectedFrames()} title="删除选中的 Frame（Delete/Backspace）"><Trash2 size={15} /></button></div> : null}
+          {selectedItemIds.length && selectedFrameIds.length ? <div className="canvas-selection-tools"><span className="selection-count">已选 {selectedItemIds.length} 个 · {selectedFrameIds.length} 个 Frame</span><button className="danger" type="button" onClick={() => deleteMixedSelection()} title="删除选中的素材与 Frame（Delete/Backspace）"><Trash2 size={15} /></button></div> : null}
           {frameMenu ? <div className="frame-context-menu" role="menu" style={{ left: frameMenu.x, top: frameMenu.y }} onPointerDown={(event) => event.stopPropagation()}><button type="button" role="menuitem" onClick={() => requestFrameDeletion(frameMenu.frameId)}><Trash2 size={14} />删除 Frame</button></div> : null}
           {itemMenu ? <div className="frame-context-menu item-context-menu" role="menu" style={{ left: itemMenu.x, top: itemMenu.y }} onPointerDown={(event) => event.stopPropagation()}><button type="button" role="menuitem" onClick={() => void deleteCanvasItems(selectedItemIds.includes(itemMenu.itemId) ? selectedItemIds : [itemMenu.itemId])}><Trash2 size={14} />删除</button></div> : null}
           <div className="board-navigation-hint">V 选择 · T 文本 · R 矩形 · O 椭圆 · 隐藏标记 · 拖左侧素材到画板放置 · 拖标签批量插入 · 框选 · 空格 + 拖动移动 Page · 滚轮缩放</div>
-          {confirmFrameDeleteId ? (() => {
-            const frame = frames.find((entry) => entry.id === confirmFrameDeleteId);
-            const count = items.filter((item) => item.parentFrameId === confirmFrameDeleteId).length;
-            return frame ? <div className="frame-delete-backdrop" role="presentation" onPointerDown={() => setConfirmFrameDeleteId(null)}><section className="frame-delete-dialog" role="dialog" aria-modal="true" aria-labelledby="frame-delete-title" onPointerDown={(event) => event.stopPropagation()}><Trash2 size={22} /><h3 id="frame-delete-title">删除“{frame.name}”？</h3><p>其中 {count} 个素材的画板布局会被移除。</p><strong>素材原文件不会删除，仍会保留在左侧项目素材中。</strong><div><button type="button" onClick={() => setConfirmFrameDeleteId(null)}>取消</button><button className="danger" type="button" onClick={() => void deleteFrame(frame.id)}>确认删除</button></div></section></div> : null;
+          {confirmFrameDeleteIds.length ? (() => {
+            const victims = frames.filter((entry) => confirmFrameDeleteIds.includes(entry.id));
+            const affected = items.filter((item) => item.parentFrameId && confirmFrameDeleteIds.includes(item.parentFrameId)).length;
+            const single = victims.length === 1 ? victims[0] : null;
+            return victims.length ? <div className="frame-delete-backdrop" role="presentation" onPointerDown={() => setConfirmFrameDeleteIds([])}><section className="frame-delete-dialog" role="dialog" aria-modal="true" aria-labelledby="frame-delete-title" onPointerDown={(event) => event.stopPropagation()}><Trash2 size={22} /><h3 id="frame-delete-title">{single ? `删除“${single.name}”？` : `删除选中的 ${victims.length} 个 Frame？`}</h3><p>{single ? `其中 ${affected} 个素材的画板布局会被移除。` : `选中的 Frame 中共有 ${affected} 个素材，其画板布局会一并移除。`}</p><strong>素材原文件不会删除，仍会保留在左侧项目素材中。</strong><div><button type="button" onClick={() => setConfirmFrameDeleteIds([])}>取消</button><button className="danger" type="button" onClick={() => void deleteFrames(confirmFrameDeleteIds)}>确认删除</button></div></section></div> : null;
           })() : null}
         </div>
       ) : <div className="board-empty"><ImagePlus size={29} /><h3>正在创建默认 Page</h3><p>默认 Page 是一块空白无限画布，可从左侧把素材拖入。</p></div>}

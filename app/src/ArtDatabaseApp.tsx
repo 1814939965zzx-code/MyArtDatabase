@@ -195,12 +195,12 @@ export function ArtDatabaseApp({ user, onLogout }: { user: SessionUser; onLogout
     });
   }
 
-  async function loadWorkspace(projectId: string) {
+  async function loadWorkspace(projectId: string, quiet = false) {
     if (!projectId) {
       setWorkspace(null);
       return;
     }
-    setLoading(true);
+    if (!quiet) setLoading(true);
     try {
       const data = await apiFetch<Workspace>(`/api/workspace?projectId=${encodeURIComponent(projectId)}`);
       setWorkspace(data);
@@ -208,19 +208,19 @@ export function ArtDatabaseApp({ user, onLogout }: { user: SessionUser; onLogout
         current && data.assets.some((asset) => asset.id === current) ? current : null,
       );
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : "项目载入失败");
+      if (!quiet) setMessage(error instanceof Error ? error.message : "项目载入失败");
     } finally {
-      setLoading(false);
+      if (!quiet) setLoading(false);
     }
   }
 
-  async function loadLibrary() {
-    setLibraryLoading(true);
+  async function loadLibrary(quiet = false) {
+    if (!quiet) setLibraryLoading(true);
     try {
       const data = await apiFetch<{ assets: LibraryAsset[] }>("/api/library");
       setLibraryAssets(data.assets);
     } finally {
-      setLibraryLoading(false);
+      if (!quiet) setLibraryLoading(false);
     }
   }
 
@@ -252,6 +252,44 @@ export function ArtDatabaseApp({ user, onLogout }: { user: SessionUser; onLogout
       setLibraryLoading(false);
       setTrashLoading(false);
     });
+  }, []);
+
+  // 素材可能由其他标签页/窗口（如 Chrome 采集扩展）新增：
+  // 切回本页时静默刷新当前视图，新保存的素材立即可见（不做定时轮询）。
+  // 刷新时禁止列表 loading 闪烁，素材详情打开时不打扰（关闭时自会保存刷新）。
+  const autoRefreshStateRef = useRef({ activeArea, workspace, selectedAssetId });
+  autoRefreshStateRef.current = { activeArea, workspace, selectedAssetId };
+  const lastAutoRefreshAt = useRef(Date.now());
+
+  useEffect(() => {
+    const run = () => {
+      // 防抖：visibilitychange 与 focus 常成对触发；页面刚加载 500ms 内的初始 focus 也跳过
+      if (Date.now() - lastAutoRefreshAt.current < 500) return;
+      lastAutoRefreshAt.current = Date.now();
+      const state = autoRefreshStateRef.current;
+      if (state.selectedAssetId) return; // 详情打开中不打扰
+      if (state.activeArea === "project") {
+        if (state.workspace?.project.id) void loadWorkspace(state.workspace.project.id, true);
+      } else if (state.activeArea === "library") {
+        void loadLibrary(true);
+      } else if (state.activeArea === "home") {
+        void loadProjects();
+      } else if (state.activeArea === "trash") {
+        void loadTrash(true);
+      }
+    };
+    const onVisibility = () => {
+      if (document.visibilityState === "visible") run();
+    };
+    const onFocus = () => run();
+    document.addEventListener("visibilitychange", onVisibility);
+    window.addEventListener("focus", onFocus);
+    return () => {
+      document.removeEventListener("visibilitychange", onVisibility);
+      window.removeEventListener("focus", onFocus);
+    };
+    // 监听只注册一次，回调经 ref 读取最新状态
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
@@ -834,6 +872,13 @@ export function ArtDatabaseApp({ user, onLogout }: { user: SessionUser; onLogout
                 </div>
               </div>
             ) : null}
+            {activeArea === "project" && workspace ? (
+              <nav className="surface-tabs topbar-tabs" aria-label="项目视图">
+                <button type="button" className={surface === "preview" ? "active" : ""} onClick={() => setSurface("preview")}><SlidersHorizontal size={16} />维度预览</button>
+                <button type="button" className={surface === "board" ? "active" : ""} onClick={() => setSurface("board")}><ImagePlus size={16} />自由画板</button>
+                <button type="button" className={surface === "assets" ? "active" : ""} onClick={() => setSurface("assets")}><LayoutGrid size={16} />素材库</button>
+              </nav>
+            ) : null}
           </div>
           <div className="topbar-actions">
             {activeArea === "library" ? <button className="tag-manager-open-button" type="button" onClick={() => setTagManagerOpen(true)}><Tags size={14} />标签管理</button> : null}
@@ -901,12 +946,6 @@ export function ArtDatabaseApp({ user, onLogout }: { user: SessionUser; onLogout
           <div className="loading-state"><LoaderCircle className="spin" size={22} /> 正在整理素材库…</div>
         ) : workspace ? (
           <>
-            <nav className="surface-tabs" aria-label="项目视图">
-              <button type="button" className={surface === "preview" ? "active" : ""} onClick={() => setSurface("preview")}><SlidersHorizontal size={16} />维度预览</button>
-              <button type="button" className={surface === "board" ? "active" : ""} onClick={() => setSurface("board")}><ImagePlus size={16} />自由画板</button>
-              <button type="button" className={surface === "assets" ? "active" : ""} onClick={() => setSurface("assets")}><LayoutGrid size={16} />素材库</button>
-            </nav>
-
             {surface === "assets" ? <><div className="content-toolbar">
               <div><h2>项目素材</h2><p>{search || projectTagFilter.length ? `找到 ${filteredAssets.length} 项` : "按维度整理与比较你的视觉参考"}</p></div>
               <div className="content-toolbar-actions">

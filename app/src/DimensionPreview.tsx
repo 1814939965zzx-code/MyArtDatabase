@@ -1,6 +1,6 @@
 "use client";
 
-import { Aperture, Box, Bug, Check, Images, Maximize2, Minimize2, Minus, MousePointer2, Pencil, Plus, RotateCcw } from "lucide-react";
+import { Aperture, Box, Bug, Images, Maximize2, Minimize2, Minus, MousePointer2, Pencil, Plus, RotateCcw } from "lucide-react";
 import { CSSProperties, PointerEvent, useEffect, useMemo, useRef, useState, WheelEvent } from "react";
 import { displayDimensionValue } from "./dimensionScale";
 
@@ -1190,16 +1190,19 @@ export function DimensionPreview({
           {dimensions.map((dimension, index) => {
             const active = selectedIds.includes(dimension.id);
             const disabled = !active && selectedIds.length >= 3;
+            // 选中项按选中顺序标记对应轴：第 1 项 x（横轴）、第 2 项 y（纵轴）、第 3 项 z（第三轴）；未选中显示列表序号
+            const axisLetter = active ? "xyz"[selectedIds.indexOf(dimension.id)] : null;
             return (
               <div
                 className={`preview-dimension-option ${active ? "active" : ""} ${disabled ? "disabled" : ""}`}
                 key={dimension.id}
                 role="button"
                 tabIndex={0}
+                title={axisLetter ? (axisLetter === "x" ? "此维度对应预览的横轴 X" : axisLetter === "y" ? "此维度对应预览的纵轴 Y" : "此维度对应预览的第三轴 Z") : undefined}
                 onClick={() => { if (!disabled) toggleDimension(dimension.id); }}
                 onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); if (!disabled) toggleDimension(dimension.id); } }}
               >
-                <span className="preview-dimension-index">{active ? <Check size={13} /> : index + 1}</span>
+                <span className="preview-dimension-index">{axisLetter ?? index + 1}</span>
                 <div className="preview-dimension-labels"><strong>{dimension.leftLabel}</strong><i>—</i><strong>{dimension.rightLabel}</strong></div>
                 <button className="preview-dimension-delete" type="button" onClick={(event) => { event.stopPropagation(); if (!disabled) onEditDimension(dimension); }} aria-label={`编辑${dimension.leftLabel}到${dimension.rightLabel}维度`} title="编辑维度名称"><Pencil size={13} /></button>
               </div>
