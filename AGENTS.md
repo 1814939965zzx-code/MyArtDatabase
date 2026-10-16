@@ -23,7 +23,7 @@
 
 ## 项目快照
 
-- 产品：团队使用的图片/视频素材库，按项目引用全局素材，并通过项目维度和自由画板组织素材。
+- 产品：团队使用的图片/视频素材库，按项目引用全局素材，并通过独立维度 Page 和自由画板组织素材。
 - 运行时：单个原生 Node.js 进程，同时提供 React 页面、`/api/*` 接口、SQLite 数据库和本地图片/视频存储。
 - 账号：两级角色（管理员/成员）；除健康检查与登录相关接口外，全部 `/api/*` 需要登录（HttpOnly Cookie Session 或插件令牌 Bearer 二选一）；首次启动在界面引导创建管理员。
 - 前端：React 19、TypeScript、Vite、Tailwind CSS v4。
@@ -40,7 +40,8 @@
 | `app/src/ArtDatabaseApp.tsx` | 页面状态与主要应用流程（主页/全部素材/回收站/项目工作区导航、顶部用户菜单、账号设置、成员管理入口） |
 | `app/src/HomeView.tsx` | 主页（Figma 式项目卡片网格：封面拼图、重命名/删除、进入项目） |
 | `app/src/AllAssetsView.tsx` | 全局素材库 |
-| `app/src/DimensionPreview.tsx` | 一维、二维、三维预览与拖动交互 |
+| `app/src/DimensionPages.tsx` | 维度 Page 切换、增删改、项目素材多选加入 |
+| `app/src/DimensionPreview.tsx` | 单个 Page 的一维、二维、三维预览与拖动交互 |
 | `app/src/BoardView.tsx` | 自由画板 |
 | `app/src/UploadModal.tsx` | 上传与重复素材处理 |
 | `app/src/AssetMetadataEditor.tsx` | 素材详情与 Metadata 编辑 |
@@ -51,6 +52,7 @@
 | `app/src/TokenSettingsModal.tsx` | 插件令牌面板（生成/吊销/复制令牌、浏览器扩展下载与使用说明） |
 | `app/server/routes.js` | 全部 `/api/*` 路由（含登录、用户管理、权限校验、插件令牌 CRUD） |
 | `app/server/auth.js` | 密码哈希（scrypt）、会话创建/解析、cookie、登录审计与插件令牌（创建/列表/吊销/Bearer 解析） |
+| `app/server/preview-pages.js` | 维度 Page 独立数据模型、v9 迁移与 Page/维度/素材引用/数值接口 |
 | `app/server/db.js` | SQLite 表结构、迁移与示例数据（含 users/sessions/login_logs/api_tokens） |
 | `app/server/tags.js` | 标签字典与素材-标签关联的共享读写 |
 | `app/server/ai.js` | AI 打标：配置读取、OpenAI 兼容调用、两轮标签复用裁决 |
@@ -96,8 +98,8 @@ npm run build
 - 素材文件与项目相互独立；项目只保存素材引用，不复制图片。
 - 全局 Metadata 修改会影响该素材在所有项目中的展示。
 - 标签存于 `tags`/`asset_tags` 标签字典（`assets.tags` 旧列已随迁移删除）；单素材标签上限 50 个（人工与 AI 统一），AI 单次最多返回 30 个。
-- 项目维度数量不限；一次维度预览最多选择三个维度。
-- 维度值以整数 `0～1000` 存储，对应界面上的 `0.00～10.00`。
+- 每个维度 Page 的维度和素材维度值独立；维度数量不限，一次预览最多选择三个。新上传素材不自动加入 Page。
+- 维度值以整数 `0～1000` 存储，对应界面上的 `-100～100`（中点 `500` 对应 `0`）。
 - 软删除只更新 `deleted_at`；只有彻底删除才能移除磁盘文件。
 - 视频统一转码为低码率 H.264 MP4（最长边 ≤1280、码率上限 2Mbps）；**转码成功且数据库已切换到转码产物后才删除原文件**，失败/中断/切换失败必须保留原文件。
 - 视频转码异步单并发执行（不阻塞上传）；`processing` 不可播放、界面显示进度（`transcode_progress` 0～100），`ready` 才可播放，`failed` 保留原文件供重新转码。

@@ -64,7 +64,7 @@ export function DimensionEditorModal({
           <div>
             <p className="eyebrow">DIMENSION LABELS</p>
             <h2 id="dimension-editor-title">编辑维度名称</h2>
-            <p>名称修改会对当前项目全局生效。</p>
+            <p>名称修改仅对当前 Page 生效。</p>
           </div>
           <button className="icon-button" type="button" aria-label="取消编辑维度名称" disabled={applying} onClick={cancel}><X size={18} /></button>
         </div>

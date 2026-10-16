@@ -23,6 +23,7 @@ import {
 import { AiError, listAiModels, readAiConfigDetails, saveAiConfig, suggestTagsForUpload, tagAssetWithAi, testAiConnection } from "./ai.js";
 import { findTagByName, listTags, mergeTags, replaceAssetTags } from "./tags.js";
 import { enqueueVideoTranscode } from "./transcode.js";
+import { createPreviewPage, handlePreviewPages } from "./preview-pages.js";
 
 const IMAGE_TYPES = new Set([
   "image/jpeg",
@@ -114,11 +115,10 @@ function listProjects({ db }) {
     SELECT p.id, p.name, p.description,
       p.created_at AS createdAt, p.updated_at AS updatedAt,
       COUNT(DISTINCT a.id) AS assetCount,
-      COUNT(DISTINCT pd.id) AS dimensionCount
+      (SELECT COUNT(*) FROM preview_dimensions pd JOIN preview_pages pp ON pp.id = pd.page_id WHERE pp.project_id = p.id) AS dimensionCount
     FROM projects p
     LEFT JOIN project_assets pa ON pa.project_id = p.id
     LEFT JOIN assets a ON a.id = pa.asset_id AND a.deleted_at IS NULL
-    LEFT JOIN project_dimensions pd ON pd.project_id = p.id
     GROUP BY p.id
     ORDER BY p.updated_at DESC, assetCount DESC, p.created_at DESC
   `).all();
@@ -149,7 +149,10 @@ async function createProject(request, { db }) {
   const description = cleanText(payload.description, 240);
   if (!name) return Response.json({ error: "项目名称不能为空" }, { status: 400 });
   const id = randomUUID();
-  db.prepare("INSERT INTO projects (id, name, description) VALUES (?, ?, ?)").run(id, name, description);
+  transaction(db, () => {
+    db.prepare("INSERT INTO projects (id, name, description) VALUES (?, ?, ?)").run(id, name, description);
+    createPreviewPage(db, id);
+  });
   return Response.json({ project: { id, name, description } }, { status: 201 });
 }
 
@@ -532,6 +535,9 @@ async function media(request, { db, store }) {
     const range = request.headers.get("range");
     const rangeMatch = range ? /^bytes=(\d*)-(\d*)$/.exec(range.trim()) : null;
     if (rangeMatch && (rangeMatch[1] !== "" || rangeMatch[2] !== "")) {
+      // 首次打开仅用于读取元数据；Range 分支不会消费该流，必须主动关闭。
+      // 包括下面直接返回 416、二次打开失败的路径，均不能把句柄留给 GC。
+      opened.stream.destroy();
       const start = rangeMatch[1] === "" ? Math.max(0, total - Number(rangeMatch[2])) : Number(rangeMatch[1]);
       const requestedEnd = rangeMatch[2] === "" ? total - 1 : Number(rangeMatch[2]);
       if (!Number.isFinite(start) || !Number.isFinite(requestedEnd) || start >= total || start > requestedEnd) {
@@ -1302,6 +1308,8 @@ export async function handleApi(request, ctx) {
     const user = resolveUser(ctx.db, request) || resolveUserFromToken(ctx.db, request);
     if (!user) return Response.json({ error: "请先登录" }, { status: 401 });
     ctx.user = user;
+
+    if (["/api/preview-pages", "/api/preview-page", "/api/preview-page-assets", "/api/preview-dimensions", "/api/preview-values"].includes(pathname)) return await handlePreviewPages(request, ctx);
 
     if (pathname === "/api/auth/me" && method === "GET") return me(ctx);
     if (pathname === "/api/auth/me" && method === "PATCH") return await updateMe(request, ctx);

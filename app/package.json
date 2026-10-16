@@ -11,7 +11,7 @@
     "build": "vite build",
     "start": "node server/index.js",
     "typecheck": "tsc --noEmit",
-    "test": "node test/api-smoke.mjs"
+    "test": "node --test test/preview-pages.test.mjs && node test/api-smoke.mjs"
   },
   "dependencies": {
     "@noble/hashes": "^2.0.1",

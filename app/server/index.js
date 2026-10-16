@@ -57,6 +57,8 @@ function sendResponse(res, response) {
       console.error("[artdatabase] 响应流读取失败:", error);
       res.destroy(error);
     });
+    // 客户端中途断开（如视频跳转、关闭页面）时，释放底层媒体文件句柄。
+    res.once("close", () => stream.destroy());
     stream.pipe(res);
   } else {
     res.end();

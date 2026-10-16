@@ -119,6 +119,8 @@ export function DimensionPreview({
   onUpdateAssetDimensions,
   onAddDimension,
   onEditDimension,
+  selectedIds,
+  onSelectedIdsChange,
 }: {
   dimensions: Dimension[];
   assets: Asset[];
@@ -126,8 +128,9 @@ export function DimensionPreview({
   onUpdateAssetDimensions: (assetId: string, values: Record<string, number>) => Promise<void>;
   onAddDimension: () => void;
   onEditDimension: (dimension: Dimension) => void;
+  selectedIds: string[];
+  onSelectedIdsChange: (ids: string[]) => void;
 }) {
-  const [selectedIds, setSelectedIds] = useState(() => dimensions.slice(0, 3).map((dimension) => dimension.id));
   const [zoom, setZoom] = useState(1);
   const [rotateX, setRotateX] = useState(52);
   const [rotateZ, setRotateZ] = useState(352);
@@ -493,10 +496,6 @@ export function DimensionPreview({
   }, [clusters]);
 
   useEffect(() => {
-    setSelectedIds((current) => current.filter((id) => dimensions.some((dimension) => dimension.id === id)));
-  }, [dimensions]);
-
-  useEffect(() => {
     if (!modeTransitioning) return;
     const timer = window.setTimeout(() => setModeTransitioning(false), 1050);
     return () => window.clearTimeout(timer);
@@ -527,11 +526,8 @@ export function DimensionPreview({
   }, []);
 
   function toggleDimension(id: string) {
-    setSelectedIds((current) => {
-      if (current.includes(id)) return current.filter((value) => value !== id);
-      if (current.length >= 3) return current;
-      return [...current, id];
-    });
+    if (selectedIds.includes(id)) onSelectedIdsChange(selectedIds.filter((value) => value !== id));
+    else if (selectedIds.length < 3) onSelectedIdsChange([...selectedIds, id]);
   }
 
   function toggleFocusMode() {

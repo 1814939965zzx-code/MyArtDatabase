@@ -5,9 +5,7 @@ import { sha256 } from "@noble/hashes/sha2.js";
 import { bytesToHex } from "@noble/hashes/utils.js";
 import { FormEvent, useEffect, useState } from "react";
 import { notifyUnauthorized } from "./api";
-import { centeredRangeStyle, displayDimensionValue } from "./dimensionScale";
 
-type Dimension = { id: string; leftLabel: string; rightLabel: string };
 type Duplicate = { id: string; name: string; fileName: string; thumbnailUrl: string | null; inProject: number };
 type PreparedFile = {
   hash: string;
@@ -69,14 +67,12 @@ async function prepareFile(file: File, projectId: string): Promise<PreparedFile>
 export function UploadModal({
   file,
   projectId,
-  dimensions,
   onClose,
   onComplete,
   onMessage,
 }: {
   file: File;
   projectId: string;
-  dimensions: Dimension[];
   onClose: () => void;
   onComplete: () => Promise<void>;
   onMessage: (message: string) => void;
@@ -89,9 +85,6 @@ export function UploadModal({
   const [aiTagBusy, setAiTagBusy] = useState(false);
   const [uploadProgress, setUploadProgress] = useState<number | null>(null);
   const [previewFailed, setPreviewFailed] = useState(false);
-  const [values, setValues] = useState<Record<string, number>>(
-    Object.fromEntries(dimensions.map((dimension) => [dimension.id, 500])),
-  );
 
   useEffect(() => {
     let active = true;
@@ -189,7 +182,6 @@ export function UploadModal({
     form.set("width", String(Math.round(prepared.width)));
     form.set("height", String(Math.round(prepared.height)));
     form.set("allowDuplicate", String(allowDuplicate));
-    form.set("dimensionValues", JSON.stringify(values));
     setBusy(true);
     setError("");
     setUploadProgress(0);
@@ -241,15 +233,7 @@ export function UploadModal({
                 <label>全局标签<div className="upload-tags-row"><input name="tags" value={tagsText} onChange={(event) => setTagsText(event.target.value)} maxLength={4000} placeholder="用逗号分隔，例如：建筑, 暖色, 户外" />{!isVideo ? <button className="ai-tag-button" type="button" disabled={busy || aiTagBusy || !prepared} onClick={() => void runAiTag()} title="调用 AI 观察这张图片并自动补充标签">{aiTagBusy ? <><LoaderCircle className="spin" size={12} />AI 打标中…</> : <><Sparkles size={12} />AI 打标</>}</button> : null}</div></label>
                 <label>描述<textarea name="description" rows={2} maxLength={2000} placeholder="描述图片内容或使用方向" /></label>
                 <div className="upload-two-fields"><label>来源链接<input name="sourceUrl" type="url" maxLength={1000} placeholder="https://" /></label><label>备注<input name="notes" maxLength={2000} placeholder="团队内部备注" /></label></div>
-                <div className="upload-dimensions">
-                  <div className="upload-section-heading"><strong>项目维度</strong><span>{dimensions.length} 个</span></div>
-                  {dimensions.length ? dimensions.map((dimension) => (
-                    <div className="upload-dimension" key={dimension.id}>
-                      <span><b>{dimension.leftLabel}</b><em>{displayDimensionValue(values[dimension.id])}</em><b>{dimension.rightLabel}</b></span>
-                      <input className="centered-range" aria-label={`设置${dimension.leftLabel}到${dimension.rightLabel}的位置`} aria-valuetext={String(displayDimensionValue(values[dimension.id]))} type="range" min="0" max="1000" step="5" value={values[dimension.id]} style={centeredRangeStyle(values[dimension.id])} onChange={(event) => setValues((current) => ({ ...current, [dimension.id]: Number(event.target.value) }))} />
-                    </div>
-                  )) : <p className="form-hint">项目还没有维度，可上传后再添加。</p>}
-                </div>
+                <p className="form-hint">上传后素材加入项目，可在维度 Page 中手动添加并设置维度位置。</p>
               </div>
               {uploadProgress !== null ? (
                 <div className="upload-progress"><span style={{ width: `${Math.round(uploadProgress * 100)}%` }} /></div>

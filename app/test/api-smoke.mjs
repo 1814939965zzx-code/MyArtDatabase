@@ -6,10 +6,12 @@ import { createServer, request as httpRequest } from "node:http";
 import { DatabaseSync } from "node:sqlite";
 import os from "node:os";
 import path from "node:path";
+import { finished } from "node:stream/promises";
 import ffmpegPath from "ffmpeg-static";
 import sharp from "sharp";
 import { openDatabase } from "../server/db.js";
 import { createLocalDiskStore } from "../server/storage.js";
+import { handleApi } from "../server/routes.js";
 import { getAssetTagNames, listTags } from "../server/tags.js";
 
 const tmp = await mkdtemp(path.join(os.tmpdir(), "artdb-"));
@@ -225,6 +227,13 @@ const up = await fetch(`${base}/api/uploads`, { method: "POST", body: form });
 assert.equal(up.status, 201, `上传应 201，实际 ${up.status}`);
 const { asset } = await up.json();
 assert.equal(asset.sha256.length, 64);
+
+// 新上传只加入项目，不自动装入迁移后的默认 Page。
+const previewPages = await json(await fetch(`${base}/api/preview-pages?projectId=project-visual-direction`));
+assert.equal(previewPages.pages[0].name, "默认画板");
+const defaultPreview = await json(await fetch(`${base}/api/preview-page?projectId=project-visual-direction&pageId=${previewPages.pages[0].id}`));
+assert.ok(!defaultPreview.page.assets.some((entry) => entry.assetId === asset.id), "新上传不得自动加入维度 Page");
+assert.equal(defaultPreview.page.assets.length, ws.assets.length, "迁移的默认 Page 应保留旧项目全部素材");
 
 // 4) 读缩略图
 const thumb = await fetch(`${base}/api/media?id=${asset.id}&variant=thumbnail`);
@@ -775,6 +784,50 @@ assert.equal(rangeRes.status, 206, "Range 请求应返回 206");
 assert.match(rangeRes.headers.get("content-range") || "", /^bytes 0-99\/\d+$/, "content-range 应正确");
 const rangeBytes = Buffer.from(await rangeRes.arrayBuffer());
 assert.equal(rangeBytes.length, 100, "Range 响应体长度应等于请求区间");
+
+// 直接观察真实文件流，避免依赖 GC 时机才能发现句柄泄漏。
+{
+  const mediaDb = new DatabaseSync(path.join(tmp, "app.db"));
+  const diskStore = createLocalDiskStore({ root: process.env.STORE_ROOT });
+  try {
+    for (const scenario of [
+      { range: null, status: 200 },
+      { range: "bytes=0-99", status: 206 },
+      { range: "bytes=100-", status: 206 },
+      { range: "bytes=999999999999-", status: 416 },
+      { range: "bytes=99-0", status: 416 },
+      { range: "bytes=0-99", status: 404, missingSlice: true },
+      { range: "bytes=0-99", status: 500, failSlice: true },
+    ]) {
+      const streams = [];
+      const completions = [];
+      const store = {
+        async open(key, variant, range) {
+          if (range && scenario.missingSlice) return null;
+          if (range && scenario.failSlice) throw new Error("模拟片段读取失败");
+          const result = await diskStore.open(key, variant, range);
+          if (result) {
+            streams.push(result.stream);
+            completions.push(finished(result.stream, { signal: AbortSignal.timeout(2000) })
+              .catch((error) => {
+                if (error.code !== "ERR_STREAM_PREMATURE_CLOSE") throw error;
+              }));
+          }
+          return result;
+        },
+      };
+      const headers = { cookie: sessionCookie };
+      if (scenario.range) headers.range = scenario.range;
+      const response = await handleApi(new Request(`${base}/api/media?id=${videoUpload.id}`, { headers }), { db: mediaDb, store });
+      assert.equal(response.status, scenario.status);
+      await response.arrayBuffer();
+      await Promise.all(completions);
+      assert.ok(streams.every((stream) => stream.closed), `媒体请求 ${JSON.stringify(scenario)} 必须关闭所有文件流`);
+    }
+  } finally {
+    mediaDb.close();
+  }
+}
 
 const vThumb = await fetch(`${base}/api/media?id=${videoUpload.id}&variant=thumbnail`);
 assert.equal(vThumb.status, 200);

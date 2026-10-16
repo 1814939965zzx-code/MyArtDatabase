@@ -3,6 +3,7 @@ import { mkdirSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import path from "node:path";
 import { normalizeTag } from "./tags.js";
+import { migratePreviewPages } from "./preview-pages.js";
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS projects (
@@ -179,6 +180,7 @@ function allowRepeatedCanvasAssets(db) {
   }
 }
 
+// 基础表迁移至 v8；维度 Page 的 v9 在示例数据初始化之后单独迁移。
 const SCHEMA_VERSION = 8;
 
 /**
@@ -300,7 +302,7 @@ function migrateSchema(db) {
     const columns = db.prepare("PRAGMA table_info(assets)").all().map((column) => column.name);
     if (!columns.includes("transcode_progress")) db.exec("ALTER TABLE assets ADD COLUMN transcode_progress INTEGER NOT NULL DEFAULT 0");
   }
-  db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
+  db.exec(`PRAGMA user_version = ${Math.max(version, SCHEMA_VERSION)}`);
 }
 
 const SEED_ASSETS = [
@@ -370,5 +372,6 @@ export function openDatabase(dbPath, { seedDemo = false } = {}) {
   // 示例数据只允许在开发模式或显式开启时写入；生产环境绝不自动写入，
   // 否则空库/路径配置错误会被静默伪装成“示例素材库”。
   if (seedDemo) seed(db);
+  migratePreviewPages(db);
   return db;
 }

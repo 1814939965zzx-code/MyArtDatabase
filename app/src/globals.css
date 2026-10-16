@@ -440,6 +440,30 @@ button:focus-visible, input:focus-visible, textarea:focus-visible {
 
 .preview-layout { margin: 22px 42px 0; height: max(640px, calc(100vh - 96px)); min-height: 640px; display: grid; grid-template-columns: 230px minmax(0, 1fr); border: 1px solid var(--line); background: var(--surface); }
 .workspace.preview-active .preview-layout { flex: 1 1 auto; height: auto; min-height: 0; }
+.dimension-pages { display: flex; flex-direction: column; flex: 1 1 auto; min-height: 0; margin: 18px 42px 0; border: 1px solid var(--line); background: var(--surface); }
+.dimension-pages .preview-layout { margin: 0; border: 0; }
+.dimension-pages-bar { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 9px 12px; border-bottom: 1px solid var(--line); flex: 0 0 auto; }
+.dimension-pages-tabs { display: flex; align-items: center; gap: 5px; overflow-x: auto; min-width: 0; }
+.dimension-pages-tabs button { display: inline-flex; align-items: center; gap: 7px; padding: 8px 11px; border: 1px solid transparent; border-radius: 5px; background: transparent; color: var(--muted); white-space: nowrap; cursor: pointer; }
+.dimension-pages-tabs button.active { border-color: var(--line); background: #f4f1eb; color: var(--ink); }
+.dimension-pages-tabs small { opacity: .6; }
+.dimension-pages-actions { display: flex; gap: 6px; flex: 0 0 auto; }
+.dimension-page-hint { padding: 8px 16px; font-size: 12px; color: var(--muted); border-bottom: 1px solid var(--soft-line); }
+.dimension-pages-empty { display: flex; flex: 1; flex-direction: column; justify-content: center; align-items: center; gap: 12px; min-height: 200px; color: var(--muted); }
+.page-asset-picker { display: flex; flex-direction: column; width: min(900px, 100%); max-height: 85dvh; padding: 24px; background: var(--surface); box-shadow: 0 24px 70px rgba(15,17,15,.22); }
+.page-picker-search { display: flex; align-items: center; gap: 9px; border: 1px solid var(--line); padding: 9px 12px; margin-bottom: 12px; }
+.page-picker-search input { flex: 1; min-width: 0; border: 0; outline: 0; background: transparent; }
+.page-picker-selection { display: flex; gap: 12px; align-items: center; margin: 12px 0; font-size: 12px; color: var(--muted); flex-wrap: wrap; }
+.page-picker-selection button { border: 0; background: transparent; color: var(--accent); cursor: pointer; }
+.page-picker-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: 12px; overflow-y: auto; min-height: 140px; padding: 3px; }
+.page-picker-grid > button { position: relative; display: flex; flex-direction: column; align-items: center; gap: 8px; min-width: 0; padding: 8px; border: 1px solid var(--line); border-radius: 5px; background: white; color: var(--ink); cursor: pointer; }
+.page-picker-grid > button.selected { border-color: var(--accent); outline: 1px solid var(--accent); }
+.page-picker-grid > button:disabled { opacity: .45; cursor: default; }
+.page-picker-grid img { width: 100%; height: 100px; object-fit: contain; }
+.page-picker-grid span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; font-size: 12px; }
+.page-picker-grid small { font-size: 11px; }
+.page-picker-grid .lucide-check { position: absolute; right: 8px; top: 8px; background: var(--accent); color: white; border-radius: 50%; }
+@media (max-width: 900px) { .dimension-pages { margin-left: 18px; margin-right: 18px; } .dimension-pages-bar { align-items: stretch; flex-direction: column; } .dimension-pages-actions { justify-content: flex-end; } }
 /* 专注模式只覆盖页面内容层（侧栏 30 / 顶栏 20 之上），素材详情抽屉 60、弹窗 80、toast 100 等浮动 UI 必须显示在其上方 */
 .preview-layout.focus-mode { width: 100vw; height: 100vh; min-height: 100vh; margin: 0; position: fixed; inset: 0; z-index: 50; border: 0; background: var(--surface); }
 .preview-settings { min-height: 0; padding: 17px; border-right: 1px solid var(--line); overflow-y: auto; }
