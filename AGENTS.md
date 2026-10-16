@@ -65,6 +65,7 @@
 | `extension/content.js` | 扩展内容脚本（确认面板[图片预览/视频占位]与 toast，Shadow DOM 隔离样式；blob: 素材代为获取） |
 | `extension/options.html` / `extension/options.js` | 扩展设置页（服务器地址 + 插件令牌 + 测试连接） |
 | `scripts/deploy.sh` | 服务器部署与版本校验 |
+| `scripts/install-deps.mjs` | 首次安装/部署共享依赖安装器：临时目录安装、ffmpeg 缓存、验证后替换 |
 | `scripts/setup-server.sh` | 首次安装、旧数据安全迁移与 systemd 初始化 |
 | `scripts/check-production.sh` | 只读生产环境巡检 |
 

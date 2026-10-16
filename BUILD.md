@@ -20,7 +20,7 @@ sudo ./scripts/setup-server.sh          # 首次初始化（只执行一次）
   - **多个数据库同时存在时停止**，绝不自动猜测；
   - 先停止同名旧服务，使用 SQLite Online Backup API 生成一致性备份；
   - 将备份复制到生产目录，旧数据库与旧媒体目录原地保留，便于回退；
-- 以仓库所有者身份执行 `npm ci`、类型检查、测试和首次构建；
+- 以仓库所有者身份安全安装依赖、类型检查、测试和首次构建（与日常部署共用安装器）；
 - 写入 `/etc/artdatabase/env`（`PORT`/`DB_PATH`/`STORE_ROOT`/`SERVICE_NAME`/`RUN_USER`）；
 - 生成 systemd unit（`User=artdatabase`，`EnvironmentFile=/etc/artdatabase/env`）；
 - 显式重启并验证服务用户、代码入口、API、数据库和媒体文件。
@@ -46,7 +46,7 @@ sudo INIT_EMPTY_DB=1 ./scripts/setup-server.sh
   ↓
 git fetch + fast-forward（本地有未提交修改、分支不对或无法 ff 则停止）
   ↓
-依赖安装（package.json / package-lock.json 或 Node 版本未变、且 node_modules 完整时跳过 npm ci）
+依赖检查（依赖声明 / 锁文件 / Node 运行时未变且依赖完整时跳过安装；否则临时目录安装、验证后替换）
   ↓
 typecheck + test + build
   ↓
@@ -59,7 +59,16 @@ typecheck + test + build
 
 **任何一项异常都以非零退出并输出恢复指引**，不会出现“有警告但仍成功”。服务器无需先手动 `git pull`。
 
-依赖不会每次部署都全量重装：`npm ci` 会删除 `node_modules` 重建并重跑 postinstall（ffmpeg-static 会重新下载二进制），所以仅在 `package.json`/`package-lock.json` 或 Node 版本变化、或 `node_modules` 不完整时才执行。上次成功安装的依赖指纹记录在仓库 `tmp/installed-deps.sha256`（`npm ci` 成功后写入，中断/失败不会污染），纯代码提交的部署会跳过安装；依赖真正变化时仍从锁文件精确重装。
+依赖安装由 `scripts/install-deps.mjs` 统一处理：
+
+- 修改 `test`、`build` 等应用命令不会触发重装；依赖声明、安装钩子、锁文件、Node 版本、操作系统/架构或项目 `.npmrc` 变化时才重装。每次还会检查依赖树、加载 sharp 并执行 `ffmpeg -version`，缺失或损坏时自动重装。
+- `npm ci` 在仓库 `tmp/` 下的临时目录执行，包含构建所需的开发依赖。安装及验证成功后才替换 `app/node_modules`，失败或超时保留原依赖和成功记录，并停止部署，不重启服务。安装期间会显示 postinstall 输出；默认 10 分钟超时，可用 `DEPS_INSTALL_TIMEOUT_SECONDS=900 ./scripts/deploy.sh` 调整。
+- 已验证且版本/平台一致的 ffmpeg 二进制会缓存到 `tmp/ffmpeg-cache/`，安装时复用，避免反复从 GitHub 下载；首次安装、版本变更或没有有效缓存时仍需要下载。已经被旧流程删除的二进制无法凭空恢复。
+- 成功记录保存在 `tmp/installed-deps.sha256`。升级流程时自动识别旧记录（当前 Node、锁文件与最近 30 次清单历史匹配且依赖检查通过），避免仅修改测试命令导致重装。记录缺失或无法确认时执行安全安装。
+
+临时安装和依赖切换需要额外磁盘空间；保留 `tmp/ffmpeg-cache/` 可减少后续安装耗时。
+
+从旧版部署流程首次升级到本流程时，在仓库目录先执行 `git pull --ff-only`，再运行 `./scripts/deploy.sh`。已经启动的旧 shell 脚本不会因拉取新文件而自动切换安装逻辑；本次升级后日常部署仍只需一条命令。
 
 ## 生产检查：`./scripts/check-production.sh`
 

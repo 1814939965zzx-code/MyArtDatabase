@@ -318,6 +318,8 @@ RC_NOENV=$?
 set -e
 check_exit "缺少 env 文件退出码非 0" 1 "${RC_NOENV}"
 
+node --test "${ROOT}/test-install-deps.mjs"
+
 echo "== 4. deploy 端到端（fake systemctl）=="
 # 用当前工作树构建"新版本"，推到裸仓库，再克隆为"服务器副本"
 NEWVER="${TMP}/newver"
@@ -334,7 +336,14 @@ git clone -q "${TMP}/dep-bare.git" "${TMP}/dep-repo"
 # 服务器副本需要依赖才能运行（真实服务器上已有 node_modules）
 (
   cd "${TMP}/dep-repo/app"
-  npm ci --no-audit --no-fund >/dev/null 2>&1
+  cp -R "${REAL_REPO}/app/node_modules" ./node_modules
+  mkdir -p ../tmp
+  node --input-type=module -e '
+    import {fingerprint} from "../scripts/install-deps.mjs";
+    import fs from "node:fs";
+    fs.writeFileSync("../tmp/installed-deps.sha256", fingerprint(process.cwd()) + "\n");
+  '
+
 )
 
 DEP_PORT=$(( (RANDOM % 2000) + 6000 ))

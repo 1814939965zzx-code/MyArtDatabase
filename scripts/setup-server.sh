@@ -159,16 +159,16 @@ fi
 
 # ---- 4. 首次安装依赖并构建，确保全新 clone 可以直接启动 ----
 if [[ ${DRY} -eq 1 ]]; then
-  log "dry-run：将以仓库所有者身份执行 npm ci / typecheck / test / build"
+  log "dry-run：将以仓库所有者身份安全安装依赖 / typecheck / test / build"
 else
   REPO_OWNER="${REPO_OWNER:-$(stat -c '%U' "${REPO_DIR}")}"
   [[ -n "${REPO_OWNER}" ]] || die "无法确定仓库所有者：${REPO_DIR}"
   log "首次构建（用户=${REPO_OWNER}）"
   if [[ "${REPO_OWNER}" == "root" ]]; then
-    (cd "${APP_DIR}" && npm ci --no-audit --no-fund && npm run typecheck && npm test && npm run build)
+    (cd "${APP_DIR}" && node ../scripts/install-deps.mjs "$PWD" && npm run typecheck && npm test && npm run build)
   else
     require_command runuser
-    runuser -u "${REPO_OWNER}" -- bash -c 'cd "$1" && npm ci --no-audit --no-fund && npm run typecheck && npm test && npm run build' _ "${APP_DIR}"
+    runuser -u "${REPO_OWNER}" -- bash -c 'cd "$1" && node ../scripts/install-deps.mjs "$PWD" && npm run typecheck && npm test && npm run build' _ "${APP_DIR}"
   fi
   [[ -s "${DIST_INDEX}" ]] || die "首次构建未生成 ${DIST_INDEX}"
 fi
