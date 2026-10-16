@@ -35,8 +35,7 @@ function fixture(t) {
     const args = process.argv.slice(2);
     if (args[0] === 'ls') process.exit(fs.existsSync('node_modules/broken') ? 1 : 0);
     fs.appendFileSync(process.env.INSTALL_LOG, process.cwd() + '\\n' + process.env.FFMPEG_BIN + '\\n');
-    if (process.env.INSTALL_MODE === 'hang') { setTimeout(() => {}, 60000); }
-    else if (process.env.INSTALL_MODE === 'fail') process.exit(42);
+    if (process.env.INSTALL_MODE === 'fail') process.exit(42);
     else {
       fs.cpSync(process.env.DEPS_TEMPLATE, 'node_modules', {recursive: true});
       fs.rmSync('node_modules/live-marker');
@@ -49,7 +48,8 @@ function fixture(t) {
   const run = (mode = '') => spawnSync(process.execPath, [installer, app], {
     encoding: 'utf8', timeout: 15_000,
     env: { ...process.env, PATH: bin + path.delimiter + process.env.PATH,
-      INSTALL_MODE: mode, INSTALL_LOG: log, DEPS_TEMPLATE: template, DEPS_INSTALL_TIMEOUT_SECONDS: mode === 'hang' ? '2' : '5' }
+      // A leftover setting from the old installer must no longer impose a deadline.
+      INSTALL_MODE: mode, INSTALL_LOG: log, DEPS_TEMPLATE: template, DEPS_INSTALL_TIMEOUT_SECONDS: '0.001' }
   });
   return { root, app, modules, pkg, lock, write, state, log, run };
 }
@@ -85,7 +85,7 @@ test('legacy successful install is adopted after test command changes', (t) => {
   assert.equal(fs.readFileSync(f.state, 'utf8').trim(), fingerprint(f.app));
 });
 
-for (const mode of ['fail', 'hang']) {
+for (const mode of ['fail']) {
   test(`install ${mode} preserves live dependencies and state; temporary directory cleaned`, (t) => {
     const f = fixture(t);
     fs.writeFileSync(f.state, 'old-runtime-or-lock');
@@ -98,7 +98,7 @@ for (const mode of ['fail', 'hang']) {
   });
 }
 
-test('successful staged install reuses verified ffmpeg, swaps dependencies, and records state', (t) => {
+test('install ignores the old timeout setting, reuses ffmpeg, swaps dependencies, and records state', (t) => {
   const f = fixture(t);
   const result = f.run();
   assert.equal(result.status, 0, result.stdout + result.stderr);

@@ -73,9 +73,8 @@ function legacyMatches(app, repo, saved) {
     hash(raw, lock, process.versions.node) === saved);
 }
 
-export function installDeps(app, { timeout = Number(process.env.DEPS_INSTALL_TIMEOUT_SECONDS || 600) * 1000 } = {}) {
+export function installDeps(app) {
   app = path.resolve(app);
-  if (!Number.isFinite(timeout) || timeout <= 0) throw new Error('依赖安装超时必须为正数');
   const repo = path.dirname(app);
   const temp = path.join(repo, 'tmp');
   fs.mkdirSync(temp, { recursive: true });
@@ -106,7 +105,7 @@ export function installDeps(app, { timeout = Number(process.env.DEPS_INSTALL_TIM
     fs.chmodSync(cache, 0o755);
   }
   const reuse = validBinary(cache);
-  log(`依赖需要安装：在临时目录执行 npm ci（超时 ${timeout / 1000} 秒），现有依赖保留`);
+  log('依赖需要安装：在临时目录执行 npm ci，现有依赖保留');
   if (reuse) log('复用已验证的 ffmpeg 缓存，跳过二进制下载');
   const stage = fs.mkdtempSync(path.join(temp, 'deps-install-'));
   const live = path.join(app, 'node_modules');
@@ -116,8 +115,8 @@ export function installDeps(app, { timeout = Number(process.env.DEPS_INSTALL_TIM
       if (fs.existsSync(path.join(app, file))) fs.copyFileSync(path.join(app, file), path.join(stage, file));
     }
     const env = { ...process.env, FFMPEG_BIN: reuse ? cache : '', NODE_ENV: 'development' };
-    if (!run('npm', ['ci', '--include=dev', '--no-audit', '--no-fund', '--foreground-scripts'], stage, { env, timeout })) {
-      throw new Error('npm ci 失败或超时；原 node_modules 与依赖记录未替换，服务未重启');
+    if (!run('npm', ['ci', '--include=dev', '--no-audit', '--no-fund', '--foreground-scripts'], stage, { env, timeout: 0 })) {
+      throw new Error('npm ci 失败；原 node_modules 与依赖记录未替换，服务未重启');
     }
     const stagedBinary = path.join(stage, 'node_modules/ffmpeg-static', binaryName);
     if (reuse) fs.copyFileSync(cache, stagedBinary);

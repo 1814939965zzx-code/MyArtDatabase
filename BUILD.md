@@ -62,7 +62,7 @@ typecheck + test + build
 依赖安装由 `scripts/install-deps.mjs` 统一处理：
 
 - 修改 `test`、`build` 等应用命令不会触发重装；依赖声明、安装钩子、锁文件、Node 版本、操作系统/架构或项目 `.npmrc` 变化时才重装。每次还会检查依赖树、加载 sharp 并执行 `ffmpeg -version`，缺失或损坏时自动重装。
-- `npm ci` 在仓库 `tmp/` 下的临时目录执行，包含构建所需的开发依赖。安装及验证成功后才替换 `app/node_modules`，失败或超时保留原依赖和成功记录，并停止部署，不重启服务。安装期间会显示 postinstall 输出；默认 10 分钟超时，可用 `DEPS_INSTALL_TIMEOUT_SECONDS=900 ./scripts/deploy.sh` 调整。
+- `npm ci` 在仓库 `tmp/` 下的临时目录执行，包含构建所需的开发依赖。安装及验证成功后才替换 `app/node_modules`，失败保留原依赖和成功记录，并停止部署，不重启服务。安装期间会显示 postinstall 输出，不设置安装总时长限制。
 - 已验证且版本/平台一致的 ffmpeg 二进制会缓存到 `tmp/ffmpeg-cache/`，安装时复用，避免反复从 GitHub 下载；首次安装、版本变更或没有有效缓存时仍需要下载。已经被旧流程删除的二进制无法凭空恢复。
 - 成功记录保存在 `tmp/installed-deps.sha256`。升级流程时自动识别旧记录（当前 Node、锁文件与最近 30 次清单历史匹配且依赖检查通过），避免仅修改测试命令导致重装。记录缺失或无法确认时执行安全安装。
 
