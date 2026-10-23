@@ -821,14 +821,6 @@ export function ArtDatabaseApp({ user, onLogout }: { user: SessionUser; onLogout
             <span className="project-icon"><Tags size={16} /></span>
             <span className="project-copy"><strong>标签管理</strong><small>词库与标签维护</small></span>
           </button>
-          <button
-            className={`all-assets-item ${activeArea === "components" ? "active" : ""}`}
-            type="button"
-            onClick={() => { setActiveArea("components"); setSelectedAssetId(null); setSidebarOpen(false); }}
-          >
-            <span className="project-icon"><Palette size={16} /></span>
-            <span className="project-copy"><strong>视觉组件</strong><small>样式与界面对照</small></span>
-          </button>
           <div className="sidebar-section-title">
             <span>项目</span><span>{projects.length}</span>
           </div>
@@ -931,6 +923,9 @@ export function ArtDatabaseApp({ user, onLogout }: { user: SessionUser; onLogout
                   ) : null}
                   {currentUser.role === "admin" ? (
                     <button type="button" role="menuitem" onClick={() => { setAnnouncementOpen(true); setUserMenuOpen(false); }}><Megaphone size={15} />登录页公告</button>
+                  ) : null}
+                  {currentUser.role === "admin" ? (
+                    <button type="button" role="menuitem" onClick={() => { setActiveArea("components"); setSelectedAssetId(null); setSidebarOpen(false); setUserMenuOpen(false); }}><Palette size={15} />视觉组件</button>
                   ) : null}
                   <div className="user-menu-divider" />
                   <button className="user-menu-logout" type="button" role="menuitem" onClick={() => { setUserMenuOpen(false); onLogout(); }}><LogOut size={15} />退出登录</button>
