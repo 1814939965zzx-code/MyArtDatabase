@@ -17,6 +17,7 @@ import {
   Menu,
   PanelLeftClose,
   PanelLeftOpen,
+  Palette,
   Pencil,
   Plus,
   RotateCcw,
@@ -52,6 +53,7 @@ import { TokenSettingsModal } from "./TokenSettingsModal";
 import { TrashView, type TrashedAsset } from "./TrashView";
 import { UploadModal } from "./UploadModal";
 import { UserManagerModal } from "./UserManagerModal";
+import { VisualComponentsPage } from "./VisualComponentsPage";
 import { useProgressiveImage } from "./useProgressiveImage";
 
 type Project = {
@@ -141,7 +143,7 @@ export function ArtDatabaseApp({ user, onLogout }: { user: SessionUser; onLogout
   const [projects, setProjects] = useState<Project[]>([]);
   const [libraryAssets, setLibraryAssets] = useState<LibraryAsset[]>([]);
   const [trashAssets, setTrashAssets] = useState<TrashedAsset[]>([]);
-  const [activeArea, setActiveArea] = useState<"home" | "library" | "project" | "trash">("home");
+  const [activeArea, setActiveArea] = useState<"home" | "library" | "project" | "trash" | "components">("home");
   const [selectedProjectId, setSelectedProjectId] = useState("");
   const [workspace, setWorkspace] = useState<Workspace | null>(null);
   const [previewPage, setPreviewPage] = useState<PreviewPage | null>(null);
@@ -819,6 +821,14 @@ export function ArtDatabaseApp({ user, onLogout }: { user: SessionUser; onLogout
             <span className="project-icon"><Tags size={16} /></span>
             <span className="project-copy"><strong>标签管理</strong><small>词库与标签维护</small></span>
           </button>
+          <button
+            className={`all-assets-item ${activeArea === "components" ? "active" : ""}`}
+            type="button"
+            onClick={() => { setActiveArea("components"); setSelectedAssetId(null); setSidebarOpen(false); }}
+          >
+            <span className="project-icon"><Palette size={16} /></span>
+            <span className="project-copy"><strong>视觉组件</strong><small>样式与界面对照</small></span>
+          </button>
           <div className="sidebar-section-title">
             <span>项目</span><span>{projects.length}</span>
           </div>
@@ -883,6 +893,13 @@ export function ArtDatabaseApp({ user, onLogout }: { user: SessionUser; onLogout
                   <em className="topbar-title-total">{trashAssets.length}</em>
                 </div>
               </div>
+            ) : activeArea === "components" ? (
+              <div className="topbar-project">
+                <div className="topbar-title">
+                  <h1>视觉组件</h1>
+                </div>
+                <div className="topbar-subtitle"><span>产品样式与交互模式</span></div>
+              </div>
             ) : null}
             {activeArea === "project" && workspace ? (
               <nav className="surface-tabs topbar-tabs" aria-label="项目视图">
@@ -894,7 +911,7 @@ export function ArtDatabaseApp({ user, onLogout }: { user: SessionUser; onLogout
           </div>
           <div className="topbar-actions">
             {activeArea === "library" ? <button className="tag-manager-open-button" type="button" onClick={() => setTagManagerOpen(true)}><Tags size={14} />标签管理</button> : null}
-            <div className="search-box"><Search size={17} /><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder={activeArea === "home" ? "搜索项目名称或说明" : "搜索名称、文件或标签"} aria-label={activeArea === "home" ? "搜索项目" : "搜索素材"} /></div>
+            {activeArea !== "components" ? <div className="search-box"><Search size={17} /><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder={activeArea === "home" ? "搜索项目名称或说明" : "搜索名称、文件或标签"} aria-label={activeArea === "home" ? "搜索项目" : "搜索素材"} /></div> : null}
             {activeArea === "project" && workspace ? <button className="upload-button" type="button" onClick={() => fileInputRef.current?.click()}><Upload size={15} />上传素材</button> : null}
             <div className="user-menu" ref={userMenuRef}>
               <button className="user-menu-trigger" type="button" onClick={() => setUserMenuOpen((open) => !open)} aria-haspopup="menu" aria-expanded={userMenuOpen}>
@@ -934,6 +951,8 @@ export function ArtDatabaseApp({ user, onLogout }: { user: SessionUser; onLogout
             onRestoreMany={(assets) => void restoreTrashAssets(assets)}
             onPurgeMany={(assets) => void purgeTrashAssets(assets)}
           />
+        ) : activeArea === "components" ? (
+          <VisualComponentsPage />
         ) : activeArea === "library" ? (
           <AllAssetsView
             assets={libraryAssets}
