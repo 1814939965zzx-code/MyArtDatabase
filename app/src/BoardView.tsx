@@ -5,6 +5,7 @@
 import { AlignCenter, AlignLeft, AlignRight, ArrowDownToLine, ArrowUpToLine, Bold, Check, ChevronDown, Circle, Eye, EyeOff, Frame, ImagePlus, Italic, LoaderCircle, Maximize2, Minimize2, Minus, MousePointer2, MoveHorizontal, MoveVertical, MoveUpRight, Pencil, Plus, Search, Square, Strikethrough, Tag, Trash2, Type, Underline } from "lucide-react";
 import { DragEvent, KeyboardEvent, MouseEvent, PointerEvent, useEffect, useRef, useState, type CSSProperties } from "react";
 import { notifyUnauthorized } from "./api";
+import { useViewportGestures } from "./useViewportGestures";
 
 type Asset = { id: string; name: string; thumbnailUrl: string | null; tags: string[]; width: number; height: number };
 type CanvasSummary = { id: string; projectId: string; name: string; revision: number; itemCount: number };
@@ -438,23 +439,20 @@ export function BoardView({ projectId, assets, onMessage, onSelectAsset }: { pro
     return () => { window.removeEventListener("click", close); window.removeEventListener("blur", close); };
   }, [frameMenu, itemMenu]);
 
-  useEffect(() => {
-    const element = viewportRef.current;
-    if (!element) return;
-    const handleWheel = (event: WheelEvent) => {
-      event.preventDefault();
-      const rect = element.getBoundingClientRect();
-      const cursorX = event.clientX - rect.left; const cursorY = event.clientY - rect.top;
-      const factor = Math.exp(-(event.deltaY || event.deltaX) * .0015);
+  useViewportGestures(viewportRef, canvas?.id, {
+    onPan: (dx, dy) => setView((current) => ({ ...current, x: current.x - dx, y: current.y - dy })),
+    onZoom: (factor, clientX, clientY) => {
+      const rect = viewportRef.current?.getBoundingClientRect();
+      if (!rect) return;
+      const cursorX = clientX - rect.left;
+      const cursorY = clientY - rect.top;
       setView((current) => {
         const nextZoom = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, current.zoom * factor));
         const ratio = nextZoom / current.zoom;
         return { zoom: nextZoom, x: cursorX - (cursorX - current.x) * ratio, y: cursorY - (cursorY - current.y) * ratio };
       });
-    };
-    element.addEventListener("wheel", handleWheel, { passive: false });
-    return () => element.removeEventListener("wheel", handleWheel);
-  }, [canvas?.id]);
+    },
+  });
 
   async function createCanvas() {
     const name = `Page ${canvases.length + 1}`;
@@ -1621,7 +1619,7 @@ export function BoardView({ projectId, assets, onMessage, onSelectAsset }: { pro
           {selectedItemIds.length && selectedFrameIds.length ? <div className="canvas-selection-tools"><span className="selection-count">已选 {selectedItemIds.length} 个 · {selectedFrameIds.length} 个 Frame</span><button className="danger" type="button" onClick={() => deleteMixedSelection()} title="删除选中的素材与 Frame（Delete/Backspace）"><Trash2 size={15} /></button></div> : null}
           {frameMenu ? <div className="frame-context-menu" role="menu" style={{ left: frameMenu.x, top: frameMenu.y }} onPointerDown={(event) => event.stopPropagation()}><button type="button" role="menuitem" onClick={() => requestFrameDeletion(frameMenu.frameId)}><Trash2 size={14} />删除 Frame</button></div> : null}
           {itemMenu ? <div className="frame-context-menu item-context-menu" role="menu" style={{ left: itemMenu.x, top: itemMenu.y }} onPointerDown={(event) => event.stopPropagation()}><button type="button" role="menuitem" onClick={() => void deleteCanvasItems(selectedItemIds.includes(itemMenu.itemId) ? selectedItemIds : [itemMenu.itemId])}><Trash2 size={14} />删除</button></div> : null}
-          <div className="board-navigation-hint">V 选择 · T 文本 · R 矩形 · O 椭圆 · 隐藏标记 · 拖左侧素材到画板放置 · 拖标签批量插入 · 框选 · 空格 / 中键 + 拖动移动 Page · Ctrl+Z 撤销移动 · 滚轮缩放</div>
+          <div className="board-navigation-hint">V 选择 · T 文本 · R 矩形 · O 椭圆 · 隐藏标记 · 拖左侧素材到画板放置 · 拖标签批量插入 · 框选 · 空格 / 中键 + 拖动移动 Page · Ctrl+Z 撤销移动 · 双指平移 · 滚轮 / 捏合缩放</div>
           {confirmFrameDeleteIds.length ? (() => {
             const victims = frames.filter((entry) => confirmFrameDeleteIds.includes(entry.id));
             const affected = items.filter((item) => item.parentFrameId && confirmFrameDeleteIds.includes(item.parentFrameId)).length;

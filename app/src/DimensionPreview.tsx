@@ -1,9 +1,10 @@
 "use client";
 
 import { Aperture, Box, Bug, Images, Maximize2, Minimize2, Minus, MousePointer2, Pencil, Plus, RotateCcw } from "lucide-react";
-import { CSSProperties, PointerEvent, useEffect, useMemo, useRef, useState, WheelEvent } from "react";
+import { CSSProperties, PointerEvent, useEffect, useMemo, useRef, useState } from "react";
+import { useViewportGestures } from "./useViewportGestures";
 import { displayDimensionValue } from "./dimensionScale";
-import { gridCell, gridCellKey, gridStepFor, gridTicksFor } from "./previewGrid";
+import { centeredGridStepFor, gridClusterCell, gridClusterKey, gridMinimumSpacing, gridStepFor, gridTicksFor, PREVIEW_ASSET_WIDTH, previewAssetAspectRatio as aspectRatioFor, usesCenteredGrid, zoomPanAtPointer } from "./previewGrid";
 
 type Dimension = { id: string; leftLabel: string; rightLabel: string };
 type Asset = { id: string; name: string; thumbnailUrl: string | null; dimensionValues: Record<string, number>; width?: number; height?: number };
@@ -44,7 +45,7 @@ function hasBlockingOverlay() {
 const clampValue = (value: number) => Math.max(0, Math.min(1000, Math.round(value)));
 const wrapRotation = (value: number) => ((value % 360) + 360) % 360;
 const SCENE_PERSPECTIVE = 2200;
-const PLANE_CARD_SIZE = 90;
+const PLANE_CARD_SIZE = PREVIEW_ASSET_WIDTH;
 const PLANE_CARD_GAP = 12;
 
 /** 展开平面的网格列数/行数与平面尺寸（与渲染共用）；cardSize 随图片缩放系数调整。 */
@@ -81,15 +82,6 @@ type Cluster = {
   screenX: number;
   screenY: number;
 };
-const aspectRatioFor = (asset: Asset) => {
-  const width = asset.width ?? 0;
-  const height = asset.height ?? 0;
-  if (width > 0 && height > 0) {
-    if (width === height) return "1 / 1";
-    return height > width ? "3 / 4" : "4 / 3";
-  }
-  return "1 / 1";
-};
 
 function AxisFaces() {
   return (
@@ -124,6 +116,8 @@ export function DimensionPreview({
   onMessage?: (message: string) => void;
 }) {
   const [zoom, setZoom] = useState(1);
+  const gestureZoomRef = useRef(zoom);
+  gestureZoomRef.current = zoom;
   const [rotateX, setRotateX] = useState(52);
   const [rotateZ, setRotateZ] = useState(352);
   const [cameraMoving, setCameraMoving] = useState(false);
@@ -139,10 +133,6 @@ export function DimensionPreview({
   const [overrides, setOverrides] = useState<Record<string, Record<string, number>>>({});
   const [sceneSize, setSceneSize] = useState(0);
   const [gridStep, setGridStep] = useState<number | undefined>(undefined);
-  useEffect(() => {
-    if (sceneSize > 0) setGridStep((previous) => gridStepFor(sceneSize * zoom / 200, previous));
-  }, [sceneSize, zoom]);
-  const activeGridStep = gridStep ?? gridStepFor(sceneSize * zoom / 200);
   // 图片缩放系数：作用于预览场景内所有图片（单张/堆/展开平面卡片），100% 为默认 90px；localStorage 记住
   const [assetScale, setAssetScale] = useState<number>(() => {
     try {
@@ -197,7 +187,20 @@ export function DimensionPreview({
     [dimensions, selectedIds],
   );
   const mode = selected.length;
-  const gridTicks = useMemo(() => gridTicksFor(activeGridStep), [activeGridStep]);
+  const minimumGridSpacing = useMemo(() => gridMinimumSpacing(
+    assets.filter((asset) => assetBelongsToIsolatedOctant(asset.dimensionValues)),
+    mode,
+    assetScale,
+    zoom,
+  ), [assets, mode, assetScale, zoom, selected, isolatedOctant]);
+  useEffect(() => {
+    if (sceneSize > 0) setGridStep((previous) => gridStepFor(sceneSize * zoom / 200, minimumGridSpacing, previous));
+  }, [sceneSize, zoom, minimumGridSpacing]);
+  const densityGridStep = gridStep ?? gridStepFor(sceneSize * zoom / 200, minimumGridSpacing);
+  // Center coarse cells regardless of the zoom percentages shown in the toolbar.
+  const centeredGrid = usesCenteredGrid(densityGridStep, zoom, assetScale);
+  const activeGridStep = centeredGrid ? centeredGridStepFor(densityGridStep) : densityGridStep;
+  const gridTicks = useMemo(() => gridTicksFor(activeGridStep, centeredGrid), [activeGridStep, centeredGrid]);
   const sceneRotateX = ((rotateX + 180) % 360 + 360) % 360 - 180;
   const sceneRotateZ = ((rotateZ + 180) % 360 + 360) % 360 - 180;
   const planeSize = scenePlaneRef.current?.offsetWidth ?? 0;
@@ -251,7 +254,7 @@ export function DimensionPreview({
       const coordinates = selected.map((dimension) => values[dimension.id] ?? 500);
       const projected = projectValuePoint(coordinates[0], mode >= 2 ? 1000 - coordinates[1] : 500, mode === 3 ? coordinates[2] - 500 : 0);
       if (!projected) continue;
-      const cellKey = gridCellKey(coordinates, activeGridStep);
+      const cellKey = gridClusterKey(coordinates, activeGridStep, centeredGrid);
       const group = groups.get(cellKey) ?? [];
       group.push({ asset, worldZ: projected.worldZ, values: coordinates });
       groups.set(cellKey, group);
@@ -260,7 +263,7 @@ export function DimensionPreview({
       if (group.length < 2) continue;
       // Clamp edge cells to the domain and, during isolation, to the visible half.
       const cells = group[0].values.map((value, index) => {
-        const cell = gridCell(value, activeGridStep);
+        const cell = gridClusterCell(value, activeGridStep, centeredGrid);
         const sign = isolatedOctant ? [isolatedOctant.x, isolatedOctant.y, isolatedOctant.z][index] : null;
         const min = sign === 1 ? Math.max(500, cell.min) : cell.min;
         const max = sign === -1 ? Math.min(500, cell.max) : cell.max;
@@ -269,7 +272,7 @@ export function DimensionPreview({
       const x = cells[0].center;
       const y = mode >= 2 ? 1000 - cells[1].center : 500;
       const z = mode === 3 ? cells[2].center - 500 : 0;
-      const key = `s:${activeGridStep}:${cellKey}:${group.map((entry) => entry.asset.id).sort().join(",")}`;
+      const key = `s:${centeredGrid ? "center" : "edge"}:${activeGridStep}:${cellKey}:${group.map((entry) => entry.asset.id).sort().join(",")}`;
       const projected = projectValuePoint(x, y, z);
       clusters.push({
         key, cellKey,
@@ -287,7 +290,7 @@ export function DimensionPreview({
       for (const entry of group) clusterOf.set(entry.asset.id, key);
     }
     return { clusters, clusterOf };
-  }, [assets, mode, selected, activeGridStep, sceneSize, scenePivot.x, scenePivot.y, scenePivot.z, isolatedOctant, overrides, draggingAssetId, draggingPlaneAssetId, rotateX, rotateZ]);
+  }, [assets, mode, selected, activeGridStep, centeredGrid, sceneSize, scenePivot.x, scenePivot.y, scenePivot.z, isolatedOctant, overrides, draggingAssetId, draggingPlaneAssetId, rotateX, rotateZ]);
   function octantName(octant: Octant) {
     return [
       octant.x === 1 ? selected[0].rightLabel : selected[0].leftLabel,
@@ -527,12 +530,28 @@ export function DimensionPreview({
     setFocusMode((active) => !active);
   }
 
-  function zoomWithWheel(event: WheelEvent<HTMLDivElement>) {
-    event.preventDefault();
+  function zoomWithGesture(factor: number, clientX: number, clientY: number) {
     clearFan();
-    const factor = Math.exp(-event.deltaY * .0014);
-    setZoom((current) => Math.max(.35, Math.min(2.8, current * factor)));
+    const currentZoom = gestureZoomRef.current;
+    const nextZoom = Math.max(.35, Math.min(2.8, currentZoom * factor));
+    if (nextZoom === currentZoom) return;
+    gestureZoomRef.current = nextZoom;
+    const viewport = sceneViewportRef.current;
+    if ((mode === 1 || mode === 2) && viewport) {
+      const rect = viewport.getBoundingClientRect();
+      const pointer = { x: clientX - rect.left - rect.width / 2, y: clientY - rect.top - rect.height / 2 };
+      setViewPan((current) => zoomPanAtPointer(current, pointer, currentZoom, nextZoom));
+    }
+    setZoom(nextZoom);
   }
+
+  useViewportGestures(sceneViewportRef, mode, {
+    onZoom: zoomWithGesture,
+    onPan: (dx, dy) => {
+      setViewPan((current) => ({ x: current.x - dx, y: current.y - dy }));
+      setAssetHover(null);
+    },
+  });
 
   function toggleOctantIsolation() {
     if (mode !== 3) return;
@@ -914,7 +933,7 @@ export function DimensionPreview({
 
   function computeDropTarget(values: Record<string, number>): string | null {
     if (!mode || !selected.length) return null;
-    const cellKey = gridCellKey(selected.map((dimension) => values[dimension.id] ?? 500), activeGridStep);
+    const cellKey = gridClusterKey(selected.map((dimension) => values[dimension.id] ?? 500), activeGridStep, centeredGrid);
     return clusters.find((cluster) => cluster.cellKey === cellKey)?.key ?? null;
   }
 
@@ -1235,7 +1254,7 @@ export function DimensionPreview({
         <div className="preview-toolbar">
           <span>{mode ? `${mode}D 预览` : "未选择维度"} · {mode === 1 ? "左右拖动图片改变维度值" : mode === 2 ? "在平面中拖动图片改变两项维度" : mode === 3 ? "左键拖动旋转视角；点击图片查看详情" : "选择 1～3 个维度开始预览"}</span>
           <div className="preview-tools">
-            <span className="camera-hint"><MousePointer2 size={13} />空格 + 左键 / 中键平移视图</span>
+            <span className="camera-hint" title="双指滑动平移，鼠标滚轮或触控板捏合缩放；也可用空格 + 左键或中键拖动平移"><MousePointer2 size={13} />双指平移 · 捏合缩放</span>
             <div className="preview-zoom"><button type="button" onClick={() => { clearFan(); setZoom((value) => Math.max(.35, value - .1)); }} aria-label="缩小"><Minus size={14} /></button><span>{Math.round(zoom * 100)}%</span><button type="button" onClick={() => { clearFan(); setZoom((value) => Math.min(2.8, value + .1)); }} aria-label="放大"><Plus size={14} /></button></div>
             <div className="preview-asset-scale" role="group" aria-label="图片缩放系数" title="图片缩放系数：作用于预览内所有图片（50%～200%）">
               <Images size={13} />
@@ -1268,7 +1287,6 @@ export function DimensionPreview({
               onPointerLeave={() => { pointerInSceneRef.current = false; setAssetHover(null); setStackHover(null); }}
               onAuxClick={(event) => event.preventDefault()}
               onMouseDown={(event) => { if (event.button === 1) event.preventDefault(); }}
-              onWheel={zoomWithWheel}
             >
               <div className="scene-scale" style={{ left: `calc(50% + ${viewPan.x}px)`, top: `calc(50% + ${viewPan.y}px)`, "--scene-scale": zoom, "--asset-size": `${(60 * assetScale) / zoom}px` } as CSSProperties}>
                 <div
@@ -1385,7 +1403,7 @@ export function DimensionPreview({
                       style={{
                         left: `${cluster.x / 10}%`,
                         top: `${cluster.y / 10}%`,
-                        "--asset-size": `${((isDropTarget ? 132 : 90) * assetScale) / zoom}px`,
+                        "--asset-size": `${((isDropTarget ? 132 : PREVIEW_ASSET_WIDTH) * assetScale) / zoom}px`,
                         "--asset-z": `${cluster.z * planeSize / 1000}px`,
                         "--asset-ratio": "1 / 1",
                         "--persp": stackPersp,
@@ -1436,7 +1454,7 @@ export function DimensionPreview({
                       style={{
                         left: `${x / 10}%`,
                         top: `${y / 10}%`,
-                        "--asset-size": `${(90 * assetScale) / zoom}px`,
+                        "--asset-size": `${(PREVIEW_ASSET_WIDTH * assetScale) / zoom}px`,
                         "--asset-z": `${z * planeSize / 1000}px`,
                         "--asset-ratio": aspectRatioFor(asset),
                         "--persp": persp,
