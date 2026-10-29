@@ -527,6 +527,11 @@ button:focus-visible, input:focus-visible, textarea:focus-visible {
 .grid-line { position: absolute; display: block; background: rgba(100, 109, 99, .18); }
 .grid-line-x { top: 0; bottom: 0; width: 1px; }
 .grid-line-y { left: 0; right: 0; height: 1px; }
+.grid-line { animation: preview-grid-enter .15s ease-out; }
+.preview-axis-tick { position: absolute; width: 1px; height: 1px; pointer-events: none; transform-style: preserve-3d; animation: preview-grid-enter .15s ease-out; }
+.preview-axis-tick i { position: absolute; top: -4px; left: 0; width: 1px; height: 8px; background: #90978f; transform-origin: 0 4px; }
+.preview-axis-tick.tick-axis-1 i, .preview-axis-tick.tick-axis-2 i { top: 0; left: -4px; width: 8px; height: 1px; transform-origin: 4px 0; }
+@keyframes preview-grid-enter { from { opacity: 0; } to { opacity: 1; } }
 .axis-bar { position: absolute; left: 0; top: 50%; width: 100%; height: 0; pointer-events: none; transform-style: preserve-3d; }
 .axis-bar-y { transform: rotateZ(90deg); }
 .axis-bar-z { transform: rotateY(90deg); }
@@ -557,7 +562,8 @@ button:focus-visible, input:focus-visible, textarea:focus-visible {
 .corner-label { position: absolute; z-index: 4; transform-style: preserve-3d; pointer-events: none; transform: translate(calc(-50% + var(--corner-dx, 0px)), calc(-50% + var(--corner-dy, 0px))) translateZ(var(--corner-tz, 0px)); transition: opacity .3s ease, visibility 0s linear .3s; }
 .corner-label.octant-hidden { visibility: hidden; opacity: 0; }
 .corner-label i { display: block; padding: 3px 6px; border-radius: 4px; background: rgba(239, 238, 232, .92); color: #565c55; font-size: 12px; font-style: normal; white-space: nowrap; transform: rotateZ(var(--billboard-rz)) rotateX(var(--billboard-rx)); transition: none; }
-.preview-asset { width: var(--asset-size, 41px); height: auto; aspect-ratio: var(--asset-ratio, 1 / 1); padding: 0; position: absolute; border: 0; background: transparent; cursor: grab; pointer-events: none; transform: translate(-50%, -50%) translateZ(calc(var(--asset-z, 0px) + var(--asset-z-lift, 0px))); transform-style: preserve-3d; touch-action: none; user-select: none; transition: left 1s ease-in-out, top 1s ease-in-out, transform 1s ease-in-out; }
+.preview-asset { width: var(--asset-size, 41px); height: auto; aspect-ratio: var(--asset-ratio, 1 / 1); padding: 0; position: absolute; border: 0; background: transparent; cursor: grab; pointer-events: none; transform: translate(-50%, -50%) translateZ(calc(var(--asset-z, 0px) + var(--asset-z-lift, 0px))); transform-style: preserve-3d; touch-action: none; user-select: none; transition: left .2s ease-in-out, top .2s ease-in-out, transform .2s ease-in-out; }
+.mode-transitioning .preview-asset, .octant-transitioning .preview-asset { transition: left 1s ease-in-out, top 1s ease-in-out, transform 1s ease-in-out; }
 /* 1D/2D 下图片整体抬高到坐标轴前方（3D 下按真实深度，不加偏移） */
 .dimension-scene.mode-1 { --asset-z-lift: 2px; }
 .dimension-scene.mode-2 { --asset-z-lift: 2px; }
@@ -604,6 +610,10 @@ button:focus-visible, input:focus-visible, textarea:focus-visible {
 .stack-plane-card:hover img, .stack-plane-card:hover > i { transform: scale3d(1.86, 1.86, 1.86); }
 .stack-plane-card em { position: absolute; left: 50%; bottom: calc(100% + 5px); z-index: 6; padding: 4px 6px; background: #252925; color: white; font-size: 14px; font-style: normal; white-space: nowrap; transform: translateX(-50%); pointer-events: none; visibility: hidden; opacity: 0; transition: bottom var(--preview-hover-duration) ease, opacity var(--preview-hover-duration) ease, visibility 0s linear var(--preview-hover-duration); }
 .stack-plane-card:hover em { visibility: visible; opacity: 1; bottom: calc(100% + 43% + 5px); transition: bottom var(--preview-hover-duration) ease, opacity var(--preview-hover-duration) ease, visibility 0s; }
+/* hover 堆时中键 / 空格+左键平移优先：平面保持展开，平移期间不触发卡片 hover 放大 */
+.dimension-scene.space-held .stack-plane, .dimension-scene.space-held .stack-plane-card { cursor: grab; }
+.dimension-scene.view-panning .stack-plane, .dimension-scene.view-panning .stack-plane-card { cursor: grabbing; }
+.dimension-scene.view-panning .stack-plane-card:hover img, .dimension-scene.view-panning .stack-plane-card:hover > i { transform: none; }
 .camera-hint { display: flex; align-items: center; gap: 4px; color: var(--sage); font-size: 10px; white-space: nowrap; }
 .octant-isolation-controls { position: absolute; z-index: 8; top: 16px; right: 16px; display: flex; flex-direction: column; align-items: flex-start; gap: 8px; }
 .octant-isolation-button { min-height: 34px; padding: 0 16px; flex: none; border: 1px solid #778673; border-radius: 5px; background: rgba(250, 250, 247, .94); color: #4f624a; box-shadow: 0 6px 18px rgba(35, 40, 35, .14); font-size: 11px; white-space: nowrap; cursor: pointer; }

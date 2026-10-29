@@ -1,7 +1,7 @@
 "use client";
 
 import { Trash2, X } from "lucide-react";
-import { FormEvent, useRef, useState } from "react";
+import { FormEvent, useEffect, useRef, useState } from "react";
 
 type Dimension = { id: string; leftLabel: string; rightLabel: string };
 type DimensionLabels = { id: string; leftLabel: string; rightLabel: string };
@@ -28,6 +28,18 @@ export function DimensionEditorModal({
     if (applying) return;
     onClose();
   }
+
+  // Esc 关闭编辑维度浮窗（专注模式下也让浮层优先处理，不退出全屏）
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "Escape" || event.isComposing) return;
+      event.preventDefault();
+      event.stopPropagation();
+      if (!applying) onClose();
+    };
+    window.addEventListener("keydown", onKeyDown, true);
+    return () => window.removeEventListener("keydown", onKeyDown, true);
+  }, [applying, onClose]);
 
   async function applyChanges(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();

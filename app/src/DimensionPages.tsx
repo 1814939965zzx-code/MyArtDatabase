@@ -16,7 +16,7 @@ type Summary = { id: string; name: string; assetCount: number };
 export function DimensionPages({ projectId, assets, page, onPageChange, revision, onSelectAsset, onUpdateAssetDimensions, onAddDimension, onEditDimension, onMessage }: {
   projectId: string; assets: Asset[]; page: PreviewPage | null; onPageChange: (page: PreviewPage | null) => void; revision: number;
   onSelectAsset: (id: string) => void;
-  onUpdateAssetDimensions: (id: string, values: Record<string, number>) => Promise<void>;
+  onUpdateAssetDimensions: (id: string, values: Record<string, number>) => Promise<boolean>;
   onAddDimension: () => void; onEditDimension: (dimension: PageDimension) => void; onMessage: (message: string) => void;
 }) {
   const [pages, setPages] = useState<Summary[]>([]);
@@ -134,7 +134,7 @@ export function DimensionPages({ projectId, assets, page, onPageChange, revision
     </div>
     {loading ? <div className="dimension-pages-empty">正在载入 Page…</div> : error ? <div className="dimension-pages-empty"><p>{error}</p><button className="secondary-button" onClick={() => setReload((v) => v + 1)}>重试</button></div> : current ? <>
       {!pageAssets.length && <div className="dimension-page-hint">此 Page 暂无素材，点击“添加素材”从项目中选择。维度和位置仅属于当前 Page。</div>}
-      <DimensionPreview key={current.id} dimensions={current.dimensions} assets={pageAssets} selectedIds={current.selectedIds} onSelectedIdsChange={selectAxes} onSelectAsset={onSelectAsset} onUpdateAssetDimensions={onUpdateAssetDimensions} onAddDimension={onAddDimension} onEditDimension={(dimension) => { const found = current.dimensions.find((d) => d.id === dimension.id); if (found) onEditDimension(found); }} />
+      <DimensionPreview key={current.id} dimensions={current.dimensions} assets={pageAssets} selectedIds={current.selectedIds} onSelectedIdsChange={selectAxes} onSelectAsset={onSelectAsset} onUpdateAssetDimensions={onUpdateAssetDimensions} onAddDimension={onAddDimension} onMessage={onMessage} onEditDimension={(dimension) => { const found = current.dimensions.find((d) => d.id === dimension.id); if (found) onEditDimension(found); }} />
     </> : <div className="dimension-pages-empty"><Box size={36} /><p>还没有维度 Page</p><button className="primary-button" onClick={() => { setName("Page 1"); setEdit("create"); }}><Plus size={15} />新建 Page</button></div>}
     {edit && <div className="modal-backdrop"><section className="modal-card" role="dialog" aria-modal="true" aria-labelledby="page-edit-title"><div className="modal-heading"><h2 id="page-edit-title">{edit === "create" ? "新建维度 Page" : edit === "rename" ? "重命名 Page" : "删除 Page"}</h2><button className="icon-button" disabled={busy} aria-label="关闭 Page 设置" onClick={() => setEdit(null)}><X size={18} /></button></div><form className="modal-form" onSubmit={(e) => void editPage(e)}>
       {edit === "delete" ? <p>删除“{current?.name}”及其中的维度和位置数据？项目素材和其他 Page 不受影响。</p> : <label>Page 名称<input autoFocus required maxLength={50} value={name} onChange={(e) => setName(e.target.value)} /></label>}

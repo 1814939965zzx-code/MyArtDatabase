@@ -115,6 +115,15 @@ function Modal({
   onClose: () => void;
   children: React.ReactNode;
 }) {
+  // Esc 关闭通用弹窗（与专注模式共存：浮层优先，不触发退出全屏）
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "Escape" || event.isComposing) return;
+      onClose();
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [onClose]);
   return (
     <div className="modal-backdrop">
       <section
@@ -610,8 +619,8 @@ export function ArtDatabaseApp({ user, onLogout }: { user: SessionUser; onLogout
     }
   }
 
-  async function savePreviewDimensionValues(assetId: string, values: Record<string, number>) {
-    if (!workspace || !currentPreviewPage) return;
+  async function savePreviewDimensionValues(assetId: string, values: Record<string, number>): Promise<boolean> {
+    if (!workspace || !currentPreviewPage) return false;
     setPreviewPage((current) => current?.id === currentPreviewPage.id ? {
       ...current,
       assets: current.assets.map((asset) => asset.assetId === assetId
@@ -624,9 +633,11 @@ export function ArtDatabaseApp({ user, onLogout }: { user: SessionUser; onLogout
         body: JSON.stringify({ projectId: workspace.project.id, pageId: currentPreviewPage.id, assetId, values }),
       });
       setMessage("图片坐标与维度值已保存");
+      return true;
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "维度位置保存失败");
       setPreviewRevision((v) => v + 1);
+      return false;
     }
   }
 

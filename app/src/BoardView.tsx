@@ -40,16 +40,20 @@ type Interaction = {
   itemId: string; pointerId: number; mode: "move" | "resize";
   startX: number; startY: number; x: number; y: number; width: number; height: number;
   itemStarts: Record<string, { x: number; y: number }>;
+  // 拖动开始时的完整元素快照，供 Ctrl/Cmd+Z 恢复移动前的位置与 Frame 归属
+  itemSnapshots: Record<string, CanvasItem>;
   direction?: ResizeDirection;
 };
 type PanState = { pointerId: number; startX: number; startY: number; originX: number; originY: number };
-type FrameMoveState = { pointerId: number; frameIds: string[]; startX: number; startY: number; frameStarts: Record<string, { x: number; y: number }>; itemStarts: Record<string, { x: number; y: number }>; group: boolean };
+type FrameMoveState = { pointerId: number; frameIds: string[]; startX: number; startY: number; frameStarts: Record<string, { x: number; y: number }>; frameSnapshots: PageFrame[]; itemStarts: Record<string, { x: number; y: number }>; itemSnapshots: Record<string, CanvasItem>; group: boolean };
 type ResizeDirection = "n" | "ne" | "e" | "se" | "s" | "sw" | "w" | "nw";
 type FrameResizeState = { pointerId: number; frameId: string; direction: ResizeDirection; startX: number; startY: number; frame: PageFrame };
 type MarqueeState = { pointerId: number; startX: number; startY: number; currentX: number; currentY: number; preservedItemIds: string[]; preservedFrameIds: string[] };
 type SnapGuides = { vertical: number[]; horizontal: number[] };
 type LegacyFrameSettings = { name: string; width: number; height: number };
 type DrawState = { pointerId: number; tool: Tool; start: Point; current: Point; points: Point[] };
+// Ctrl/Cmd+Z 撤销栈：只记录移动类操作（元素移动与 Frame 移动，含整组移动）
+type BoardUndoEntry = { canvasId: string; frameSnapshots: PageFrame[]; itemSnapshots: CanvasItem[] };
 
 const DEFAULT_FRAME_WIDTH = 1920;
 const DEFAULT_FRAME_HEIGHT = 1080;
@@ -105,6 +109,16 @@ async function json<T>(url: string, init?: RequestInit): Promise<T> {
   const data = await response.json() as T & { error?: string };
   if (!response.ok) throw new Error(data.error || "请求失败");
   return data;
+}
+
+/** 顶部浮层（素材详情、弹窗、确认框）打开时，Esc 优先关闭浮层，不退出专注模式。 */
+function hasOpenOverlay() {
+  return Boolean(document.querySelector(".modal-backdrop, .dimension-editor-backdrop, .asset-drawer, .frame-delete-backdrop"));
+}
+
+/** 弹窗/确认框打开时把撤销快捷键让给浮层（素材详情抽屉不阻塞撤销）。 */
+function hasBlockingOverlay() {
+  return Boolean(document.querySelector(".modal-backdrop, .dimension-editor-backdrop, .frame-delete-backdrop"));
 }
 
 function defaultFrame(canvasId: string): PageFrame {
@@ -173,6 +187,26 @@ export function BoardView({ projectId, assets, onMessage, onSelectAsset }: { pro
   const batchRef = useRef(false);
   const creatingDefaultPage = useRef(false);
   const viewportRef = useRef<HTMLDivElement>(null);
+  // ---- 撤销：移动操作栈，固定跟随当前 Page ----
+  const undoStack = useRef<BoardUndoEntry[]>([]);
+  const undoRef = useRef<() => void>(() => {});
+  // 正在进行的 canvas-items 保存数量：撤销前等待写入完成，避免撤销 PATCH 与保存 PATCH 乱序
+  const savingRef = useRef(0);
+  const framesByCanvasRef = useRef(framesByCanvas);
+  framesByCanvasRef.current = framesByCanvas;
+  const itemsRef = useRef(items);
+  itemsRef.current = items;
+  const canvasRef = useRef(canvas);
+  canvasRef.current = canvas;
+  const canvasIdRef = useRef(canvasId);
+  canvasIdRef.current = canvasId;
+
+  /** 等待进行中的画板保存全部完成（撤销或下一次撤销前调用）。 */
+  async function waitForPendingSaves() {
+    while (savingRef.current > 0) {
+      await new Promise<void>((resolve) => { window.setTimeout(resolve, 20); });
+    }
+  }
 
   const frameStorageKey = `artdatabase:frames:v2:${projectId}`;
   const legacyFrameStorageKey = `artdatabase:frame-settings:v1:${projectId}`;
@@ -326,6 +360,7 @@ export function BoardView({ projectId, assets, onMessage, onSelectAsset }: { pro
 
   useEffect(() => {
     clearFrameSelection(); selectItems([]); setMarkupHidden(false); setEditingTextId(null); setDrawPreview(null); setFrameDraft(null); setFrameMode(false); setFrameDragId(null); frameDrawRef.current = null;
+    undoStack.current = []; // 撤销栈只在当前 Page 内有效
     void loadCanvas(canvasId).catch((error) => onMessage(error instanceof Error ? error.message : "Page 载入失败"));
   }, [canvasId]);
 
@@ -355,7 +390,15 @@ export function BoardView({ projectId, assets, onMessage, onSelectAsset }: { pro
     const toolByKey: Record<string, Tool> = { v: "pointer", t: "text", r: "rect", o: "ellipse" };
     const down = (event: globalThis.KeyboardEvent) => {
       if (event.code === "Space" && !editable(event.target)) { event.preventDefault(); setSpaceHeld(true); }
-      if (event.key === "Escape") { setFrameMenu(null); setItemMenu(null); if (drawRef.current) drawRef.current = null; setDrawPreview(null); frameDrawRef.current = null; setFrameDraft(null); setFrameMode(false); setTool("pointer"); }
+      // Ctrl/Cmd+Z：撤销最近一次移动（元素 / Frame / 整组移动）；输入框内保留浏览器原生撤销
+      if (!event.isComposing && !event.altKey && (event.ctrlKey || event.metaKey) && !event.shiftKey && event.code === "KeyZ" && !editable(event.target)) {
+        // 拖动过程中不撤销历史操作；弹窗打开时把快捷键让给浮层（如撤销待替换图片）
+        if (!undoStack.current.length || interaction.current || frameMoveRef.current || hasBlockingOverlay()) return;
+        event.preventDefault();
+        undoRef.current();
+        return;
+      }
+      if (event.key === "Escape") { setFrameMenu(null); setItemMenu(null); setConfirmFrameDeleteIds([]); if (drawRef.current) drawRef.current = null; setDrawPreview(null); frameDrawRef.current = null; setFrameDraft(null); setFrameMode(false); setTool("pointer"); }
       if (event.key === "Delete" || event.key === "Backspace") {
         if (editable(event.target)) return;
         if (!selectedItemIds.length && !selectedFrameIds.length) return;
@@ -372,6 +415,20 @@ export function BoardView({ projectId, assets, onMessage, onSelectAsset }: { pro
     window.addEventListener("keydown", down); window.addEventListener("keyup", up);
     return () => { window.removeEventListener("keydown", down); window.removeEventListener("keyup", up); };
   }, [selectedItemIds, selectedFrameIds]);
+
+  // Esc 退出专注模式：文本编辑与 Frame/Page 重命名输入框先由自身处理，弹窗打开时让浮层优先
+  useEffect(() => {
+    if (!focusMode) return;
+    const onKeyDown = (event: globalThis.KeyboardEvent) => {
+      if (event.key !== "Escape" || event.isComposing) return;
+      if (event.target instanceof HTMLElement && (event.target.isContentEditable || event.target.matches("textarea"))) return;
+      if (editingFrameId || editingPageId || editingTextId) return;
+      if (hasOpenOverlay()) return;
+      setFocusMode(false);
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [focusMode, editingFrameId, editingPageId, editingTextId]);
 
   useEffect(() => {
     if (!frameMenu && !itemMenu) return;
@@ -573,6 +630,7 @@ export function BoardView({ projectId, assets, onMessage, onSelectAsset }: { pro
     const frameItems = items.filter((item) => set.has(item.id));
     const toPersist = frameItems.map((item) => item.parentFrameId === frameId ? item : { ...item, parentFrameId: frameId });
     setItems((current) => current.map((item) => set.has(item.id) && item.parentFrameId !== frameId ? { ...item, parentFrameId: frameId } : item));
+    savingRef.current += 1;
     try {
       let revision = canvas.revision;
       for (const item of toPersist) {
@@ -581,6 +639,7 @@ export function BoardView({ projectId, assets, onMessage, onSelectAsset }: { pro
       }
       setCanvas((current) => current ? { ...current, revision } : current);
     } catch (error) { onMessage(error instanceof Error ? error.message : "布局保存失败"); }
+    finally { savingRef.current -= 1; }
   }
   /** 多 Frame 整体拖动落点：按最终位置逐个保存被移动的元素（各自所属 Frame 不变，不做重归属） */
   async function persistMovedFrameItems(active: FrameMoveState) {
@@ -589,6 +648,7 @@ export function BoardView({ projectId, assets, onMessage, onSelectAsset }: { pro
     if (!ids.size) return;
     const moved = items.filter((item) => ids.has(item.id));
     if (!moved.length) return;
+    savingRef.current += 1;
     try {
       let revision = canvas.revision;
       for (const item of moved) {
@@ -597,6 +657,7 @@ export function BoardView({ projectId, assets, onMessage, onSelectAsset }: { pro
       }
       setCanvas((current) => current ? { ...current, revision } : current);
     } catch (error) { onMessage(error instanceof Error ? error.message : "布局保存失败"); }
+    finally { savingRef.current -= 1; }
   }
 
   function startFrameMove(event: PointerEvent<HTMLElement>, frame: PageFrame) {
@@ -623,7 +684,9 @@ export function BoardView({ projectId, assets, onMessage, onSelectAsset }: { pro
       ? items.filter((item) => selectedItemIds.includes(item.id) || (item.parentFrameId && frameIds.includes(item.parentFrameId)))
       : items.filter((item) => item.parentFrameId === frame.id || itemFrameId(item) === frame.id);
     const itemStarts = Object.fromEntries(lockedItems.map((item) => [item.id, { x: item.x, y: item.y }]));
-    frameMoveRef.current = { pointerId: event.pointerId, frameIds, startX: event.clientX, startY: event.clientY, frameStarts, itemStarts, group };
+    const frameSnapshots = frames.filter((entry) => frameIds.includes(entry.id)).map((entry) => ({ ...entry }));
+    const itemSnapshots = Object.fromEntries(lockedItems.map((item) => [item.id, { ...item }]));
+    frameMoveRef.current = { pointerId: event.pointerId, frameIds, startX: event.clientX, startY: event.clientY, frameStarts, frameSnapshots, itemStarts, itemSnapshots, group };
     setFrameDragId(frame.id);
   }
   function moveFrame(event: PointerEvent<HTMLElement>) {
@@ -655,6 +718,12 @@ export function BoardView({ projectId, assets, onMessage, onSelectAsset }: { pro
     // 纯点击（几乎无位移）只负责选中，不落盘
     const dragged = Math.abs(event.clientX - active.startX) > 1 || Math.abs(event.clientY - active.startY) > 1;
     if (!dragged) return;
+    const frameSnapshots = active.frameSnapshots.filter((frame) => {
+      const current = frames.find((entry) => entry.id === frame.id);
+      return current ? current.x !== frame.x || current.y !== frame.y : false;
+    });
+    const itemSnapshots = collectItemUndoSnapshots(active.itemSnapshots);
+    if (frameSnapshots.length || itemSnapshots.length) pushUndo({ canvasId, frameSnapshots, itemSnapshots });
     if (active.group) { void persistMovedFrameItems(active); return; }
     void persistFrameItems(active.frameIds[0], active.itemStarts);
   }
@@ -725,6 +794,7 @@ export function BoardView({ projectId, assets, onMessage, onSelectAsset }: { pro
       setItems((current) => current.filter((item) => !removedIds.has(item.id)));
       setCanvas((current) => current ? { ...current, revision: latestRevision } : current);
       clearFrameSelection(); selectItems([]); setFrameMenu(null); setConfirmFrameDeleteIds([]);
+      undoStack.current = []; // 删除属于破坏性操作，清空移动撤销栈避免撤销到已删除对象
       if (frameItems.length) await loadCanvases(canvasId);
       onMessage(targetFrames.length === 1
         ? (frameItems.length ? `Frame 已删除，${frameItems.length} 个素材仍保留在项目素材中` : "空 Frame 已删除")
@@ -750,7 +820,9 @@ export function BoardView({ projectId, assets, onMessage, onSelectAsset }: { pro
     const internalIds = new Set(items.filter((item) => item.parentFrameId && frameIds.includes(item.parentFrameId)).map((item) => item.id));
     const itemIds = [...new Set([...selectedItemIds, ...internalIds])];
     const itemStarts = Object.fromEntries(items.filter((entry) => itemIds.includes(entry.id)).map((entry) => [entry.id, { x: entry.x, y: entry.y }]));
-    frameMoveRef.current = { pointerId: event.pointerId, frameIds, startX: event.clientX, startY: event.clientY, frameStarts, itemStarts, group: true };
+    const frameSnapshots = frames.filter((entry) => frameIds.includes(entry.id)).map((entry) => ({ ...entry }));
+    const itemSnapshots = Object.fromEntries(items.filter((entry) => itemIds.includes(entry.id)).map((entry) => [entry.id, { ...entry }]));
+    frameMoveRef.current = { pointerId: event.pointerId, frameIds, startX: event.clientX, startY: event.clientY, frameStarts, frameSnapshots, itemStarts, itemSnapshots, group: true };
     setFrameDragId(null); // 从素材元素发起的混合拖动：不在某个 Frame 标题上显示尺寸
   }
 
@@ -774,7 +846,8 @@ export function BoardView({ projectId, assets, onMessage, onSelectAsset }: { pro
     else { movingIds = [item.id]; selectItems(movingIds, item.id); clearFrameSelection(); }
     event.currentTarget.setPointerCapture(event.pointerId);
     const topZ = Math.max(0, ...imageItems.map((entry) => entry.zIndex));
-    interaction.current = { itemId: item.id, pointerId: event.pointerId, mode, direction, startX: event.clientX, startY: event.clientY, x: item.x, y: item.y, width: item.width, height: item.height, itemStarts: Object.fromEntries(items.filter((entry) => movingIds.includes(entry.id)).map((entry) => [entry.id, { x: entry.x, y: entry.y }])) };
+    const itemSnapshots = Object.fromEntries(items.filter((entry) => movingIds.includes(entry.id)).map((entry) => [entry.id, { ...entry }]));
+    interaction.current = { itemId: item.id, pointerId: event.pointerId, mode, direction, startX: event.clientX, startY: event.clientY, x: item.x, y: item.y, width: item.width, height: item.height, itemStarts: Object.fromEntries(items.filter((entry) => movingIds.includes(entry.id)).map((entry) => [entry.id, { x: entry.x, y: entry.y }])), itemSnapshots };
     if (item.zIndex < topZ) setItems((current) => current.map((entry) => entry.id === item.id ? { ...entry, zIndex: topZ + 1 } : entry));
   }
   function moveInteraction(event: PointerEvent<HTMLElement>) {
@@ -835,6 +908,11 @@ export function BoardView({ projectId, assets, onMessage, onSelectAsset }: { pro
         setItems((current) => current.map((entry) => updatedItems.find((u) => u.id === entry.id) ?? entry));
       }
     }
+    // 落点立即入栈，保证松手后马上按 Ctrl/Cmd+Z 也能撤销；保存失败时再移除该条目
+    const undoSnapshots = active.mode === "move" ? collectItemUndoSnapshots(active.itemSnapshots) : [];
+    const undoEntry: BoardUndoEntry | null = undoSnapshots.length ? { canvasId, frameSnapshots: [], itemSnapshots: undoSnapshots } : null;
+    if (undoEntry) pushUndo(undoEntry);
+    savingRef.current += 1;
     try {
       let revision = canvas.revision;
       for (const item of updatedItems) {
@@ -842,7 +920,11 @@ export function BoardView({ projectId, assets, onMessage, onSelectAsset }: { pro
         revision = data.revision;
       }
       setCanvas((current) => current ? { ...current, revision } : current);
-    } catch (error) { onMessage(error instanceof Error ? error.message : "布局保存失败"); await loadCanvas(canvas.id); }
+    } catch (error) {
+      if (undoEntry) undoStack.current = undoStack.current.filter((entry) => entry !== undoEntry);
+      onMessage(error instanceof Error ? error.message : "布局保存失败");
+      await loadCanvas(canvas.id);
+    } finally { savingRef.current -= 1; }
   }
 
   async function updateSelected(changes: Partial<CanvasItem>) {
@@ -876,6 +958,7 @@ export function BoardView({ projectId, assets, onMessage, onSelectAsset }: { pro
       const removedIds = new Set(uniqueIds);
       setItems((current) => current.filter((item) => !removedIds.has(item.id)));
       selectItems(selectedItemIds.filter((id) => !removedIds.has(id))); setItemMenu(null); setCanvas((current) => current ? { ...current, revision } : current);
+      undoStack.current = []; // 删除属于破坏性操作，清空移动撤销栈避免撤销到已删除对象
       onMessage(uniqueIds.some((id) => annotationItems.some((item) => item.id === id)) ? `已删除 ${uniqueIds.length} 个元素` : `已从画板删除 ${uniqueIds.length} 张图片，素材原文件仍保留在项目素材中`);
     } catch (error) { onMessage(error instanceof Error ? error.message : "删除失败"); }
   }
@@ -1022,7 +1105,8 @@ export function BoardView({ projectId, assets, onMessage, onSelectAsset }: { pro
       }
     }
     event.currentTarget.setPointerCapture(event.pointerId);
-    interaction.current = { itemId: item.id, pointerId: event.pointerId, mode, direction, startX: event.clientX, startY: event.clientY, x: item.x, y: item.y, width: baseWidth, height: baseHeight, itemStarts: Object.fromEntries(items.filter((entry) => movingIds.includes(entry.id)).map((entry) => [entry.id, { x: entry.x, y: entry.y }])) };
+    const itemSnapshots = Object.fromEntries(items.filter((entry) => movingIds.includes(entry.id)).map((entry) => [entry.id, { ...entry }]));
+    interaction.current = { itemId: item.id, pointerId: event.pointerId, mode, direction, startX: event.clientX, startY: event.clientY, x: item.x, y: item.y, width: baseWidth, height: baseHeight, itemStarts: Object.fromEntries(items.filter((entry) => movingIds.includes(entry.id)).map((entry) => [entry.id, { x: entry.x, y: entry.y }])), itemSnapshots };
   }
   function moveAnnotation(event: PointerEvent<HTMLElement>) {
     if (frameMoveRef.current?.pointerId === event.pointerId) { moveFrame(event); return; } // 混合整体拖动
@@ -1082,6 +1166,11 @@ export function BoardView({ projectId, assets, onMessage, onSelectAsset }: { pro
     if (updatedItems.some((item, index) => item.parentFrameId !== changedItems[index].parentFrameId)) {
       setItems((current) => current.map((entry) => updatedItems.find((u) => u.id === entry.id) ?? entry));
     }
+    // 落点立即入栈；保存失败时移除该条目
+    const undoSnapshots = active.mode === "move" ? collectItemUndoSnapshots(active.itemSnapshots) : [];
+    const undoEntry: BoardUndoEntry | null = undoSnapshots.length ? { canvasId, frameSnapshots: [], itemSnapshots: undoSnapshots } : null;
+    if (undoEntry) pushUndo(undoEntry);
+    savingRef.current += 1;
     try {
       let revision = canvas.revision;
       for (const item of updatedItems) {
@@ -1089,7 +1178,10 @@ export function BoardView({ projectId, assets, onMessage, onSelectAsset }: { pro
         revision = data.revision;
       }
       setCanvas((current) => current ? { ...current, revision } : current);
-    } catch (error) { onMessage(error instanceof Error ? error.message : "布局保存失败"); }
+    } catch (error) {
+      if (undoEntry) undoStack.current = undoStack.current.filter((entry) => entry !== undoEntry);
+      onMessage(error instanceof Error ? error.message : "布局保存失败");
+    } finally { savingRef.current -= 1; }
   }
 
   // ---- 托盘：拖拽插入 / 搜索 / 标签批量 ----
@@ -1164,6 +1256,74 @@ export function BoardView({ projectId, assets, onMessage, onSelectAsset }: { pro
     }
     return best?.id ?? null;
   }
+
+  /** 记录一次可撤销的移动；栈上限 50，超出丢弃最早的记录。 */
+  function pushUndo(entry: BoardUndoEntry) {
+    undoStack.current.push(entry);
+    if (undoStack.current.length > 50) undoStack.current.shift();
+  }
+
+  /** 把拖动开始时的元素快照换算为“移动前”的撤销快照：只回退坐标与 Frame 归属，保留层级等最终字段。 */
+  function collectItemUndoSnapshots(snapshots: Record<string, CanvasItem>): CanvasItem[] {
+    const result: CanvasItem[] = [];
+    for (const start of Object.values(snapshots)) {
+      const current = items.find((entry) => entry.id === start.id);
+      if (!current) continue;
+      if (current.x === start.x && current.y === start.y && current.parentFrameId === start.parentFrameId) continue;
+      result.push({ ...current, x: start.x, y: start.y, parentFrameId: start.parentFrameId });
+    }
+    return result;
+  }
+
+  async function undoLastBoardMove() {
+    // 先等待进行中的移动保存完成，避免撤销 PATCH 与保存 PATCH 乱序
+    if (savingRef.current > 0) await waitForPendingSaves();
+    const entry = undoStack.current.pop();
+    if (!entry || entry.canvasId !== canvasIdRef.current) return;
+    // 只撤销仍然存在的对象：期间被删除的元素/Frame 直接跳过（删除操作本身不入撤销栈）
+    const existingItemIds = new Set(itemsRef.current.map((item) => item.id));
+    const existingFrameIds = new Set(framesByCanvasRef.current[entry.canvasId]?.map((frame) => frame.id) ?? []);
+    const frameSnapshots = entry.frameSnapshots.filter((frame) => existingFrameIds.has(frame.id));
+    const itemSnapshots = entry.itemSnapshots.filter((snapshot) => existingItemIds.has(snapshot.id));
+    if (!frameSnapshots.length && !itemSnapshots.length) return;
+    try {
+      if (frameSnapshots.length) {
+        // 只回退位置：保留 Frame 后续的缩放/重命名等不在撤销栈内的修改
+        const before = new Map(frameSnapshots.map((frame) => [frame.id, frame]));
+        const currentByCanvas = framesByCanvasRef.current;
+        const next = {
+          ...currentByCanvas,
+          [entry.canvasId]: (currentByCanvas[entry.canvasId] ?? []).map((frame) => {
+            const start = before.get(frame.id);
+            return start ? { ...frame, x: start.x, y: start.y } : frame;
+          }),
+        };
+        framesByCanvasRef.current = next;
+        persistFrames(next);
+      }
+      if (itemSnapshots.length) {
+        const before = new Map(itemSnapshots.map((item) => [item.id, item]));
+        setItems((current) => current.map((item) => before.get(item.id) ?? item));
+        const activeCanvas = canvasRef.current;
+        if (!activeCanvas) return;
+        savingRef.current += 1;
+        try {
+          let revision = activeCanvas.revision;
+          for (const snapshot of itemSnapshots) {
+            const data = await json<{ revision: number }>("/api/canvas-items", { method: "PATCH", body: JSON.stringify(snapshot) });
+            revision = data.revision;
+          }
+          setCanvas((current) => current ? { ...current, revision } : current);
+          canvasRef.current = { ...activeCanvas, revision };
+        } finally { savingRef.current -= 1; }
+      }
+      onMessage("已撤销移动");
+    } catch (error) {
+      onMessage(error instanceof Error ? error.message : "撤销失败");
+      if (canvasIdRef.current) await loadCanvas(canvasIdRef.current);
+    }
+  }
+  undoRef.current = () => { void undoLastBoardMove(); };
 
   async function insertImage(asset: Asset, point: Point) {
     if (!canvas) { onMessage("请先创建 Page"); return; }
@@ -1400,7 +1560,7 @@ export function BoardView({ projectId, assets, onMessage, onSelectAsset }: { pro
               <div className="asset-tray-grid">{filteredAssets.map((asset) => <button key={asset.id} type="button" draggable title={asset.name} onDragStart={(event) => handleAssetDragStart(event, asset)}>{asset.thumbnailUrl ? <img src={asset.thumbnailUrl} alt="" draggable={false} /> : <span />}</button>)}</div>
             </div> : null}
           </aside>
-          <div ref={viewportRef} className={`board-viewport ${panning ? "panning" : ""} ${spaceHeld ? "space-held" : ""} ${frameMode ? "frame-mode" : ""} ${tool !== "pointer" || frameMode ? "tool-active" : ""}`} onPointerDown={(event) => { if (frameMode) { if (isPanGesture(event)) startPan(event); else beginFrameDraw(event); } else if (isPanGesture(event)) startPan(event); else if (tool !== "pointer") beginDraw(event); else startPan(event); }} onPointerMove={(event) => { movePan(event); moveDraw(event); moveFrameDraw(event); }} onPointerUp={(event) => { endPan(event); endDraw(event); endFrameDraw(event); }} onPointerCancel={(event) => { endPan(event); endDraw(event); endFrameDraw(event); }} onDragOver={(event) => { const types = Array.from(event.dataTransfer.types); if (types.includes("application/x-artdb-asset") || types.includes("application/x-artdb-tag")) { event.preventDefault(); event.dataTransfer.dropEffect = "copy"; setDragHint({ x: event.clientX, y: event.clientY, text: types.includes("application/x-artdb-tag") ? "松开批量插入同标签素材" : "松开放入画板" }); } }} onDragLeave={() => setDragHint(null)} onDrop={(event) => { setDragHint(null); handleDrop(event); }}>
+          <div ref={viewportRef} className={`board-viewport ${panning ? "panning" : ""} ${spaceHeld ? "space-held" : ""} ${frameMode ? "frame-mode" : ""} ${tool !== "pointer" || frameMode ? "tool-active" : ""}`} onPointerDown={(event) => { if (frameMode) { if (isPanGesture(event)) startPan(event); else beginFrameDraw(event); } else if (isPanGesture(event)) startPan(event); else if (tool !== "pointer") beginDraw(event); else startPan(event); }} onPointerMove={(event) => { movePan(event); moveDraw(event); moveFrameDraw(event); }} onPointerUp={(event) => { endPan(event); endDraw(event); endFrameDraw(event); }} onPointerCancel={(event) => { endPan(event); endDraw(event); endFrameDraw(event); }} onAuxClick={(event) => event.preventDefault()} onMouseDown={(event) => { if (event.button === 1) event.preventDefault(); }} onDragOver={(event) => { const types = Array.from(event.dataTransfer.types); if (types.includes("application/x-artdb-asset") || types.includes("application/x-artdb-tag")) { event.preventDefault(); event.dataTransfer.dropEffect = "copy"; setDragHint({ x: event.clientX, y: event.clientY, text: types.includes("application/x-artdb-tag") ? "松开批量插入同标签素材" : "松开放入画板" }); } }} onDragLeave={() => setDragHint(null)} onDrop={(event) => { setDragHint(null); handleDrop(event); }}>
             <div className="board-page" style={{ transform: `translate(${view.x}px, ${view.y}px) scale(${view.zoom})` }}>
               {frames.map((frame) => {
                 const frameSelected = selectedFrameIds.includes(frame.id);
@@ -1461,7 +1621,7 @@ export function BoardView({ projectId, assets, onMessage, onSelectAsset }: { pro
           {selectedItemIds.length && selectedFrameIds.length ? <div className="canvas-selection-tools"><span className="selection-count">已选 {selectedItemIds.length} 个 · {selectedFrameIds.length} 个 Frame</span><button className="danger" type="button" onClick={() => deleteMixedSelection()} title="删除选中的素材与 Frame（Delete/Backspace）"><Trash2 size={15} /></button></div> : null}
           {frameMenu ? <div className="frame-context-menu" role="menu" style={{ left: frameMenu.x, top: frameMenu.y }} onPointerDown={(event) => event.stopPropagation()}><button type="button" role="menuitem" onClick={() => requestFrameDeletion(frameMenu.frameId)}><Trash2 size={14} />删除 Frame</button></div> : null}
           {itemMenu ? <div className="frame-context-menu item-context-menu" role="menu" style={{ left: itemMenu.x, top: itemMenu.y }} onPointerDown={(event) => event.stopPropagation()}><button type="button" role="menuitem" onClick={() => void deleteCanvasItems(selectedItemIds.includes(itemMenu.itemId) ? selectedItemIds : [itemMenu.itemId])}><Trash2 size={14} />删除</button></div> : null}
-          <div className="board-navigation-hint">V 选择 · T 文本 · R 矩形 · O 椭圆 · 隐藏标记 · 拖左侧素材到画板放置 · 拖标签批量插入 · 框选 · 空格 + 拖动移动 Page · 滚轮缩放</div>
+          <div className="board-navigation-hint">V 选择 · T 文本 · R 矩形 · O 椭圆 · 隐藏标记 · 拖左侧素材到画板放置 · 拖标签批量插入 · 框选 · 空格 / 中键 + 拖动移动 Page · Ctrl+Z 撤销移动 · 滚轮缩放</div>
           {confirmFrameDeleteIds.length ? (() => {
             const victims = frames.filter((entry) => confirmFrameDeleteIds.includes(entry.id));
             const affected = items.filter((item) => item.parentFrameId && confirmFrameDeleteIds.includes(item.parentFrameId)).length;

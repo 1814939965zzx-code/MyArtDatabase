@@ -3,6 +3,7 @@
 import { Aperture, Box, Bug, Images, Maximize2, Minimize2, Minus, MousePointer2, Pencil, Plus, RotateCcw } from "lucide-react";
 import { CSSProperties, PointerEvent, useEffect, useMemo, useRef, useState, WheelEvent } from "react";
 import { displayDimensionValue } from "./dimensionScale";
+import { gridCell, gridCellKey, gridStepFor, gridTicksFor } from "./previewGrid";
 
 type Dimension = { id: string; leftLabel: string; rightLabel: string };
 type Asset = { id: string; name: string; thumbnailUrl: string | null; dimensionValues: Record<string, number>; width?: number; height?: number };
@@ -10,6 +11,8 @@ type CameraDrag = { pointerId: number; startX: number; startY: number; rotateX: 
 type ViewPan = { pointerId: number; startX: number; startY: number; panX: number; panY: number };
 type AxisSign = -1 | 1;
 type Octant = { x: AxisSign; y: AxisSign; z: AxisSign };
+// Ctrl/Cmd+Z 撤销：记录一次拖动前实际变化的维度值
+type DimensionUndoEntry = { assetId: string; before: Record<string, number> };
 type AssetDrag = {
   pointerId: number;
   assetId: string;
@@ -28,34 +31,19 @@ type FocusTarget = { id: string; stack: boolean };
 const sameTarget = (a: FocusTarget | null, b: FocusTarget | null) =>
   a === b || (a !== null && b !== null && a.id === b.id && a.stack === b.stack);
 
+/** 顶部浮层（素材详情、弹窗、确认框）打开时，Esc 优先关闭浮层，不退出专注模式。 */
+function hasOpenOverlay() {
+  return Boolean(document.querySelector(".modal-backdrop, .dimension-editor-backdrop, .asset-drawer, .frame-delete-backdrop"));
+}
+
+/** 弹窗/确认框打开时把撤销快捷键让给浮层（素材详情抽屉不阻塞撤销）。 */
+function hasBlockingOverlay() {
+  return Boolean(document.querySelector(".modal-backdrop, .dimension-editor-backdrop, .frame-delete-backdrop"));
+}
+
 const clampValue = (value: number) => Math.max(0, Math.min(1000, Math.round(value)));
 const wrapRotation = (value: number) => ((value % 360) + 360) % 360;
 const SCENE_PERSPECTIVE = 2200;
-// 合并半径：坐标空间距离（存储单位），1D / 2D / 3D 各自独立，按缩放档位取值；低倍档逐档变大，高倍档（≥125%）按 70÷档位 递减
-const CLUSTER_RADIUS = 70;
-const ZOOM_LEVELS = [0.35, 0.5, 0.7, 0.95, 1.25, 1.6, 2.05, 2.8];
-const RADIUS_BY_LEVEL_1D: Record<number, number> = {
-  0.35: 40,
-  0.5: 40,
-  0.7: 40,
-  0.95: 40,
-};
-const RADIUS_BY_LEVEL_2D: Record<number, number> = {
-  0.35: 80,
-  0.5: 70,
-  0.7: 50,
-  0.95: 40,
-};
-const RADIUS_BY_LEVEL_3D: Record<number, number> = {
-  0.35: 120,
-  0.5: 110,
-  0.7: 100,
-  0.95: 70,
-};
-const clusterRadiusFor = (level: number, mode: number) => {
-  const table = mode === 3 ? RADIUS_BY_LEVEL_3D : mode === 2 ? RADIUS_BY_LEVEL_2D : RADIUS_BY_LEVEL_1D;
-  return table[level] ?? CLUSTER_RADIUS / Math.max(1, level);
-};
 const PLANE_CARD_SIZE = 90;
 const PLANE_CARD_GAP = 12;
 
@@ -83,6 +71,8 @@ function depthBlurStyle(worldZ: number): CSSProperties | undefined {
 
 type Cluster = {
   key: string;
+  cellKey: string;
+  bounds: { x: [number, number]; y: [number, number]; z: [number, number] };
   members: Asset[];
   x: number;
   y: number;
@@ -121,15 +111,17 @@ export function DimensionPreview({
   onEditDimension,
   selectedIds,
   onSelectedIdsChange,
+  onMessage,
 }: {
   dimensions: Dimension[];
   assets: Asset[];
   onSelectAsset: (assetId: string) => void;
-  onUpdateAssetDimensions: (assetId: string, values: Record<string, number>) => Promise<void>;
+  onUpdateAssetDimensions: (assetId: string, values: Record<string, number>) => Promise<boolean>;
   onAddDimension: () => void;
   onEditDimension: (dimension: Dimension) => void;
   selectedIds: string[];
   onSelectedIdsChange: (ids: string[]) => void;
+  onMessage?: (message: string) => void;
 }) {
   const [zoom, setZoom] = useState(1);
   const [rotateX, setRotateX] = useState(52);
@@ -146,6 +138,11 @@ export function DimensionPreview({
   const [spaceHeld, setSpaceHeld] = useState(false);
   const [overrides, setOverrides] = useState<Record<string, Record<string, number>>>({});
   const [sceneSize, setSceneSize] = useState(0);
+  const [gridStep, setGridStep] = useState<number | undefined>(undefined);
+  useEffect(() => {
+    if (sceneSize > 0) setGridStep((previous) => gridStepFor(sceneSize * zoom / 200, previous));
+  }, [sceneSize, zoom]);
+  const activeGridStep = gridStep ?? gridStepFor(sceneSize * zoom / 200);
   // 图片缩放系数：作用于预览场景内所有图片（单张/堆/展开平面卡片），100% 为默认 90px；localStorage 记住
   const [assetScale, setAssetScale] = useState<number>(() => {
     try {
@@ -185,13 +182,22 @@ export function DimensionPreview({
   const planeDrag = useRef<{ pointerId: number; assetId: string; startX: number; startY: number; startValues: Record<string, number>; moved: boolean } | null>(null);
   const planeDragJustMoved = useRef(false);
   const planeCloseTimer = useRef<number | null>(null);
+  // ---- 撤销 / 平移手势状态 ----
+  const undoStack = useRef<DimensionUndoEntry[]>([]);
+  const onUpdateRef = useRef(onUpdateAssetDimensions);
+  onUpdateRef.current = onUpdateAssetDimensions;
+  const onMessageRef = useRef(onMessage);
+  onMessageRef.current = onMessage;
+  // 中键 / 空格+左键平移：移动过视图后抑制随后的点击，避免误触平面卡片
+  const panMovedRef = useRef(false);
+  const suppressClickAfterPan = useRef(false);
 
   const selected = useMemo(
     () => selectedIds.map((id) => dimensions.find((dimension) => dimension.id === id)).filter(Boolean) as Dimension[],
     [dimensions, selectedIds],
   );
   const mode = selected.length;
-  const gridTicks = useMemo(() => Array.from({ length: 11 }, (_, index) => index), []);
+  const gridTicks = useMemo(() => gridTicksFor(activeGridStep), [activeGridStep]);
   const sceneRotateX = ((rotateX + 180) % 360 + 360) % 360 - 180;
   const sceneRotateZ = ((rotateZ + 180) % 360 + 360) % 360 - 180;
   const planeSize = scenePlaneRef.current?.offsetWidth ?? 0;
@@ -232,98 +238,56 @@ export function DimensionPreview({
     };
   };
 
-  const { clusters, clusterOf, radius: clusterRadius } = useMemo(() => {
-    const empty = { clusters: [] as Cluster[], clusterOf: new Map<string, string>(), radius: 0 };
-    if (!mode || !selected.length) return empty;
-    const planeSize = sceneSize || scenePlaneRef.current?.offsetWidth || 0;
-    if (!planeSize) return empty;
-    // 按维度坐标空间距离聚簇：半径随缩放档位调整（≤100% 固定，≥125% 逐档变精细），旋转不改变分组
-    const level = [...ZOOM_LEVELS].reverse().find((candidate) => zoom >= candidate) ?? ZOOM_LEVELS[0];
-    const radius = clusterRadiusFor(level, mode);
-    type ProjectedEntry = { id: string; x: number; y: number; z: number; worldZ: number };
-    const byId = new Map(assets.map((asset) => [asset.id, asset]));
-    const entries: ProjectedEntry[] = [];
+  const { clusters, clusterOf } = useMemo(() => {
+    const clusters: Cluster[] = [];
+    const clusterOf = new Map<string, string>();
+    if (!mode || !sceneSize) return { clusters, clusterOf };
+    type Entry = { asset: Asset; worldZ: number; values: number[] };
+    const groups = new Map<string, Entry[]>();
     for (const asset of assets) {
       if (asset.id === draggingAssetId || asset.id === draggingPlaneAssetId) continue;
       const values = { ...asset.dimensionValues, ...overrides[asset.id] };
       if (!assetBelongsToIsolatedOctant(values)) continue;
-      const x = values[selected[0].id] ?? 500;
-      const y = mode >= 2 ? 1000 - (values[selected[1].id] ?? 500) : 500;
-      const z = mode === 3 ? (values[selected[2].id] ?? 500) - 500 : 0;
-      const projected = projectValuePoint(x, y, z);
+      const coordinates = selected.map((dimension) => values[dimension.id] ?? 500);
+      const projected = projectValuePoint(coordinates[0], mode >= 2 ? 1000 - coordinates[1] : 500, mode === 3 ? coordinates[2] - 500 : 0);
       if (!projected) continue;
-      entries.push({ id: asset.id, x, y, z, worldZ: projected.worldZ });
+      const cellKey = gridCellKey(coordinates, activeGridStep);
+      const group = groups.get(cellKey) ?? [];
+      group.push({ asset, worldZ: projected.worldZ, values: coordinates });
+      groups.set(cellKey, group);
     }
-    // 坐标空间并查集聚簇（100～500 张素材，O(n²) 仅在跨档重组时执行，开销可忽略）
-    const parent = new Map<string, string>();
-    const find = (id: string): string => {
-      let root = id;
-      while (parent.get(root) !== root) root = parent.get(root) ?? root;
-      let node = id;
-      while (parent.get(node) !== root) {
-        const next = parent.get(node) ?? root;
-        parent.set(node, root);
-        node = next;
-      }
-      return root;
-    };
-    const union = (a: string, b: string) => {
-      const rootA = find(a);
-      const rootB = find(b);
-      if (rootA !== rootB) parent.set(rootA, rootB);
-    };
-    for (const entry of entries) parent.set(entry.id, entry.id);
-    for (let i = 0; i < entries.length; i++) {
-      for (let j = i + 1; j < entries.length; j++) {
-        const a = entries[i];
-        const b = entries[j];
-        const distance = mode === 1
-          ? Math.abs(a.x - b.x)
-          : mode === 2
-            ? Math.hypot(a.x - b.x, a.y - b.y)
-            : Math.hypot(a.x - b.x, a.y - b.y, a.z - b.z);
-        if (distance < radius) union(a.id, b.id);
-      }
-    }
-    const groups = new Map<string, ProjectedEntry[]>();
-    for (const entry of entries) {
-      const root = find(entry.id);
-      const group = groups.get(root);
-      if (group) group.push(entry);
-      else groups.set(root, [entry]);
-    }
-    const clusters: Cluster[] = [];
-    const clusterOf = new Map<string, string>();
-    for (const group of groups.values()) {
+    for (const [cellKey, group] of groups) {
       if (group.length < 2) continue;
-      const key = `s:${group.map((entry) => entry.id).sort().join(",")}`;
-      const members = group
-        .slice()
-        .sort((a, b) => b.worldZ - a.worldZ)
-        .flatMap((entry) => {
-          const asset = byId.get(entry.id);
-          return asset ? [asset] : [];
-        });
-      const x = group.reduce((sum, entry) => sum + entry.x, 0) / group.length;
-      const y = group.reduce((sum, entry) => sum + entry.y, 0) / group.length;
-      const z = group.reduce((sum, entry) => sum + entry.z, 0) / group.length;
-      const meanDepth = group.reduce((sum, entry) => sum + entry.worldZ, 0) / group.length;
+      // Clamp edge cells to the domain and, during isolation, to the visible half.
+      const cells = group[0].values.map((value, index) => {
+        const cell = gridCell(value, activeGridStep);
+        const sign = isolatedOctant ? [isolatedOctant.x, isolatedOctant.y, isolatedOctant.z][index] : null;
+        const min = sign === 1 ? Math.max(500, cell.min) : cell.min;
+        const max = sign === -1 ? Math.min(500, cell.max) : cell.max;
+        return { min, max, center: (min + max) / 2 };
+      });
+      const x = cells[0].center;
+      const y = mode >= 2 ? 1000 - cells[1].center : 500;
+      const z = mode === 3 ? cells[2].center - 500 : 0;
+      const key = `s:${activeGridStep}:${cellKey}:${group.map((entry) => entry.asset.id).sort().join(",")}`;
       const projected = projectValuePoint(x, y, z);
       clusters.push({
-        key,
-        members,
-        x,
-        y,
-        z,
-        meanDepth,
+        key, cellKey,
+        members: group.slice().sort((a, b) => b.worldZ - a.worldZ).map((entry) => entry.asset),
+        x, y, z,
+        bounds: {
+          x: [cells[0].min, cells[0].max],
+          y: mode >= 2 ? [1000 - cells[1].max, 1000 - cells[1].min] : [500, 500],
+          z: mode === 3 ? [cells[2].min - 500, cells[2].max - 500] : [0, 0],
+        },
+        meanDepth: group.reduce((sum, entry) => sum + entry.worldZ, 0) / group.length,
         screenX: projected?.screenX ?? 0,
         screenY: projected?.screenY ?? 0,
       });
-      for (const entry of group) clusterOf.set(entry.id, key);
+      for (const entry of group) clusterOf.set(entry.asset.id, key);
     }
-    return { clusters, clusterOf, radius };
-  }, [assets, mode, selected, zoom, sceneSize, scenePivot.x, scenePivot.y, scenePivot.z, isolatedOctant, overrides, draggingAssetId, draggingPlaneAssetId]);
-
+    return { clusters, clusterOf };
+  }, [assets, mode, selected, activeGridStep, sceneSize, scenePivot.x, scenePivot.y, scenePivot.z, isolatedOctant, overrides, draggingAssetId, draggingPlaneAssetId, rotateX, rotateZ]);
   function octantName(octant: Octant) {
     return [
       octant.x === 1 ? selected[0].rightLabel : selected[0].leftLabel,
@@ -470,6 +434,35 @@ export function DimensionPreview({
     };
   }, [mode]);
 
+  // Ctrl/Cmd+Z 撤销维度值修改；Esc 退出专注模式（顶部有抽屉/弹窗时让浮层优先处理）
+  useEffect(() => {
+    const isEditableTarget = (target: EventTarget | null) => target instanceof HTMLElement
+      && (target.matches("input, textarea, select") || target.isContentEditable);
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.isComposing) return;
+      // Esc：即使焦点在工具栏滑杆等控件上也退出专注模式；文本编辑与浮层打开时除外
+      if (event.key === "Escape" && focusMode
+        && !(event.target instanceof HTMLElement && event.target.isContentEditable)
+        && !hasOpenOverlay()) {
+        event.preventDefault();
+        event.stopPropagation();
+        setFocusMode(false);
+        return;
+      }
+      if (isEditableTarget(event.target)) return;
+      if (!event.altKey && (event.ctrlKey || event.metaKey) && !event.shiftKey && event.code === "KeyZ") {
+        // 拖动过程中不撤销历史操作；弹窗打开时把快捷键让给浮层（如撤销待替换图片）
+        if (!undoStack.current.length || assetDrag.current || planeDrag.current || hasBlockingOverlay()) return;
+        event.preventDefault();
+        event.stopPropagation();
+        void undoLastDimensionChange();
+        return;
+      }
+    };
+    window.addEventListener("keydown", onKeyDown, true);
+    return () => window.removeEventListener("keydown", onKeyDown, true);
+  }, [focusMode]);
+
   // Tab / Shift+Tab：鼠标在画布内时拦截浏览器默认焦点切换，并循环切换遮挡图片/堆的焦点
   useEffect(() => {
     const isEditableTarget = (target: EventTarget | null) => target instanceof HTMLElement
@@ -589,6 +582,33 @@ export function DimensionPreview({
     };
   }
 
+  /** 记录一次拖动前实际变化的维度值；Ctrl/Cmd+Z 时按修改前数值写回。 */
+  function pushDimensionUndo(assetId: string, startValues: Record<string, number>) {
+    const before: Record<string, number> = {};
+    for (const dimension of selected) {
+      const start = startValues[dimension.id] ?? 500;
+      const current = dragValues.current[dimension.id] ?? 500;
+      if (start !== current) before[dimension.id] = start;
+    }
+    if (!Object.keys(before).length) return;
+    undoStack.current.push({ assetId, before });
+    if (undoStack.current.length > 50) undoStack.current.shift();
+  }
+
+  async function undoLastDimensionChange() {
+    const entry = undoStack.current.pop();
+    if (!entry) return;
+    try {
+      const ok = await onUpdateRef.current(entry.assetId, entry.before);
+      // 保存失败时放回撤销栈（保存函数自身已 toast 错误原因），成功后由撤销提示覆盖保存提示
+      if (ok === false) { undoStack.current.push(entry); return; }
+      onMessageRef.current?.("已撤销维度值修改");
+    } catch (error) {
+      undoStack.current.push(entry);
+      onMessageRef.current?.(error instanceof Error ? error.message : "撤销失败");
+    }
+  }
+
   function startCameraMove(event: PointerEvent<HTMLDivElement>, assetId?: string) {
     if (mode !== 3 || event.button !== 0) return;
     clearFan();
@@ -607,8 +627,10 @@ export function DimensionPreview({
   }
 
   function startViewPan(event: PointerEvent<HTMLDivElement>) {
-    if (event.button !== 0) return;
-    clearFan();
+    if (event.button !== 0 && event.button !== 1) return;
+    // hover 展开的堆时开始平移：保留展开平面（平移优先，卡片不进入坐标拖动），其余情况保持原有收起行为
+    if (planeClusterRef.current === null) clearFan();
+    panMovedRef.current = false;
     event.preventDefault();
     event.currentTarget.setPointerCapture(event.pointerId);
     viewPanDrag.current = {
@@ -625,6 +647,7 @@ export function DimensionPreview({
     const active = viewPanDrag.current;
     if (!active || active.pointerId !== event.pointerId) return;
     event.preventDefault();
+    if (Math.hypot(event.clientX - active.startX, event.clientY - active.startY) > 3) panMovedRef.current = true;
     setViewPan({
       x: active.panX + event.clientX - active.startX,
       y: active.panY + event.clientY - active.startY,
@@ -891,18 +914,8 @@ export function DimensionPreview({
 
   function computeDropTarget(values: Record<string, number>): string | null {
     if (!mode || !selected.length) return null;
-    const x = values[selected[0].id] ?? 500;
-    const y = mode >= 2 ? 1000 - (values[selected[1].id] ?? 500) : 500;
-    const z = mode === 3 ? (values[selected[2].id] ?? 500) - 500 : 0;
-    for (const cluster of clusters) {
-      const distance = mode === 1
-        ? Math.abs(x - cluster.x)
-        : mode === 2
-          ? Math.hypot(x - cluster.x, y - cluster.y)
-          : Math.hypot(x - cluster.x, y - cluster.y, z - cluster.z);
-      if (distance < clusterRadius) return cluster.key;
-    }
-    return null;
+    const cellKey = gridCellKey(selected.map((dimension) => values[dimension.id] ?? 500), activeGridStep);
+    return clusters.find((cluster) => cluster.cellKey === cellKey)?.key ?? null;
   }
 
   /** 仅展开指定堆的悬浮平面（不改变锚点与循环，供 Tab 切换复用）。 */
@@ -951,6 +964,8 @@ export function DimensionPreview({
   }
 
   function startPlaneCardDrag(event: PointerEvent<HTMLButtonElement>, member: Asset) {
+    // 平移优先：中键 / 空格+左键不进入卡片拖动，事件继续冒泡给场景开始平移
+    if (event.button === 1 || (event.button === 0 && spaceHeldRef.current)) return;
     if (mode === 3 || event.button !== 0) {
       // 3D 下平面卡片只点击、不可拖动；事件不外溢，场景不旋转
       event.stopPropagation();
@@ -1012,6 +1027,7 @@ export function DimensionPreview({
         .filter(([id, value]) => value !== (active.startValues[id] ?? 500)),
     );
     if (Object.keys(changedValues).length) {
+      pushDimensionUndo(active.assetId, active.startValues);
       await onUpdateAssetDimensions(active.assetId, changedValues);
     }
     setOverrides((current) => {
@@ -1022,11 +1038,12 @@ export function DimensionPreview({
   }
 
   function startSceneMove(event: PointerEvent<HTMLDivElement>) {
-    if (event.button !== 0) return;
-    if (spaceHeldRef.current) {
+    // 空格 + 左键、鼠标中键都优先平移视图（hover 展开的堆平面同样生效）
+    if (event.button === 1 || (event.button === 0 && spaceHeldRef.current)) {
       startViewPan(event);
       return;
     }
+    if (event.button !== 0) return;
     const hit = assetAtPoint(event.clientX, event.clientY);
     const assetId = hit && !hit.stackKey ? hit.id : null;
     const asset = assetId ? assets.find((candidate) => candidate.id === assetId) : null;
@@ -1058,6 +1075,12 @@ export function DimensionPreview({
     if (viewPanDrag.current?.pointerId === event.pointerId) {
       viewPanDrag.current = null;
       setViewPanning(false);
+      if (panMovedRef.current) {
+        panMovedRef.current = false;
+        // 平移松手后浏览器仍可能派发 click，抑制一次避免误触平面卡片/详情
+        suppressClickAfterPan.current = true;
+        window.setTimeout(() => { suppressClickAfterPan.current = false; }, 0);
+      }
       return;
     }
     if (assetDrag.current?.pointerId === event.pointerId) {
@@ -1169,6 +1192,7 @@ export function DimensionPreview({
         .filter(([id, value]) => value !== (active.startValues[id] ?? 500)),
     );
     if (Object.keys(changedValues).length) {
+      pushDimensionUndo(active.assetId, active.startValues);
       await onUpdateAssetDimensions(active.assetId, changedValues);
     }
     setOverrides((current) => {
@@ -1211,7 +1235,7 @@ export function DimensionPreview({
         <div className="preview-toolbar">
           <span>{mode ? `${mode}D 预览` : "未选择维度"} · {mode === 1 ? "左右拖动图片改变维度值" : mode === 2 ? "在平面中拖动图片改变两项维度" : mode === 3 ? "左键拖动旋转视角；点击图片查看详情" : "选择 1～3 个维度开始预览"}</span>
           <div className="preview-tools">
-            <span className="camera-hint"><MousePointer2 size={13} />空格 + 左键平移视图</span>
+            <span className="camera-hint"><MousePointer2 size={13} />空格 + 左键 / 中键平移视图</span>
             <div className="preview-zoom"><button type="button" onClick={() => { clearFan(); setZoom((value) => Math.max(.35, value - .1)); }} aria-label="缩小"><Minus size={14} /></button><span>{Math.round(zoom * 100)}%</span><button type="button" onClick={() => { clearFan(); setZoom((value) => Math.min(2.8, value + .1)); }} aria-label="放大"><Plus size={14} /></button></div>
             <div className="preview-asset-scale" role="group" aria-label="图片缩放系数" title="图片缩放系数：作用于预览内所有图片（50%～200%）">
               <Images size={13} />
@@ -1243,6 +1267,7 @@ export function DimensionPreview({
               onPointerEnter={() => { pointerInSceneRef.current = true; }}
               onPointerLeave={() => { pointerInSceneRef.current = false; setAssetHover(null); setStackHover(null); }}
               onAuxClick={(event) => event.preventDefault()}
+              onMouseDown={(event) => { if (event.button === 1) event.preventDefault(); }}
               onWheel={zoomWithWheel}
             >
               <div className="scene-scale" style={{ left: `calc(50% + ${viewPan.x}px)`, top: `calc(50% + ${viewPan.y}px)`, "--scene-scale": zoom, "--asset-size": `${(60 * assetScale) / zoom}px` } as CSSProperties}>
@@ -1258,8 +1283,8 @@ export function DimensionPreview({
                   } as CSSProperties}
                 >
                 {mode >= 2 ? <div className="xy-grid-plane" aria-hidden="true">
-                  {gridTicks.map((tick) => <span className="grid-line grid-line-x" style={{ left: `${tick * 10}%` }} key={`grid-x-${tick}`} />)}
-                  {gridTicks.map((tick) => <span className="grid-line grid-line-y" style={{ top: `${tick * 10}%` }} key={`grid-y-${tick}`} />)}
+                  {gridTicks.map((tick) => <span className="grid-line grid-line-x" style={{ left: `${tick / 10}%` }} key={`grid-x-${tick}`} />)}
+                  {gridTicks.map((tick) => <span className="grid-line grid-line-y" style={{ top: `${100 - tick / 10}%` }} key={`grid-y-${tick}`} />)}
                 </div> : null}
                 <div className="axis-bar axis-bar-x" aria-hidden="true">
                   <div className={`axis-half axis-half-x-pos ${isolatedOctant && isolatedOctant.x !== 1 ? "octant-hidden" : ""}`}><AxisFaces /></div>
@@ -1274,6 +1299,19 @@ export function DimensionPreview({
                   <div className={`axis-half axis-half-z-neg ${isolatedOctant && isolatedOctant.z !== -1 ? "octant-hidden" : ""}`}><AxisFaces /></div>
                 </div> : null}
                 <span className="axis-origin" />
+                {selected.map((dimension, axis) => gridTicks.map((tick) => {
+                  const sign = isolatedOctant ? [isolatedOctant.x, isolatedOctant.y, isolatedOctant.z][axis] : null;
+                  if ((sign === 1 && tick < 500) || (sign === -1 && tick > 500)) return null;
+                  return (
+                    <span className={`preview-axis-tick tick-axis-${axis}`} key={`${dimension.id}:${tick}`} aria-hidden="true" style={{
+                      left: axis === 0 ? `${tick / 10}%` : "50%",
+                      top: axis === 1 ? `${100 - tick / 10}%` : "50%",
+                      transform: `translate(-50%, -50%) translateZ(${axis === 2 ? (tick - 500) * sceneSize / 1000 : 0}px)`,
+                    }}>
+                      <i style={{ transform: `rotateZ(${mode === 3 ? -sceneRotateZ : 0}deg) rotateX(${mode === 3 ? -sceneRotateX : 0}deg) scale(${1 / zoom})` }} />
+                    </span>
+                  );
+                }))}
                 <span className={`axis-label axis-label-x-start ${isolatedOctant && isolatedOctant.x === 1 ? "octant-hidden" : ""}`}><i style={{ "--billboard-rx": `${mode === 3 ? -sceneRotateX : 0}deg`, "--billboard-rz": `${mode === 3 ? -sceneRotateZ : 0}deg` } as CSSProperties}>{selected[0].leftLabel}</i></span>
                 <span className={`axis-label axis-label-x-end ${isolatedOctant && isolatedOctant.x === -1 ? "octant-hidden" : ""}`}><i style={{ "--billboard-rx": `${mode === 3 ? -sceneRotateX : 0}deg`, "--billboard-rz": `${mode === 3 ? -sceneRotateZ : 0}deg` } as CSSProperties}>{selected[0].rightLabel}</i></span>
                 {mode >= 2 ? <><span className={`axis-label axis-label-y-start ${isolatedOctant && isolatedOctant.y === -1 ? "octant-hidden" : ""}`}><i style={{ "--billboard-rx": `${mode === 3 ? -sceneRotateX : 0}deg`, "--billboard-rz": `${mode === 3 ? -sceneRotateZ : 0}deg` } as CSSProperties}>{selected[1].rightLabel}</i></span><span className={`axis-label axis-label-y-end ${isolatedOctant && isolatedOctant.y === 1 ? "octant-hidden" : ""}`}><i style={{ "--billboard-rx": `${mode === 3 ? -sceneRotateX : 0}deg`, "--billboard-rz": `${mode === 3 ? -sceneRotateZ : 0}deg` } as CSSProperties}>{selected[1].leftLabel}</i></span></> : null}
@@ -1303,54 +1341,29 @@ export function DimensionPreview({
                   );
                 })}
                 {debugEnabled && showClusterDebug ? clusters.map((cluster) => {
-                  const planeSize = scenePlaneRef.current?.offsetWidth ?? 0;
-                  const radiusPx = clusterRadius * planeSize / 1000;
-                  if (mode === 3) {
-                    // 3D：三个正交圆盘构成球体，半径即当前档位聚簇半径
-                    const disc: CSSProperties = {
-                      position: "absolute",
-                      inset: 0,
-                      borderRadius: "50%",
-                      background: "rgba(227, 44, 44, .2)",
-                      border: "1px solid rgba(227, 44, 44, .6)",
-                    };
-                    return (
-                      <span
-                        key={`debug-${cluster.key}`}
-                        style={{
-                          position: "absolute",
-                          left: `${cluster.x / 10}%`,
-                          top: `${cluster.y / 10}%`,
-                          width: radiusPx * 2,
-                          height: radiusPx * 2,
-                          pointerEvents: "none",
-                          zIndex: 2,
-                          transform: `translate(-50%, -50%) translateZ(${cluster.z * planeSize / 1000}px)`,
-                          transformStyle: "preserve-3d",
-                        }}
-                      >
-                        <i style={disc} />
-                        <i style={{ ...disc, transform: "rotateY(90deg)" }} />
-                        <i style={{ ...disc, transform: "rotateX(90deg)" }} />
-                      </span>
-                    );
-                  }
+                  const size = sceneSize / 1000;
+                  const width = (cluster.bounds.x[1] - cluster.bounds.x[0]) * size;
+                  const height = mode >= 2 ? (cluster.bounds.y[1] - cluster.bounds.y[0]) * size : 12 / zoom;
+                  const depth = (cluster.bounds.z[1] - cluster.bounds.z[0]) * size;
+                  const face: CSSProperties = {
+                    position: "absolute", inset: 0,
+                    background: "rgba(227, 44, 44, .12)", border: "1px solid rgba(227, 44, 44, .5)",
+                  };
                   return (
-                    <span
-                      key={`debug-${cluster.key}`}
-                      style={{
-                        position: "absolute",
-                        left: `${cluster.x / 10}%`,
-                        top: `${cluster.y / 10}%`,
-                        width: radiusPx * 2,
-                        height: radiusPx * 2,
-                        borderRadius: "50%",
-                        background: "rgba(227, 44, 44, .5)",
-                        pointerEvents: "none",
-                        zIndex: 2,
-                        transform: `translate(-50%, -50%) translateZ(${cluster.z * planeSize / 1000}px)`,
-                      }}
-                    />
+                    <span key={cluster.key} style={{
+                      position: "absolute", left: `${cluster.x / 10}%`, top: `${cluster.y / 10}%`,
+                      width, height, pointerEvents: "none", transformStyle: "preserve-3d",
+                      transform: `translate(-50%, -50%) translateZ(${cluster.z * size}px)`,
+                    }}>
+                      <i style={{ ...face, transform: `translateZ(${depth / 2}px)` }} />
+                      {mode === 3 ? <>
+                        <i style={{ ...face, transform: `translateZ(${-depth / 2}px)` }} />
+                        <i style={{ ...face, width: depth, left: (width - depth) / 2, transform: `translateX(${width / 2}px) rotateY(90deg)` }} />
+                        <i style={{ ...face, width: depth, left: (width - depth) / 2, transform: `translateX(${-width / 2}px) rotateY(90deg)` }} />
+                        <i style={{ ...face, height: depth, top: (height - depth) / 2, transform: `translateY(${height / 2}px) rotateX(90deg)` }} />
+                        <i style={{ ...face, height: depth, top: (height - depth) / 2, transform: `translateY(${-height / 2}px) rotateX(90deg)` }} />
+                      </> : null}
+                    </span>
                   );
                 }) : null}
                 {clusters.map((cluster) => {
@@ -1469,7 +1482,11 @@ export function DimensionPreview({
                   <div
                     className={`stack-plane mode-${mode} ${isClosing ? "closing" : ""}`}
                     style={{ left, top, width: planeWidth, height: planeHeight }}
-                    onPointerDown={(event) => event.stopPropagation()}
+                    onPointerDown={(event) => {
+                      // 中键 / 空格+左键：平移优先，冒泡给场景开始平移；其余事件继续由平面独占
+                      if (event.button === 1 || (event.button === 0 && spaceHeldRef.current)) return;
+                      event.stopPropagation();
+                    }}
                     onPointerMove={(event) => { event.stopPropagation(); movePlaneCardDrag(event); }}
                     onPointerUp={(event) => { event.stopPropagation(); void endPlaneCardDrag(event); }}
                     onPointerCancel={(event) => { event.stopPropagation(); void endPlaneCardDrag(event); }}
@@ -1494,6 +1511,10 @@ export function DimensionPreview({
                             } as CSSProperties}
                             onPointerDown={(event) => startPlaneCardDrag(event, member)}
                             onClick={() => {
+                              if (suppressClickAfterPan.current) {
+                                suppressClickAfterPan.current = false;
+                                return;
+                              }
                               if (planeDragJustMoved.current) {
                                 planeDragJustMoved.current = false;
                                 return;
