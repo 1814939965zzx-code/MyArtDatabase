@@ -32,3 +32,11 @@ data/
 # Local validation runtime and generated fixtures
 infra/resourcespace/runtime/
 validation-results/resourcespace/fixtures/
+
+# AOCI agent host integration (machine-bound; do not commit)
+.codex/config.toml
+.codex/config.toml.backup.*
+
+# AOCI local toolchain (downloaded binary, scratch files)
+.tools/
+.tmp/
