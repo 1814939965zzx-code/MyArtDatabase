@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import { Button, Tag, cn } from "./ui";
 
 /**
  * 素材标签筛选模块（全部素材页与项目素材页共用）：
@@ -42,20 +43,24 @@ export function TagFilterBar({
   }, [tags, tagsExpanded]);
 
   return (
-    <div className="global-tag-area">
-      <div ref={filterRef} className={`global-tag-filter library-tag-filter ${tagsExpanded ? "expanded" : ""}`} aria-label={`按${label}筛选`}>
-        <strong>{label}</strong>
+    <div className="flex min-w-0 flex-1 flex-col items-start gap-1.5">
+      <div
+        ref={filterRef}
+        aria-label={`按${label}筛选`}
+        className={cn("flex min-w-0 flex-wrap items-center gap-[7px] overflow-hidden", !tagsExpanded && "max-h-[63px]")}
+      >
+        <strong className="mr-0.5 text-sm font-semibold text-ink-label">{label}</strong>
         {sortedTags.map((tag) => (
-          <button type="button" className={selected.includes(tag) ? "active" : ""} key={tag} onClick={() => onToggle(tag)}>
+          <Tag key={tag} active={selected.includes(tag)} onClick={() => onToggle(tag)}>
             {tag}
-          </button>
+          </Tag>
         ))}
-        {!tags.length ? <span>暂无标签</span> : null}
+        {!tags.length ? <span className="text-sm text-muted">暂无标签</span> : null}
       </div>
-      {(tagsOverflow || tagsExpanded) ? (
-        <button className="tag-filter-expand" type="button" onClick={() => setTagsExpanded((current) => !current)}>
+      {tagsOverflow || tagsExpanded ? (
+        <Button variant="ghost" size="xs" className="px-1 text-sage-deep" onClick={() => setTagsExpanded((current) => !current)}>
           {tagsExpanded ? "收起全部标签" : "展开全部标签"}
-        </button>
+        </Button>
       ) : null}
     </div>
   );

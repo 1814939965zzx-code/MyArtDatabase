@@ -1,7 +1,8 @@
 "use client";
 
-import { Check, ExternalLink, LoaderCircle, Pencil, Plus, RotateCcw, Sparkles, X } from "lucide-react";
+import { Check, ExternalLink, Pencil, Plus, RotateCcw, Sparkles, X } from "lucide-react";
 import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState } from "react";
+import { Button, Field, IconButton, Input, Textarea, cn } from "./ui";
 
 const MAX_TAGS = 50;
 
@@ -168,40 +169,51 @@ export const AssetMetadataEditor = forwardRef<AssetMetadataEditorHandle, {
   }, [availableTags, tagQuery, tags]);
 
   return (
-    <form ref={formRef} className="asset-metadata-form" aria-busy={busy} onSubmit={(event) => event.preventDefault()}>
-      <label>
-        素材名称
-        <input
-          value={name}
-          onChange={(event) => setName(event.target.value)}
-          maxLength={120}
-          required
-        />
-      </label>
+    <form
+      ref={formRef}
+      aria-busy={busy}
+      onSubmit={(event) => event.preventDefault()}
+      className="flex flex-col gap-3 border-b border-line-soft pb-4 pt-4"
+    >
+      <Field label="素材名称" required htmlFor="asset-name">
+        <Input id="asset-name" value={name} onChange={(event) => setName(event.target.value)} maxLength={120} required />
+      </Field>
 
-      <fieldset className="asset-tag-editor">
-        <legend>全局标签</legend>
-        {tags.length ? <div className="asset-tag-badges">
-          {tags.map((tag) => {
-            const pendingDelete = pendingDeleteTags.includes(tag);
-            return (
-              <span className={`asset-tag-badge ${pendingDelete ? "pending-delete" : ""}`} key={tag}>
-                <button
-                  type="button"
-                  aria-label={pendingDelete ? `撤销删除标签 ${tag}` : `删除标签 ${tag}`}
-                  onClick={() => pendingDelete ? undoTagDeletion(tag) : removeTag(tag)}
+      <fieldset className="m-0 flex min-w-0 flex-col gap-2 border-0 p-0">
+        <legend className="mb-1 text-sm font-medium text-ink-label">全局标签</legend>
+
+        {tags.length ? (
+          <div className="flex flex-wrap items-start gap-1.5">
+            {tags.map((tag) => {
+              const pendingDelete = pendingDeleteTags.includes(tag);
+              return (
+                <span
+                  key={tag}
+                  className={cn(
+                    "inline-flex items-center gap-1 rounded-full border px-1.5 py-0.5 text-xs",
+                    pendingDelete ? "border-danger-border bg-danger-soft text-danger line-through" : "border-line bg-surface-muted text-muted",
+                  )}
                 >
-                  {pendingDelete ? <RotateCcw size={11} /> : <X size={11} />}
-                </button>
-                <span>{tag}</span>
-              </span>
-            );
-          })}
-        </div> : null}
-        <div className="asset-tag-combobox">
-          <div className="asset-tag-input">
-            <input
+                  <button
+                    type="button"
+                    aria-label={pendingDelete ? `撤销删除标签 ${tag}` : `删除标签 ${tag}`}
+                    onClick={() => pendingDelete ? undoTagDeletion(tag) : removeTag(tag)}
+                    className="grid size-4 place-items-center rounded-full transition-colors hover:bg-white/70"
+                  >
+                    {pendingDelete ? <RotateCcw size={11} aria-hidden /> : <X size={11} aria-hidden />}
+                  </button>
+                  <span>{tag}</span>
+                </span>
+              );
+            })}
+          </div>
+        ) : null}
+
+        <div className="relative flex flex-col gap-1">
+          <div className="flex items-center gap-1.5">
+            <Input
               aria-label="添加全局标签"
+              className="min-w-0 flex-1"
               value={tagQuery}
               maxLength={40}
               placeholder={tags.length >= MAX_TAGS ? `最多添加 ${MAX_TAGS} 个标签` : "输入标签，可匹配已有标签"}
@@ -241,46 +253,77 @@ export const AssetMetadataEditor = forwardRef<AssetMetadataEditorHandle, {
                 }
               }}
             />
-            <button type="button" aria-label="添加标签" disabled={!tagQuery.trim() || tags.length >= MAX_TAGS} onClick={() => addTag()}>
-              <Plus size={13} />
-            </button>
+            <IconButton label="添加标签" size="sm" disabled={!tagQuery.trim() || tags.length >= MAX_TAGS} onClick={() => addTag()}>
+              <Plus size={13} aria-hidden />
+            </IconButton>
             {onAiTag && !(asset.mimeType ?? "").startsWith("video/") ? (
-              <button
-                className="ai-tag-button"
-                type="button"
+              <Button
+                size="sm"
+                variant="secondary"
+                className="flex-none border-accent-border bg-accent-soft text-accent-strong"
                 disabled={busy || aiTagBusy}
+                loading={aiTagBusy}
+                icon={<Sparkles size={12} aria-hidden />}
                 onClick={onAiTag}
                 title="调用 AI 观察这张图片并自动补充标签"
               >
-                {aiTagBusy ? <><LoaderCircle className="spin" size={12} />AI 打标中…</> : <><Sparkles size={12} />AI 打标</>}
-              </button>
+                {aiTagBusy ? "AI 打标中…" : "AI 打标"}
+              </Button>
             ) : null}
           </div>
-          {suggestions.length ? <div className="asset-tag-suggestions" role="listbox" aria-label="匹配的已有标签">
-            {suggestions.map(({ tag }, index) => (
-              <button type="button" role="option" aria-selected={index === highlightIndex} className={index === highlightIndex ? "highlighted" : ""} key={tag} onMouseDown={(event) => event.preventDefault()} onMouseEnter={() => setHighlightIndex(index)} onClick={() => addTag(tag)}>{tag}</button>
-            ))}
-          </div> : null}
+
+          {suggestions.length ? (
+            <div
+              role="listbox"
+              aria-label="匹配的已有标签"
+              className="absolute left-0 right-0 top-[calc(100%+4px)] z-popover flex flex-col rounded-sm border border-line bg-white p-1 shadow-md"
+            >
+              {suggestions.map(({ tag }, index) => (
+                <button
+                  key={tag}
+                  type="button"
+                  role="option"
+                  aria-selected={index === highlightIndex}
+                  onMouseDown={(event) => event.preventDefault()}
+                  onMouseEnter={() => setHighlightIndex(index)}
+                  onClick={() => addTag(tag)}
+                  className={cn(
+                    "rounded-sm px-2 py-1.5 text-left text-sm",
+                    index === highlightIndex ? "bg-surface-muted text-ink" : "text-muted hover:bg-surface-muted",
+                  )}
+                >
+                  {tag}
+                </button>
+              ))}
+            </div>
+          ) : null}
         </div>
       </fieldset>
 
-      <label>
-        描述
-        <textarea value={description} onChange={(event) => setDescription(event.target.value)} rows={3} maxLength={2000} placeholder="描述图片内容或使用方向" />
-      </label>
-      <div className="source-link-field">
-        <div className="source-link-heading">
-          <strong>来源链接</strong>
-          {!editingSourceUrl ? sourceUrl ? (
-            <button type="button" onClick={() => setEditingSourceUrl(true)}><Pencil size={12} />编辑</button>
-          ) : (
-            <button type="button" aria-label="增加来源链接" onClick={() => setEditingSourceUrl(true)}><Plus size={13} />增加</button>
+      <Field label="描述" htmlFor="asset-description">
+        <Textarea id="asset-description" value={description} onChange={(event) => setDescription(event.target.value)} rows={3} maxLength={2000} placeholder="描述图片内容或使用方向" />
+      </Field>
+
+      <div className="flex flex-col gap-1.5">
+        <div className="flex items-center justify-between gap-2">
+          <strong className="text-sm font-medium text-ink-label">来源链接</strong>
+          {!editingSourceUrl ? (
+            sourceUrl ? (
+              <Button size="xs" variant="ghost" icon={<Pencil size={12} aria-hidden />} onClick={() => setEditingSourceUrl(true)}>
+                编辑
+              </Button>
+            ) : (
+              <Button size="xs" variant="ghost" icon={<Plus size={13} aria-hidden />} onClick={() => setEditingSourceUrl(true)}>
+                增加
+              </Button>
+            )
           ) : null}
         </div>
+
         {editingSourceUrl ? (
-          <div className="source-link-editor">
-            <input
-              className="source-link-input"
+          <div className="flex items-center gap-1.5">
+            <Input
+              className="source-link-input min-w-0 flex-1"
               value={sourceUrl}
               onChange={(event) => { event.target.setCustomValidity(""); setSourceUrl(event.target.value); }}
               type="url"
@@ -288,23 +331,35 @@ export const AssetMetadataEditor = forwardRef<AssetMetadataEditorHandle, {
               placeholder="https://"
               autoFocus
             />
-            <button type="button" aria-label="保存来源链接" disabled={busy} onClick={() => void applySourceUrl()}><Check size={14} /></button>
-            <button type="button" aria-label="取消编辑来源链接" disabled={busy} onClick={() => { setSourceUrl(asset.sourceUrl); setEditingSourceUrl(false); }}><X size={14} /></button>
+            <IconButton label="保存来源链接" size="sm" disabled={busy} onClick={() => void applySourceUrl()}>
+              <Check size={14} aria-hidden />
+            </IconButton>
+            <IconButton label="取消编辑来源链接" size="sm" disabled={busy} onClick={() => { setSourceUrl(asset.sourceUrl); setEditingSourceUrl(false); }}>
+              <X size={14} aria-hidden />
+            </IconButton>
           </div>
         ) : sourceUrl && safeExternalUrl(sourceUrl) ? (
-          <a className="source-link-display" href={safeExternalUrl(sourceUrl) ?? undefined} target="_blank" rel="noopener noreferrer">
-            <span>{sourceUrl}</span><ExternalLink size={13} />
+          <a
+            className="flex min-w-0 items-center gap-1.5 text-sm text-sage-deep hover:underline"
+            href={safeExternalUrl(sourceUrl) ?? undefined}
+            target="_blank"
+            rel="noopener noreferrer"
+          >
+            <span className="truncate">{sourceUrl}</span>
+            <ExternalLink size={13} aria-hidden className="flex-none" />
           </a>
         ) : sourceUrl ? (
-          <button className="source-link-invalid" type="button" onClick={() => setEditingSourceUrl(true)}>链接格式无效，点击编辑</button>
+          <button className="text-left text-sm text-danger" type="button" onClick={() => setEditingSourceUrl(true)}>
+            链接格式无效，点击编辑
+          </button>
         ) : (
-          <span className="source-link-empty">暂无来源链接</span>
+          <span className="text-sm text-muted">暂无来源链接</span>
         )}
       </div>
-      <label>
-        备注
-        <textarea value={notes} onChange={(event) => setNotes(event.target.value)} rows={2} maxLength={2000} placeholder="团队内部备注" />
-      </label>
+
+      <Field label="备注" htmlFor="asset-notes">
+        <Textarea id="asset-notes" value={notes} onChange={(event) => setNotes(event.target.value)} rows={2} maxLength={2000} placeholder="团队内部备注" />
+      </Field>
     </form>
   );
 });

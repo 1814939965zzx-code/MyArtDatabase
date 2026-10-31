@@ -1,8 +1,9 @@
 "use client";
 
-import { ImageIcon, LoaderCircle, RotateCcw, Trash2, Trash } from "lucide-react";
+import { RotateCcw, Trash, Trash2 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { formatDuration, isVideoMime } from "./assetMedia";
+import { AssetCard } from "./components/library/AssetCard";
+import { Button, EmptyState, Spinner } from "./ui";
 
 export type TrashedAsset = {
   id: string;
@@ -74,35 +75,47 @@ export function TrashView({
   const selectedAssets = assets.filter((asset) => selectedIds.includes(asset.id));
 
   if (loading) {
-    return <div className="loading-state"><LoaderCircle className="spin" size={22} /> 正在载入回收站…</div>;
+    return (
+      <div className="flex min-h-[65vh] items-center justify-center gap-2 text-md text-muted">
+        <Spinner size={22} />
+        正在载入回收站…
+      </div>
+    );
   }
 
   return (
     <>
-      <div className="library-filter-bar trash-toolbar">
-        <div className="trash-select-controls">
-          <label className="trash-check-all">
+      <div className="mx-[42px] mb-[18px] mt-[26px] flex flex-wrap items-center justify-between gap-4 border border-line bg-surface px-3.5 py-3 max-md:mx-6 max-sm:flex-col max-sm:items-stretch">
+        <div className="flex min-w-0 items-center gap-3">
+          <label className="flex flex-none cursor-pointer items-center gap-2 text-sm text-muted">
             <input
               ref={checkAllRef}
               type="checkbox"
               checked={allChecked}
               disabled={busy || !filtered.length}
               onChange={(event) => toggleAll(event.target.checked)}
+              className="accent-sage"
             />
             全选
           </label>
           {selectedIds.length ? (
-            <span className="trash-selected-count">已选 {selectedIds.length} 项</span>
+            <span className="text-sm font-semibold text-success">已选 {selectedIds.length} 项</span>
           ) : (
-            <span className="trash-hint">软删除的素材会保留在这里；恢复后回到原来的项目，永久删除会同时移除所有项目引用和图片文件。</span>
+            <span className="text-sm leading-relaxed text-muted">
+              软删除的素材会保留在这里；恢复后回到原来的项目，永久删除会同时移除所有项目引用和图片文件。
+            </span>
           )}
         </div>
-        <div className="library-filter-actions">
-          {search ? <span>找到 {filtered.length} 项</span> : null}
+        <div className="flex flex-none items-center gap-2.5">
+          {search ? <span className="text-xs text-muted">找到 {filtered.length} 项</span> : null}
           {selectedIds.length ? (
-            <div className="trash-batch-actions">
-              <button type="button" className="trash-restore" disabled={busy} onClick={() => onRestoreMany(selectedAssets)}><RotateCcw size={13} />恢复所选</button>
-              <button type="button" className="trash-purge" disabled={busy} onClick={() => onPurgeMany(selectedAssets)}><Trash2 size={13} />永久删除所选</button>
+            <div className="flex items-center gap-2">
+              <Button size="sm" icon={<RotateCcw size={13} aria-hidden />} disabled={busy} onClick={() => onRestoreMany(selectedAssets)}>
+                恢复所选
+              </Button>
+              <Button size="sm" variant="danger" icon={<Trash2 size={13} aria-hidden />} disabled={busy} onClick={() => onPurgeMany(selectedAssets)}>
+                永久删除所选
+              </Button>
             </div>
           ) : null}
         </div>
@@ -114,36 +127,40 @@ export function TrashView({
             {filtered.map((asset) => {
               const selected = selectedIds.includes(asset.id);
               return (
-                <div className={`asset-card trash-card${selected ? " selected" : ""}`} key={asset.id}>
-                  <span className="asset-image-wrap">
-                    <input
-                      className="trash-card-check"
-                      type="checkbox"
-                      checked={selected}
-                      disabled={busy}
-                      aria-label={`选择 ${asset.name}`}
-                      onChange={(event) => toggleOne(asset.id, event.target.checked)}
-                    />
-                    {asset.thumbnailUrl ? <img src={asset.thumbnailUrl} alt="" /> : <span className="asset-fallback"><ImageIcon /></span>}
-                    {isVideoMime(asset.mimeType) && asset.transcodeStatus === "ready" ? <span className="trash-duration-badge">{formatDuration(asset.duration)}</span> : null}
-                    <span className="project-count-badge">{asset.projects.length} 个项目</span>
-                  </span>
-                  <span className="asset-meta">
-                    <strong>{asset.name}</strong>
-                    <small>删除于 {formatDeletedAt(asset.deletedAt)}</small>
-                    {asset.tags.length ? <span className="tag-row">{asset.tags.map((tag) => <i key={tag}>{tag}</i>)}</span> : null}
-                    <span className="trash-card-actions">
-                      <button type="button" className="trash-restore" disabled={busy} onClick={() => onRestore(asset)}><RotateCcw size={13} />恢复</button>
-                      <button type="button" className="trash-purge" disabled={busy} onClick={() => onPurge(asset)}><Trash2 size={13} />永久删除</button>
-                    </span>
-                  </span>
-                </div>
+                <AssetCard
+                  key={asset.id}
+                  asset={asset}
+                  variant="grid"
+                  selected={selected}
+                  selectable
+                  checked={selected}
+                  onCheckedChange={(checked) => toggleOne(asset.id, checked)}
+                  busy={busy}
+                  showProjectCount
+                  showDuration
+                  metaExtra={<small className="mt-1 block text-xs text-faint">删除于 {formatDeletedAt(asset.deletedAt)}</small>}
+                  actions={
+                    <>
+                      <Button size="xs" icon={<RotateCcw size={13} aria-hidden />} disabled={busy} onClick={() => onRestore(asset)}>
+                        恢复
+                      </Button>
+                      <Button size="xs" variant="danger" icon={<Trash2 size={13} aria-hidden />} disabled={busy} onClick={() => onPurge(asset)}>
+                        永久删除
+                      </Button>
+                    </>
+                  }
+                />
               );
             })}
           </div>
         </div>
       ) : (
-        <div className="empty-state"><Trash size={28} /><h3>{search ? "没有匹配的已删除素材" : "回收站是空的"}</h3><p>{search ? "换一个关键词试试。" : "删除素材后会先进入这里，随时可以恢复或彻底清除。"}</p></div>
+        <EmptyState
+          icon={<Trash size={28} aria-hidden />}
+          title={search ? "没有匹配的已删除素材" : "回收站是空的"}
+          description={search ? "换一个关键词试试。" : "删除素材后会先进入这里，随时可以恢复或彻底清除。"}
+          className="mx-[42px] max-md:mx-6"
+        />
       )}
     </>
   );

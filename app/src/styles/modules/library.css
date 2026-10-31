@@ -1,0 +1,74 @@
+@layer components {
+  .asset-collection {
+    margin: 0 42px;
+  }
+
+  .asset-grid {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 17px;
+  }
+
+  .asset-list {
+    display: flex;
+    flex-direction: column;
+    gap: 7px;
+  }
+
+  .asset-list .asset-card {
+    display: flex;
+    align-items: center;
+  }
+
+  .asset-list .asset-thumb {
+    width: 95px;
+    flex: 0 0 95px;
+    aspect-ratio: 1.4;
+  }
+
+  .asset-list .asset-meta {
+    flex: 1;
+    display: grid;
+    grid-template-columns: 1fr 1.2fr;
+    align-items: center;
+    gap: 14px;
+  }
+
+  .asset-list .tag-row {
+    margin-top: 0;
+  }
+
+  @media (max-width: 1180px) {
+    .asset-grid {
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+    }
+  }
+
+  @media (max-width: 1180px) {
+    .asset-grid {
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+    }
+  }
+
+  @media (max-width: 850px) {
+    .asset-collection {
+      margin: 0 24px;
+    }
+  }
+
+  @media (max-width: 620px) {
+    .asset-grid {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 10px;
+    }
+
+    .asset-list .asset-meta {
+      grid-template-columns: 1fr;
+      gap: 3px;
+    }
+
+    .asset-list .tag-row {
+      display: none;
+    }
+  }
+}

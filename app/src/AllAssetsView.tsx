@@ -6,9 +6,6 @@ import {
   FolderPlus,
   ImageIcon,
   Images,
-  LayoutGrid,
-  List,
-  LoaderCircle,
   RotateCcw,
   Trash2,
   X,
@@ -21,6 +18,9 @@ import { formatDuration, isVideoMime, transcodePercent, useTranscodePolling, vid
 import { TagFilterBar } from "./TagFilterBar";
 import type { TagEntry } from "./TagManager";
 import { useProgressiveImage } from "./useProgressiveImage";
+import { AssetCard } from "./components/library/AssetCard";
+import { ViewToggle } from "./components/library/ViewToggle";
+import { Button, EmptyState, IconButton, InlineMessage, Modal, Spinner, cn } from "./ui";
 
 export type LibraryProject = {
   id: string;
@@ -260,46 +260,54 @@ export function AllAssetsView({
   }
 
   if (loading) {
-    return <div className="loading-state"><LoaderCircle className="spin" size={22} /> 正在载入全部素材…</div>;
+    return (
+      <div className="flex min-h-[65vh] items-center justify-center gap-2 text-md text-muted">
+        <Spinner size={22} />
+        正在载入全部素材…
+      </div>
+    );
   }
 
   return (
     <>
-      <div className="library-filter-bar">
+      <div className="mx-[42px] mb-[18px] mt-[26px] flex items-start justify-between gap-[18px] border border-line bg-surface px-3.5 py-3 max-md:mx-6 max-sm:flex-col max-sm:items-stretch">
         <TagFilterBar
           tags={globalTags}
           selected={selectedTags}
           label="全局标签"
           onToggle={(tag) => setSelectedTags((current) => current.includes(tag) ? current.filter((item) => item !== tag) : [...current, tag])}
         />
-        <div className="library-filter-actions">
-          {(search || selectedTags.length) ? <span>找到 {filteredAssets.length} 项</span> : null}
+        <div className="flex flex-none items-center gap-2.5">
+          {(search || selectedTags.length) ? <span className="text-xs text-muted">找到 {filteredAssets.length} 项</span> : null}
         </div>
       </div>
 
-      <div className="library-view-bar">
-        <div className="view-toggle" aria-label="显示方式">
-          <button type="button" className={view === "grid" ? "active" : ""} onClick={() => onViewChange("grid")} aria-label="网格显示"><LayoutGrid size={16} /></button>
-          <button type="button" className={view === "list" ? "active" : ""} onClick={() => onViewChange("list")} aria-label="列表显示"><List size={17} /></button>
-        </div>
+      <div className="mx-[42px] mb-[18px] flex justify-end max-md:mx-6">
+        <ViewToggle value={view} onChange={onViewChange} />
       </div>
 
       {filteredAssets.length ? (
-        <div className={`asset-collection library-collection ${view === "list" ? "asset-list" : "asset-grid"}`}>
+        <div className={cn("asset-collection library-collection", view === "list" ? "asset-list" : "asset-grid")}>
           {filteredAssets.map((asset, index) => (
-            <button className="asset-card" type="button" key={asset.id} onClick={() => setSelectedAssetId(asset.id)}>
-              <span className="asset-image-wrap">
-                {asset.thumbnailUrl ? <img src={asset.thumbnailUrl} alt="" loading={index > 7 ? "lazy" : "eager"} /> : <span className="asset-fallback"><ImageIcon /></span>}
-                <span className="asset-index">{String(index + 1).padStart(2, "0")}</span>
-                {isVideoMime(asset.mimeType) && asset.transcodeStatus === "processing" ? <span className="transcode-badge"><span>转码中 {transcodePercent(asset.transcodeProgress)}%</span><i className="transcode-bar"><span style={{ width: `${transcodePercent(asset.transcodeProgress)}%` }} /></i></span> : null}
-                <span className="project-count-badge">{asset.projects.length} 个项目</span>
-              </span>
-              <span className="asset-meta"><strong>{asset.name}</strong><span className="tag-row">{asset.tags.map((tag) => <i key={tag}>{tag}</i>)}</span></span>
-            </button>
+            <AssetCard
+              key={asset.id}
+              asset={asset}
+              index={index}
+              variant={view}
+              roundedThumb
+              thumbnailLoading={index > 7 ? "lazy" : "eager"}
+              showProjectCount
+              onOpen={() => setSelectedAssetId(asset.id)}
+            />
           ))}
         </div>
       ) : (
-        <div className="empty-state"><Images size={28} /><h3>{search || selectedTags.length ? "没有匹配的素材" : "数据库里还没有素材"}</h3><p>{search || selectedTags.length ? "换一个名称、文件、标签或项目关键词试试。" : "请先进入一个项目上传图片。"}</p></div>
+        <EmptyState
+          icon={<Images size={28} aria-hidden />}
+          title={search || selectedTags.length ? "没有匹配的素材" : "数据库里还没有素材"}
+          description={search || selectedTags.length ? "换一个名称、文件、标签或项目关键词试试。" : "请先进入一个项目上传图片。"}
+          className="mx-[42px] max-md:mx-6"
+        />
       )}
 
       {selectedAsset ? (
@@ -315,8 +323,8 @@ export function AllAssetsView({
                 return (
                   <span className="drawer-image-fallback" onClick={(event) => event.stopPropagation()}>
                     {status === "failed"
-                      ? <><AlertTriangle size={30} /><small>转码失败，原文件已保留</small><button className="secondary-button" type="button" onClick={(event) => { event.stopPropagation(); void retranscodeVideo(selectedAsset); }}><RotateCcw size={13} />重新转码</button></>
-                      : <><LoaderCircle className="spin" size={30} /><small>视频转码中 {transcodePercent(selectedAsset.transcodeProgress)}%</small><span className="drawer-progress"><span style={{ width: `${transcodePercent(selectedAsset.transcodeProgress)}%` }} /></span></>}
+                      ? <><AlertTriangle size={30} /><small>转码失败，原文件已保留</small><Button size="sm" icon={<RotateCcw size={13} aria-hidden />} onClick={(event) => { event.stopPropagation(); void retranscodeVideo(selectedAsset); }}>重新转码</Button></>
+                      : <><Spinner size={30} /><small>视频转码中 {transcodePercent(selectedAsset.transcodeProgress)}%</small><span className="drawer-progress"><span style={{ width: `${transcodePercent(selectedAsset.transcodeProgress)}%` }} /></span></>}
                   </span>
                 );
               }
@@ -324,7 +332,7 @@ export function AllAssetsView({
             })()}
           </div>
           <div className="drawer-panel">
-            <div className="drawer-heading"><div><p className="eyebrow">GLOBAL ASSET</p><h2>素材详情</h2></div><button className="icon-button" type="button" onClick={() => void closeAssetDetail()} aria-label="关闭素材详情"><X size={18} /></button></div>
+            <div className="drawer-heading"><div><p className="mb-1 text-2xs font-bold uppercase tracking-[.15em] text-accent">GLOBAL ASSET</p><h2>素材详情</h2></div><IconButton label="关闭素材详情" onClick={() => void closeAssetDetail()}><X size={18} aria-hidden /></IconButton></div>
             <div className="drawer-scroll">
               <div className="drawer-file"><small>文件名</small><span>{selectedAsset.fileName}</span></div>
               <div className="drawer-facts">
@@ -334,7 +342,7 @@ export function AllAssetsView({
                 <span>{selectedAsset.fileSize ? `${(selectedAsset.fileSize / 1024 / 1024).toFixed(2)} MB` : "大小未知"}</span>
                 <span>{selectedAsset.mimeType || "image"}</span>
               </div>
-              {error ? <div className="form-error"><AlertTriangle size={15} />{error}</div> : null}
+              {error ? <InlineMessage tone="error" className="mb-3">{error}</InlineMessage> : null}
               <AssetImageReplacement
                 asset={selectedAsset}
                 busy={busy}
@@ -351,36 +359,81 @@ export function AllAssetsView({
                 onAiTag={() => void runAiTag()}
                 onSave={(update) => saveAssetMetadata(selectedAsset, update)}
               />
-              <div className="drawer-section-title"><Images size={16} /><strong>已引用项目</strong><em>{selectedAsset.projects.length}</em></div>
-              {selectedAsset.projects.length ? <div className="reference-projects">{selectedAsset.projects.map((project) => <span key={project.id}><Check size={12} />{project.name}</span>)}</div> : <p className="drawer-empty">当前没有项目引用这项素材。</p>}
-              <button className="drawer-project-add" type="button" onClick={() => openAssign(selectedAsset)}><FolderPlus size={14} />添加到其他项目</button>
-              <button className="drawer-remove drawer-delete" type="button" disabled={busy} onClick={() => void deleteToTrash(selectedAsset)}><Trash2 size={14} />删除素材</button>
+              <div className="mb-2 mt-4 flex items-center gap-2 text-sm">
+                <Images size={16} aria-hidden />
+                <strong>已引用项目</strong>
+                <em className="ml-auto text-2xs not-italic text-muted">{selectedAsset.projects.length}</em>
+              </div>
+              {selectedAsset.projects.length ? (
+                <div className="flex flex-col gap-1.5">
+                  {selectedAsset.projects.map((project) => (
+                    <span key={project.id} className="flex min-h-[31px] items-center gap-1.5 rounded-sm border border-line-soft bg-white px-2.5 text-sm text-ink-label">
+                      <Check size={12} aria-hidden className="text-sage" />
+                      {project.name}
+                    </span>
+                  ))}
+                </div>
+              ) : (
+                <p className="text-sm text-muted">当前没有项目引用这项素材。</p>
+              )}
+              <Button variant="secondary" size="sm" className="mt-4 w-full" icon={<FolderPlus size={14} aria-hidden />} onClick={() => openAssign(selectedAsset)}>
+                添加到其他项目
+              </Button>
+              <Button variant="danger" size="sm" className="mt-2 w-full" disabled={busy} icon={<Trash2 size={14} aria-hidden />} onClick={() => void deleteToTrash(selectedAsset)}>
+                删除素材
+              </Button>
             </div>
           </div>
         </aside>
       ) : null}
 
       {assignAsset ? (
-        <div className="modal-backdrop">
-          <section className="modal-card" role="dialog" aria-modal="true" aria-labelledby="assign-title">
-            <div className="modal-heading"><div><p className="eyebrow">PROJECT REFERENCES</p><h2 id="assign-title">添加到其他项目</h2><p>“{assignAsset.name}”只保留一份原文件，项目中创建的是引用。</p></div><button className="icon-button" type="button" onClick={() => setAssignAssetId(null)} aria-label="关闭"><X size={18} /></button></div>
-            {error ? <div className="form-error"><AlertTriangle size={15} />{error}</div> : null}
-            <div className="project-picker">
-              {projects.map((project) => {
-                const alreadyAssigned = assignedIds.has(project.id);
-                const checked = alreadyAssigned || selectedProjectIds.includes(project.id);
-                return (
-                  <div key={project.id} className={`project-picker-option ${alreadyAssigned ? "already-assigned" : ""}`}>
-                    <input id={`assign-project-${project.id}`} aria-label={`选择项目 ${project.name}`} type="checkbox" checked={checked} disabled={alreadyAssigned || busy} onChange={(event) => setSelectedProjectIds((current) => event.target.checked ? [...current, project.id] : current.filter((id) => id !== project.id))} />
-                    <label htmlFor={`assign-project-${project.id}`}><strong>{project.name}</strong><small>{alreadyAssigned ? "已在项目中" : `${project.assetCount} 个素材`}</small></label>
-                  </div>
-                );
-              })}
-              {!projects.length ? <p className="drawer-empty">还没有可添加的项目。</p> : null}
-            </div>
-            <div className="modal-actions"><button className="secondary-button" type="button" onClick={() => setAssignAssetId(null)}>取消</button><button className="primary-button" type="button" disabled={busy || !selectedProjectIds.length} onClick={() => void assignToProjects()}>{busy ? "添加中…" : `添加到 ${selectedProjectIds.length || 0} 个项目`}</button></div>
-          </section>
-        </div>
+        <Modal
+          open
+          onClose={() => setAssignAssetId(null)}
+          eyebrow="PROJECT REFERENCES"
+          title="添加到其他项目"
+          description={`“${assignAsset.name}”只保留一份原文件，项目中创建的是引用。`}
+          footer={
+            <>
+              <Button onClick={() => setAssignAssetId(null)}>取消</Button>
+              <Button variant="primary" disabled={busy || !selectedProjectIds.length} onClick={() => void assignToProjects()}>
+                {busy ? "添加中…" : `添加到 ${selectedProjectIds.length || 0} 个项目`}
+              </Button>
+            </>
+          }
+        >
+          {error ? <InlineMessage tone="error">{error}</InlineMessage> : null}
+          <div className="flex max-h-[320px] flex-col gap-1 overflow-y-auto">
+            {projects.map((project) => {
+              const alreadyAssigned = assignedIds.has(project.id);
+              const checked = alreadyAssigned || selectedProjectIds.includes(project.id);
+              return (
+                <label
+                  key={project.id}
+                  className={cn(
+                    "flex items-center gap-2.5 rounded-md border border-line px-3 py-2",
+                    alreadyAssigned ? "bg-surface-muted" : "cursor-pointer hover:bg-surface-muted",
+                  )}
+                >
+                  <input
+                    type="checkbox"
+                    aria-label={`选择项目 ${project.name}`}
+                    checked={checked}
+                    disabled={alreadyAssigned || busy}
+                    onChange={(event) => setSelectedProjectIds((current) => event.target.checked ? [...current, project.id] : current.filter((id) => id !== project.id))}
+                    className="accent-sage"
+                  />
+                  <span className="min-w-0">
+                    <strong className="block truncate text-sm font-medium text-ink">{project.name}</strong>
+                    <small className="block text-xs text-muted">{alreadyAssigned ? "已在项目中" : `${project.assetCount} 个素材`}</small>
+                  </span>
+                </label>
+              );
+            })}
+            {!projects.length ? <p className="py-2 text-sm text-muted">还没有可添加的项目。</p> : null}
+          </div>
+        </Modal>
       ) : null}
     </>
   );

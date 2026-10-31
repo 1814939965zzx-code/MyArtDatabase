@@ -1,0 +1,133 @@
+/*
+ * 基础层：全局重置、可访问性基线与通用文字/滑块修饰。
+ * 组件视觉一律走 tokens + ui/；本文件只放全局共享、无法组件化的少量规则。
+ */
+
+@layer base {
+  *,
+  *::before,
+  *::after {
+    box-sizing: border-box;
+  }
+
+  html,
+  body {
+    min-height: 100%;
+  }
+
+  body {
+    margin: 0;
+    background: var(--color-paper);
+    color: var(--color-ink);
+    font-family: var(--font-sans);
+  }
+
+  body.preview-focus-active,
+  body.board-focus-active {
+    overflow: hidden;
+  }
+
+  button,
+  input,
+  textarea {
+    font: inherit;
+  }
+
+  button {
+    color: inherit;
+  }
+
+  button:focus-visible,
+  input:focus-visible,
+  textarea:focus-visible {
+    outline: 2px solid var(--color-accent);
+    outline-offset: 2px;
+  }
+}
+
+@layer components {
+  /* 小号强调标签（弹窗 eyebrow） */
+  .eyebrow {
+    margin: 0 0 5px;
+    color: var(--color-accent);
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.15em;
+  }
+
+  /* 从中点向两侧延伸的滑块轨道（维度位置） */
+  .centered-range {
+    appearance: none;
+    height: 18px;
+    padding: 0 !important;
+    border: 0 !important;
+    background: transparent !important;
+    cursor: pointer;
+  }
+
+  .centered-range::-webkit-slider-runnable-track {
+    height: 3px;
+    border-radius: var(--radius-full);
+    background: linear-gradient(
+      to right,
+      var(--color-line-strong) 0 var(--range-fill-start),
+      var(--color-accent) var(--range-fill-start) var(--range-fill-end),
+      var(--color-line-strong) var(--range-fill-end) 100%
+    );
+  }
+
+  .centered-range::-webkit-slider-thumb {
+    appearance: none;
+    width: 14px;
+    height: 14px;
+    margin-top: -5.5px;
+    border: 2px solid var(--color-white);
+    border-radius: 50%;
+    background: var(--color-accent);
+    box-shadow: var(--shadow-sm);
+  }
+
+  .centered-range::-moz-range-track {
+    height: 3px;
+    border: 0;
+    border-radius: var(--radius-full);
+    background: linear-gradient(
+      to right,
+      var(--color-line-strong) 0 var(--range-fill-start),
+      var(--color-accent) var(--range-fill-start) var(--range-fill-end),
+      var(--color-line-strong) var(--range-fill-end) 100%
+    );
+  }
+
+  .centered-range::-moz-range-thumb {
+    width: 12px;
+    height: 12px;
+    border: 2px solid var(--color-white);
+    border-radius: 50%;
+    background: var(--color-accent);
+    box-shadow: var(--shadow-sm);
+  }
+
+  /* 仅供屏幕阅读器的文本 */
+  .visually-hidden {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}

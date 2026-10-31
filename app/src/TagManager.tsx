@@ -1,8 +1,9 @@
 "use client";
 
-import { Check, KeyRound, LoaderCircle, Merge, Pencil, Search, Sparkles, Trash2, X } from "lucide-react";
+import { Check, KeyRound, Merge, Pencil, Trash2, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { AiConfigModal } from "./AiConfigModal";
+import { Badge, Button, EmptyState, IconButton, InlineMessage, Input, Modal, SearchInput, Spinner, Tag, cn } from "./ui";
 
 export type TagEntry = {
   id: string;
@@ -220,160 +221,221 @@ export function TagManager({
   const selectedTagNames = new Set(selectedMergeTags.map((tag) => tag.name));
   const mergePreviewAssets = (mergeAssets ?? [])
     .filter((asset) => asset.tags.some((tag) => selectedTagNames.has(tag)));
+  const messageTone = /失败|无法|错误/.test(error) ? "error" : "success";
 
   return (
     <>
-    <div className="modal-backdrop">
-      <section className="modal-card tag-manager-card" role="dialog" aria-modal="true" aria-labelledby="tag-manager-title">
-        <div className="modal-heading">
-          <div>
-            <p className="eyebrow">TAG DICTIONARY</p>
-            <h2 id="tag-manager-title">标签管理</h2>
-            <p>{isProject ? "管理当前项目使用的标签；重命名或删除会同步影响所有项目引用。" : "重命名、合并或删除全局标签；变更会同步影响所有项目引用。"}</p>
-          </div>
-          <button className="icon-button" type="button" onClick={onClose} aria-label="关闭"><X size={18} /></button>
-        </div>
-        {error ? <div className="tag-manager-message"><Sparkles size={15} />{error}</div> : null}
-        <div className="tag-manager-toolbar">
-          <div className="tag-manager-search">
-            <Search size={15} />
-            <input
-              value={keyword}
-              onChange={(event) => setKeyword(event.target.value)}
-              placeholder="搜索标签"
-              aria-label="搜索标签"
-            />
-          </div>
-          <span className="tag-manager-count">{isProject ? `${tags.length} 个标签` : `${tags.length} 个标签 · ${unusedCount} 个未使用`}</span>
+      <Modal
+        open
+        onClose={onClose}
+        eyebrow="TAG DICTIONARY"
+        title="标签管理"
+        description={isProject ? "管理当前项目使用的标签；重命名或删除会同步影响所有项目引用。" : "重命名、合并或删除全局标签；变更会同步影响所有项目引用。"}
+        size="md"
+        className="flex max-h-[calc(100dvh-40px)] max-w-[680px] flex-col"
+        bodyClassName="min-h-0 flex-1 gap-3 overflow-y-auto pr-1"
+        closeOnEsc={!aiConfigOpen}
+      >
+        {error ? <InlineMessage tone={messageTone}>{error}</InlineMessage> : null}
+
+        <div className="flex flex-wrap items-center gap-2.5">
+          <SearchInput
+            value={keyword}
+            onValueChange={setKeyword}
+            placeholder="搜索标签"
+            aria-label="搜索标签"
+            className="w-[240px] max-sm:w-full"
+          />
+          <span className="text-sm text-muted">
+            {isProject ? `${tags.length} 个标签` : `${tags.length} 个标签 · ${unusedCount} 个未使用`}
+          </span>
           {!isProject && isAdmin ? (
-            <button className="tag-ai-config-button" type="button" onClick={() => setAiConfigOpen(true)}>
-              <KeyRound size={13} />AI 服务配置
-            </button>
+            <Button variant="ghost" size="sm" icon={<KeyRound size={13} aria-hidden />} onClick={() => setAiConfigOpen(true)}>
+              AI 服务配置
+            </Button>
           ) : null}
           {!isProject ? (
-            <button className="tag-cleanup-button" type="button" disabled={busy || !unusedCount} onClick={() => void cleanupUnused()}>
-              <Trash2 size={13} />清理未使用
-            </button>
+            <Button
+              variant="ghost"
+              size="sm"
+              icon={<Trash2 size={13} aria-hidden />}
+              disabled={busy || !unusedCount}
+              onClick={() => void cleanupUnused()}
+            >
+              清理未使用
+            </Button>
           ) : null}
         </div>
+
         {loading ? (
-          <div className="tag-manager-loading"><LoaderCircle className="spin" size={18} /> 正在载入标签…</div>
-        ) : (
-          <div className={`tag-manager-body ${mergeMode ? "merge-layout" : ""}`}>
-          {filtered.length ? (
-          <div className="tag-manager-list" role="list">
-            {filtered.map((tag) => {
-              const selected = mergeSelected.includes(tag.id);
-              return (
-                <div
-                  className={`tag-manager-row ${mergeMode ? "merge-selectable" : ""} ${mergeMode && selected ? "merge-selected" : ""}`}
-                  key={tag.id}
-                  role={mergeMode ? "button" : "listitem"}
-                  tabIndex={mergeMode ? 0 : undefined}
-                  aria-pressed={mergeMode ? selected : undefined}
-                  onClick={() => { if (mergeMode && !busy && editingId !== tag.id) toggleMergeRow(tag); }}
-                  onKeyDown={(event) => {
-                    if (!mergeMode || busy || editingId !== tag.id) return;
-                    if (event.key === "Enter" || event.key === " ") {
-                      event.preventDefault();
-                      toggleMergeRow(tag);
-                    }
-                  }}
-                >
-                  <div className="tag-manager-main">
-                    {editingId === tag.id ? (
-                      <input
-                        className="tag-rename-input"
-                        value={editingName}
-                        maxLength={40}
-                        autoFocus
-                        onChange={(event) => setEditingName(event.target.value)}
-                        onKeyDown={(event) => {
-                          if (event.key === "Enter") { event.preventDefault(); void submitRename(tag); }
-                          if (event.key === "Escape") setEditingId(null);
-                        }}
-                        aria-label={`重命名标签 ${tag.name}`}
-                      />
-                    ) : (
-                      <button
-                        className="tag-manager-name"
-                        type="button"
-                        disabled={busy}
-                        tabIndex={mergeMode ? -1 : undefined}
-                        onClick={mergeMode ? undefined : () => startRename(tag)}
-                        title={mergeMode ? "点击选择或取消选择要合并的标签" : "点击重命名"}
-                      >
-                        {tag.name}
-                      </button>
-                    )}
-                    <span className="tag-usage-badge">{tag.usageCount} 次</span>
-                    <span className={`tag-source-badge ${tag.source === "ai" ? "ai" : ""}`}>{tag.source === "ai" ? "AI" : "人工"}</span>
-                  </div>
-                  {editingId === tag.id ? (
-                    <div className="tag-manager-actions">
-                      <button type="button" disabled={busy || !editingName.trim()} onClick={() => void submitRename(tag)} aria-label="保存重命名"><Check size={14} /></button>
-                      <button type="button" disabled={busy} onClick={() => setEditingId(null)} aria-label="取消重命名"><X size={14} /></button>
-                    </div>
-                  ) : mergeMode ? null : (
-                    <div className="tag-manager-actions">
-                      <button type="button" disabled={busy} onClick={() => startRename(tag)} aria-label={`重命名 ${tag.name}`}><Pencil size={13} /></button>
-                      {!isProject ? (
-                        <button type="button" disabled={busy} onClick={() => enterMergeMode(tag)} aria-label={`选择 ${tag.name} 参与合并`}><Merge size={13} /></button>
-                      ) : null}
-                      <button className="tag-delete-button" type="button" disabled={busy} onClick={() => void removeTag(tag)} aria-label={`删除 ${tag.name}`}><Trash2 size={13} /></button>
-                    </div>
-                  )}
-                </div>
-              );
-            })}
+          <div className="flex flex-1 items-center justify-center gap-2 py-10 text-md text-muted">
+            <Spinner size={18} />
+            正在载入标签…
           </div>
-          ) : (
-          <div className="tag-manager-loading">{keyword ? "没有匹配的标签" : isProject ? "该项目还没有标签" : "标签字典还是空的"}</div>
-          )}
-          {mergeMode ? (
-            <div className="tag-merge-preview">
-              <div className="tag-merge-preview-heading">包含所选标签的素材 · {mergePreviewAssets.length}</div>
-              {mergePreviewAssets.length ? (
-                <div className="tag-merge-preview-grid">
-                  {mergePreviewAssets.map((asset) => {
-                    const shownTags = asset.tags.filter((tag) => selectedTagNames.has(tag));
+        ) : (
+          <div className={cn("flex min-h-0 flex-1 gap-3", mergeMode && "flex-col lg:flex-row")}>
+            <div className={cn("min-w-0", mergeMode ? "lg:w-1/3" : "flex-1")}>
+              {filtered.length ? (
+                <div role="list" className="flex flex-col">
+                  {filtered.map((tag) => {
+                    const selected = mergeSelected.includes(tag.id);
                     return (
-                      <figure className="tag-merge-preview-card" key={asset.id}>
-                        {asset.thumbnailUrl ? <img src={asset.thumbnailUrl} alt="" loading="lazy" /> : <span className="tag-merge-preview-fallback">无图</span>}
-                        <figcaption><strong>{asset.name}</strong><span>{shownTags.join("、")}</span></figcaption>
-                      </figure>
+                      <div
+                        className={cn(
+                          "flex min-h-[42px] items-center justify-between gap-2.5 border-b border-l-2 border-line-soft border-l-transparent px-3 py-1.5",
+                          mergeMode && "cursor-pointer hover:bg-surface-muted",
+                          mergeMode && selected && "border-l-warning bg-warning-soft",
+                        )}
+                        key={tag.id}
+                        role={mergeMode ? "button" : "listitem"}
+                        tabIndex={mergeMode ? 0 : undefined}
+                        aria-pressed={mergeMode ? selected : undefined}
+                        onClick={() => { if (mergeMode && !busy && editingId !== tag.id) toggleMergeRow(tag); }}
+                        onKeyDown={(event) => {
+                          if (!mergeMode || busy || editingId !== tag.id) return;
+                          if (event.key === "Enter" || event.key === " ") {
+                            event.preventDefault();
+                            toggleMergeRow(tag);
+                          }
+                        }}
+                      >
+                        <div className="flex min-w-0 items-center gap-2">
+                          {editingId === tag.id ? (
+                            <Input
+                              size="sm"
+                              className="h-8 max-w-[220px]"
+                              value={editingName}
+                              maxLength={40}
+                              autoFocus
+                              onChange={(event) => setEditingName(event.target.value)}
+                              onKeyDown={(event) => {
+                                if (event.key === "Enter") { event.preventDefault(); void submitRename(tag); }
+                                if (event.key === "Escape") setEditingId(null);
+                              }}
+                              aria-label={`重命名标签 ${tag.name}`}
+                            />
+                          ) : (
+                            <button
+                              type="button"
+                              disabled={busy}
+                              tabIndex={mergeMode ? -1 : undefined}
+                              onClick={mergeMode ? undefined : () => startRename(tag)}
+                              title={mergeMode ? "点击选择或取消选择要合并的标签" : "点击重命名"}
+                              className="max-w-[300px] truncate rounded-sm px-1 py-0.5 text-base font-medium text-ink transition-colors hover:bg-line-soft focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent disabled:opacity-60"
+                            >
+                              {tag.name}
+                            </button>
+                          )}
+                          <Badge tone="neutral" size="sm">{tag.usageCount} 次</Badge>
+                          <Badge tone={tag.source === "ai" ? "sage" : "neutral"} size="sm">{tag.source === "ai" ? "AI" : "人工"}</Badge>
+                        </div>
+
+                        {editingId === tag.id ? (
+                          <div className="flex flex-none gap-1">
+                            <IconButton size="sm" label="保存重命名" disabled={busy || !editingName.trim()} onClick={() => void submitRename(tag)}>
+                              <Check size={14} aria-hidden />
+                            </IconButton>
+                            <IconButton size="sm" label="取消重命名" disabled={busy} onClick={() => setEditingId(null)}>
+                              <X size={14} aria-hidden />
+                            </IconButton>
+                          </div>
+                        ) : mergeMode ? null : (
+                          <div className="flex flex-none gap-1">
+                            <IconButton size="sm" label={`重命名 ${tag.name}`} disabled={busy} onClick={() => startRename(tag)}>
+                              <Pencil size={13} aria-hidden />
+                            </IconButton>
+                            {!isProject ? (
+                              <IconButton size="sm" label={`选择 ${tag.name} 参与合并`} disabled={busy} onClick={() => enterMergeMode(tag)}>
+                                <Merge size={13} aria-hidden />
+                              </IconButton>
+                            ) : null}
+                            <IconButton size="sm" variant="danger" label={`删除 ${tag.name}`} disabled={busy} onClick={() => void removeTag(tag)}>
+                              <Trash2 size={13} aria-hidden />
+                            </IconButton>
+                          </div>
+                        )}
+                      </div>
                     );
                   })}
                 </div>
               ) : (
-                <div className="tag-merge-preview-empty">{mergeSelected.length ? "没有素材包含所选标签" : "在上方列表选择标签后，这里展示包含所选标签的素材"}</div>
+                <EmptyState
+                  compact
+                  title={keyword ? "没有匹配的标签" : isProject ? "该项目还没有标签" : "标签字典还是空的"}
+                />
               )}
             </div>
-          ) : null}
+
+            {mergeMode ? (
+              <div className="flex min-h-0 flex-1 flex-col gap-2.5 rounded-sm border border-line-soft bg-white p-2.5">
+                <div className="text-sm font-semibold text-ink">包含所选标签的素材 · {mergePreviewAssets.length}</div>
+                {mergePreviewAssets.length ? (
+                  <div className="grid min-h-0 flex-1 grid-cols-2 content-start gap-2 overflow-y-auto pr-0.5">
+                    {mergePreviewAssets.map((asset) => {
+                      const shownTags = asset.tags.filter((tag) => selectedTagNames.has(tag));
+                      return (
+                        <figure className="m-0 flex min-w-0 flex-col overflow-hidden border border-line-soft bg-surface" key={asset.id}>
+                          {asset.thumbnailUrl ? (
+                            <img src={asset.thumbnailUrl} alt="" loading="lazy" className="aspect-[4/3] w-full object-cover" />
+                          ) : (
+                            <span className="grid aspect-[4/3] w-full place-items-center bg-surface-sunken text-xs text-faint">无图</span>
+                          )}
+                          <figcaption className="flex min-w-0 flex-col gap-0.5 p-2">
+                            <strong className="truncate text-sm text-ink">{asset.name}</strong>
+                            <span className="truncate text-xs text-muted">{shownTags.join("、")}</span>
+                          </figcaption>
+                        </figure>
+                      );
+                    })}
+                  </div>
+                ) : (
+                  <EmptyState
+                    compact
+                    title={mergeSelected.length ? "没有素材包含所选标签" : "在上方列表选择标签后，这里展示包含所选标签的素材"}
+                  />
+                )}
+              </div>
+            ) : null}
           </div>
         )}
+
         {mergeMode ? (
-          <div className="tag-merge-bar">
-            <div className="tag-merge-summary">
-              <span>最终保留的标签：{keptTag ? <strong>{keptTag.name}</strong> : <em className="tag-merge-hint">点击下方标签选择一个最终保留的标签</em>}</span>
+          <div className="mt-3 flex flex-col gap-2.5 rounded-md border border-warning-border bg-warning-soft p-3">
+            <div className="flex flex-col gap-1 text-sm text-ink">
+              <span>
+                最终保留的标签：
+                {keptTag ? <strong>{keptTag.name}</strong> : <em className="text-muted">点击下方标签选择一个最终保留的标签</em>}
+              </span>
               <span>删除的标签：<em>{deletedTags.length ? deletedTags.map((tag) => tag.name).join("、") : ""}</em></span>
             </div>
-            <div className="tag-merge-chips" role="listbox" aria-label="选择最终保留的标签">
+            <div className="flex flex-wrap items-center gap-2" role="listbox" aria-label="选择最终保留的标签">
               {selectedMergeTags.map((tag) => (
-                <button type="button" role="option" aria-selected={tag.id === mergeKeptId} className={tag.id === mergeKeptId ? "active" : ""} key={tag.id} onClick={() => setMergeKeptId(tag.id)}>
+                <Tag
+                  key={tag.id}
+                  role="option"
+                  aria-selected={tag.id === mergeKeptId}
+                  active={tag.id === mergeKeptId}
+                  onClick={() => setMergeKeptId(tag.id)}
+                >
                   {tag.name}
-                </button>
+                </Tag>
               ))}
-              {!selectedMergeTags.length ? <span>尚未选择标签，请在上方列表中点击选择</span> : null}
+              {!selectedMergeTags.length ? <span className="text-sm text-muted">尚未选择标签，请在上方列表中点击选择</span> : null}
             </div>
-            <div className="tag-merge-bar-actions">
-              <button className="secondary-button" type="button" disabled={busy} onClick={exitMergeMode}>取消</button>
-              <button className="primary-button" type="button" disabled={busy || !keptTag || !deletedTags.length} onClick={() => void confirmMerge()}>{busy ? "合并中…" : "确认合并"}</button>
+            <div className="flex justify-end gap-2">
+              <Button disabled={busy} onClick={exitMergeMode}>取消</Button>
+              <Button
+                variant="primary"
+                disabled={busy || !keptTag || !deletedTags.length}
+                loading={busy}
+                onClick={() => void confirmMerge()}
+              >
+                {busy ? "合并中…" : "确认合并"}
+              </Button>
             </div>
           </div>
         ) : null}
-      </section>
-    </div>
+      </Modal>
       {aiConfigOpen ? <AiConfigModal onClose={() => setAiConfigOpen(false)} /> : null}
     </>
   );

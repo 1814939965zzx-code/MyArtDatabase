@@ -5,6 +5,7 @@ import { sha256 } from "@noble/hashes/sha2.js";
 import { bytesToHex } from "@noble/hashes/utils.js";
 import { FormEvent, useEffect, useState } from "react";
 import { notifyUnauthorized } from "./api";
+import { Button, Field, InlineMessage, Input, Modal, ProgressBar, Spinner, Textarea } from "./ui";
 
 type Duplicate = { id: string; name: string; fileName: string; thumbnailUrl: string | null; inProject: number };
 type PreparedFile = {
@@ -203,46 +204,139 @@ export function UploadModal({
 
   const baseName = file.name.replace(/\.[^.]+$/, "");
   const isVideo = file.type.startsWith("video/");
+  const percent = uploadProgress === null ? 0 : Math.round(uploadProgress * 100);
+
   return (
-    <div className="modal-backdrop upload-backdrop">
-      <section className="modal-card upload-modal" role="dialog" aria-modal="true" aria-labelledby="upload-title">
-        <div className="modal-heading">
-          <div><p className="eyebrow">NEW ASSET</p><h2 id="upload-title">上传素材</h2><p>提交前补充全局 Metadata 和项目维度位置{isVideo ? "（视频上传后会自动压缩为低码率版本）" : ""}。</p></div>
-          <button className="icon-button" type="button" onClick={onClose} aria-label="关闭上传"><X size={18} /></button>
+    <Modal
+      open
+      onClose={onClose}
+      eyebrow="NEW ASSET"
+      title="上传素材"
+      description={`提交前补充全局 Metadata 和项目维度位置${isVideo ? "（视频上传后会自动压缩为低码率版本）" : ""}。`}
+      size="xl"
+      footer={
+        prepared ? (
+          <>
+            <Button onClick={onClose} disabled={busy}>
+              取消
+            </Button>
+            <Button type="submit" form="upload-form" variant="primary" loading={busy} icon={<Upload size={15} aria-hidden />}>
+              {busy ? (uploadProgress !== null ? `上传中 ${percent}%` : "上传中…") : "确认上传"}
+            </Button>
+          </>
+        ) : undefined
+      }
+    >
+      {!prepared && !error ? (
+        <div className="flex min-h-[180px] items-center justify-center gap-2 text-md text-muted">
+          <Spinner size={20} />
+          正在读取文件并检查重复…
         </div>
-        {!prepared && !error ? <div className="upload-preparing"><LoaderCircle className="spin" /> 正在读取文件并检查重复…</div> : null}
-        {error ? <div className="form-error"><AlertTriangle size={15} />{error}</div> : null}
-        {prepared ? (
-          <form className="upload-layout" onSubmit={submit}>
-            <div className="upload-preview-column">
-              {isVideo ? <video src={prepared.previewUrl} controls muted playsInline /> : previewFailed
-                ? <div className="upload-preview-fallback">该格式浏览器无法预览，仍可正常上传</div>
-                : <img src={prepared.previewUrl} alt="待上传素材预览" onError={() => setPreviewFailed(true)} />}
-              <div className="file-facts"><FileImage size={15} /><span>{file.name}</span><small>{isVideo ? "视频" : `${Math.round(prepared.width)} × ${Math.round(prepared.height)}`} · {(file.size / 1024 / 1024).toFixed(2)}MB</small></div>
-              {prepared.duplicates.length ? (
-                <div className={`duplicate-card ${allowDuplicate ? "duplicate-confirmed" : ""}`}>
-                  <div><AlertTriangle size={16} /><strong>发现完全相同的素材</strong></div>
-                  <p>SHA-256 与“{prepared.duplicates[0].name}”一致。</p>
-                  {!allowDuplicate ? <div className="duplicate-actions"><button type="button" onClick={() => void referenceExisting(prepared.duplicates[0].id, Boolean(prepared.duplicates[0].inProject))}>使用已有素材</button><button type="button" onClick={() => { setAllowDuplicate(true); setError(""); }}>仍保留为新素材</button></div> : <span><Check size={13} /> 已确认保留独立记录</span>}
+      ) : null}
+      {error ? <InlineMessage tone="error">{error}</InlineMessage> : null}
+
+      {prepared ? (
+        <form id="upload-form" className="grid gap-5 md:grid-cols-[minmax(0,0.9fr)_minmax(0,1.1fr)]" onSubmit={submit}>
+          <div className="flex min-w-0 flex-col gap-3">
+            <div className="grid max-h-[360px] place-items-center overflow-hidden rounded-md bg-surface-sunken">
+              {isVideo ? (
+                <video src={prepared.previewUrl} controls muted playsInline className="max-h-[360px] w-full" />
+              ) : previewFailed ? (
+                <p className="p-6 text-center text-sm text-muted">该格式浏览器无法预览，仍可正常上传</p>
+              ) : (
+                <img src={prepared.previewUrl} alt="待上传素材预览" onError={() => setPreviewFailed(true)} className="max-h-[360px] w-full object-contain" />
+              )}
+            </div>
+
+            <div className="flex min-w-0 flex-wrap items-center gap-2 text-sm text-muted">
+              <FileImage size={15} aria-hidden className="flex-none" />
+              <span className="min-w-0 flex-1 truncate text-ink">{file.name}</span>
+              <small className="flex-none text-xs text-muted">
+                {isVideo ? "视频" : `${Math.round(prepared.width)} × ${Math.round(prepared.height)}`} · {(file.size / 1024 / 1024).toFixed(2)}MB
+              </small>
+            </div>
+
+            {prepared.duplicates.length ? (
+              <div className={allowDuplicate ? "flex flex-col gap-2 rounded-md border border-success-border bg-success-soft p-3 text-sm text-success" : "flex flex-col gap-2 rounded-md border border-warning-border bg-warning-soft p-3 text-sm text-warning"}>
+                <div className="flex items-center gap-2 font-medium">
+                  <AlertTriangle size={16} aria-hidden />
+                  <strong>发现完全相同的素材</strong>
                 </div>
-              ) : <div className="duplicate-clear"><Check size={14} /> 未发现完全重复素材</div>}
-            </div>
-            <div className="upload-fields">
-              <div className="upload-scroll">
-                <label>素材名称<input name="name" maxLength={120} defaultValue={baseName} /></label>
-                <label>全局标签<div className="upload-tags-row"><input name="tags" value={tagsText} onChange={(event) => setTagsText(event.target.value)} maxLength={4000} placeholder="用逗号分隔，例如：建筑, 暖色, 户外" />{!isVideo ? <button className="ai-tag-button" type="button" disabled={busy || aiTagBusy || !prepared} onClick={() => void runAiTag()} title="调用 AI 观察这张图片并自动补充标签">{aiTagBusy ? <><LoaderCircle className="spin" size={12} />AI 打标中…</> : <><Sparkles size={12} />AI 打标</>}</button> : null}</div></label>
-                <label>描述<textarea name="description" rows={2} maxLength={2000} placeholder="描述图片内容或使用方向" /></label>
-                <div className="upload-two-fields"><label>来源链接<input name="sourceUrl" type="url" maxLength={1000} placeholder="https://" /></label><label>备注<input name="notes" maxLength={2000} placeholder="团队内部备注" /></label></div>
-                <p className="form-hint">上传后素材加入项目，可在维度 Page 中手动添加并设置维度位置。</p>
+                <p className="m-0">SHA-256 与“{prepared.duplicates[0].name}”一致。</p>
+                {!allowDuplicate ? (
+                  <div className="flex flex-wrap gap-2">
+                    <Button size="xs" onClick={() => void referenceExisting(prepared.duplicates[0].id, Boolean(prepared.duplicates[0].inProject))}>
+                      使用已有素材
+                    </Button>
+                    <Button size="xs" variant="ghost" onClick={() => { setAllowDuplicate(true); setError(""); }}>
+                      仍保留为新素材
+                    </Button>
+                  </div>
+                ) : (
+                  <span className="flex items-center gap-1.5"><Check size={13} aria-hidden /> 已确认保留独立记录</span>
+                )}
               </div>
-              {uploadProgress !== null ? (
-                <div className="upload-progress"><span style={{ width: `${Math.round(uploadProgress * 100)}%` }} /></div>
-              ) : null}
-              <div className="modal-actions"><button className="secondary-button" type="button" onClick={onClose}>取消</button><button className="primary-button" type="submit" disabled={busy}><Upload size={15} />{busy ? (uploadProgress !== null ? `上传中 ${Math.round(uploadProgress * 100)}%` : "上传中…") : "确认上传"}</button></div>
+            ) : (
+              <div className="flex items-center gap-1.5 text-xs text-success"><Check size={14} aria-hidden /> 未发现完全重复素材</div>
+            )}
+          </div>
+
+          <div className="flex min-w-0 flex-col gap-3">
+            <Field label="素材名称" required htmlFor="upload-name">
+              <Input id="upload-name" name="name" maxLength={120} defaultValue={baseName} />
+            </Field>
+
+            <Field label="全局标签" hint={`逗号分隔，最多 ${MAX_TAGS} 个`} htmlFor="upload-tags">
+              <div className="flex gap-2">
+                <Input
+                  id="upload-tags"
+                  name="tags"
+                  className="min-w-0 flex-1"
+                  value={tagsText}
+                  onChange={(event) => setTagsText(event.target.value)}
+                  maxLength={4000}
+                  placeholder="例如：建筑, 暖色, 户外"
+                />
+                {!isVideo ? (
+                  <Button
+                    size="md"
+                    variant="secondary"
+                    className="flex-none border-accent-border bg-accent-soft text-accent-strong"
+                    disabled={busy || aiTagBusy || !prepared}
+                    loading={aiTagBusy}
+                    icon={<Sparkles size={12} aria-hidden />}
+                    onClick={() => void runAiTag()}
+                  >
+                    {aiTagBusy ? "AI 打标中…" : "AI 打标"}
+                  </Button>
+                ) : null}
+              </div>
+            </Field>
+
+            <Field label="描述" htmlFor="upload-description">
+              <Textarea id="upload-description" name="description" rows={2} maxLength={2000} placeholder="描述图片内容或使用方向" />
+            </Field>
+
+            <div className="grid gap-3 sm:grid-cols-2">
+              <Field label="来源链接" htmlFor="upload-source">
+                <Input id="upload-source" name="sourceUrl" type="url" maxLength={1000} placeholder="https://" />
+              </Field>
+              <Field label="备注" htmlFor="upload-notes">
+                <Input id="upload-notes" name="notes" maxLength={2000} placeholder="团队内部备注" />
+              </Field>
             </div>
-          </form>
-        ) : null}
-      </section>
-    </div>
+
+            <p className="m-0 text-xs text-muted">上传后素材加入项目，可在维度 Page 中手动添加并设置维度位置。</p>
+
+            {uploadProgress !== null ? (
+              <div className="flex flex-col gap-1.5">
+                <ProgressBar value={percent} size="md" />
+                <span className="text-xs text-muted">上传中 {percent}%</span>
+              </div>
+            ) : null}
+          </div>
+        </form>
+      ) : null}
+    </Modal>
   );
 }

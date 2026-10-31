@@ -4,32 +4,21 @@ import {
   AlertTriangle,
   Archive,
   ArrowLeft,
-  ChevronDown,
   Grid2X2,
   ImageIcon,
-  ImagePlus,
-  KeyRound,
   LayoutGrid,
   List,
   LoaderCircle,
-  LogOut,
-  Megaphone,
   Menu,
   PanelLeftClose,
   PanelLeftOpen,
-  Palette,
   Pencil,
   Plus,
   RotateCcw,
-  Search,
   Settings2,
-  SlidersHorizontal,
-  Sparkles,
   Tags,
   Trash2,
   Upload,
-  UserCog,
-  Users,
   X,
 } from "lucide-react";
 import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
@@ -53,7 +42,15 @@ import { TokenSettingsModal } from "./TokenSettingsModal";
 import { TrashView, type TrashedAsset } from "./TrashView";
 import { UploadModal } from "./UploadModal";
 import { UserManagerModal } from "./UserManagerModal";
-import { VisualComponentsPage } from "./VisualComponentsPage";
+import { BrandMark } from "./components/layout/BrandMark";
+import { SidebarNavItem } from "./components/layout/SidebarNavItem";
+import { TopbarTabs } from "./components/layout/TopbarTabs";
+import { TopbarTitle } from "./components/layout/TopbarTitle";
+import { UserMenu } from "./components/layout/UserMenu";
+import { AssetCard } from "./components/library/AssetCard";
+import { ViewToggle } from "./components/library/ViewToggle";
+import { Button, EmptyState, Field, IconButton, Input, Modal, SearchInput, Spinner, Textarea, Toast, cn } from "./ui";
+import { VisualComponentsPage } from "./design/VisualComponentsPage";
 import { useProgressiveImage } from "./useProgressiveImage";
 
 type Project = {
@@ -104,50 +101,6 @@ type Workspace = {
 type PendingDeletion =
   | { token: string; kind: "dimension"; projectId: string; pageId: string; dimension: Dimension; seconds: number };
 
-function Modal({
-  title,
-  description,
-  onClose,
-  children,
-}: {
-  title: string;
-  description?: string;
-  onClose: () => void;
-  children: React.ReactNode;
-}) {
-  // Esc 关闭通用弹窗（与专注模式共存：浮层优先，不触发退出全屏）
-  useEffect(() => {
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key !== "Escape" || event.isComposing) return;
-      onClose();
-    };
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
-  }, [onClose]);
-  return (
-    <div className="modal-backdrop">
-      <section
-        className="modal-card"
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="modal-title"
-      >
-        <div className="modal-heading">
-          <div>
-            <p className="eyebrow">ART DATABASE</p>
-            <h2 id="modal-title">{title}</h2>
-            {description ? <p>{description}</p> : null}
-          </div>
-          <button className="icon-button" type="button" onClick={onClose} aria-label="关闭">
-            <X size={18} />
-          </button>
-        </div>
-        {children}
-      </section>
-    </div>
-  );
-}
-
 export function ArtDatabaseApp({ user, onLogout }: { user: SessionUser; onLogout: () => void }) {
   const [projects, setProjects] = useState<Project[]>([]);
   const [libraryAssets, setLibraryAssets] = useState<LibraryAsset[]>([]);
@@ -182,13 +135,11 @@ export function ArtDatabaseApp({ user, onLogout }: { user: SessionUser; onLogout
   const [aiTagBusy, setAiTagBusy] = useState(false);
   const [tagManagerOpen, setTagManagerOpen] = useState(false);
   const [projectTagManagerOpen, setProjectTagManagerOpen] = useState(false);
-  const [userMenuOpen, setUserMenuOpen] = useState(false);
   const [accountOpen, setAccountOpen] = useState(false);
   const [tokenSettingsOpen, setTokenSettingsOpen] = useState(false);
   const [userManagerOpen, setUserManagerOpen] = useState(false);
   const [announcementOpen, setAnnouncementOpen] = useState(false);
   const [currentUser, setCurrentUser] = useState<SessionUser>(user);
-  const userMenuRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const metadataEditorRef = useRef<AssetMetadataEditorHandle>(null);
   const dimensionEditorRef = useRef<DimensionControlsEditorHandle>(null);
@@ -320,22 +271,6 @@ export function ArtDatabaseApp({ user, onLogout }: { user: SessionUser; onLogout
     const timer = window.setTimeout(() => setMessage(null), 3200);
     return () => window.clearTimeout(timer);
   }, [message]);
-
-  useEffect(() => {
-    if (!userMenuOpen) return;
-    const closeOnClick = (event: MouseEvent) => {
-      if (userMenuRef.current && !userMenuRef.current.contains(event.target as Node)) setUserMenuOpen(false);
-    };
-    const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setUserMenuOpen(false);
-    };
-    window.addEventListener("mousedown", closeOnClick);
-    window.addEventListener("keydown", closeOnEscape);
-    return () => {
-      window.removeEventListener("mousedown", closeOnClick);
-      window.removeEventListener("keydown", closeOnEscape);
-    };
-  }, [userMenuOpen]);
 
   useEffect(() => {
     if (!selectedAssetId) return;
@@ -802,50 +737,86 @@ export function ArtDatabaseApp({ user, onLogout }: { user: SessionUser; onLogout
   return (
     <main className={`app-shell ${sidebarCollapsed || activeArea === "project" ? "sidebar-hidden" : ""}`}>
       {activeArea !== "project" ? (
-        <aside className={`sidebar ${sidebarOpen ? "sidebar-open" : ""}`}>
-          <div className="brand-block">
-            <div className="brand-mark"><Sparkles size={17} /></div>
-            <div><strong>Art Database</strong><span>视觉素材工作台</span></div>
-            <button className="icon-button sidebar-hide-button" type="button" onClick={() => { setSidebarOpen(false); setSidebarCollapsed(true); }} aria-label="隐藏导航栏"><PanelLeftClose size={17} /></button>
+        <aside className={cn("sidebar", sidebarOpen && "sidebar-open")}>
+          <div className="flex items-center gap-2.5 border-b border-ink-soft px-[7px] pb-[23px]">
+            <BrandMark />
+            <div className="min-w-0">
+              <strong className="block truncate text-md font-semibold">Art Database</strong>
+              <span className="mt-0.5 block truncate text-xs text-white/60">视觉素材工作台</span>
+            </div>
+            <IconButton
+              label="隐藏导航栏"
+              className="ml-auto text-white/70 hover:bg-ink-hover hover:text-white"
+              onClick={() => {
+                setSidebarOpen(false);
+                setSidebarCollapsed(true);
+              }}
+            >
+              <PanelLeftClose size={17} aria-hidden />
+            </IconButton>
+          </div>
+
+          <nav className="mt-4 flex flex-col gap-1" aria-label="主导航">
+            <SidebarNavItem
+              icon={<Archive size={16} aria-hidden />}
+              title="项目"
+              subtitle={`${projects.length} 个独立空间`}
+              active={activeArea === "home"}
+              onClick={() => {
+                setActiveArea("home");
+                setSelectedAssetId(null);
+                setSidebarOpen(false);
+                void loadProjects();
+              }}
+            />
+            <SidebarNavItem
+              icon={<Grid2X2 size={16} aria-hidden />}
+              title="全部素材"
+              subtitle={`${libraryAssets.length} 个数据库素材`}
+              active={activeArea === "library"}
+              onClick={() => {
+                setActiveArea("library");
+                setSelectedAssetId(null);
+                setSidebarOpen(false);
+                void loadLibrary();
+              }}
+            />
+            <SidebarNavItem
+              icon={<Tags size={16} aria-hidden />}
+              title="标签管理"
+              subtitle="词库与标签维护"
+              onClick={() => {
+                setSidebarOpen(false);
+                setTagManagerOpen(true);
+              }}
+            />
+          </nav>
+
+          <div className="mt-6 flex items-center justify-between px-2.5 pb-2 pt-1 text-2xs uppercase tracking-[.12em] text-white/50">
+            <span>项目</span>
+            <span>{projects.length}</span>
           </div>
           <button
-            className={`all-assets-item ${activeArea === "home" ? "active" : ""}`}
             type="button"
-            onClick={() => { setActiveArea("home"); setSelectedAssetId(null); setSidebarOpen(false); void loadProjects(); }}
+            onClick={() => setCreateOpen(true)}
+            className="mt-2.5 flex h-10 items-center justify-center gap-2 rounded-lg border border-dashed border-white/25 text-sm text-white/70 transition-colors hover:border-white/40 hover:text-white focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
           >
-            <span className="project-icon"><Archive size={16} /></span>
-            <span className="project-copy"><strong>项目</strong><small>{projects.length} 个独立空间</small></span>
+            <Plus size={17} aria-hidden /> 新建项目
           </button>
-          <button
-            className={`all-assets-item ${activeArea === "library" ? "active" : ""}`}
-            type="button"
-            onClick={() => { setActiveArea("library"); setSelectedAssetId(null); setSidebarOpen(false); void loadLibrary(); }}
-          >
-            <span className="project-icon"><Grid2X2 size={16} /></span>
-            <span className="project-copy"><strong>全部素材</strong><small>{libraryAssets.length} 个数据库素材</small></span>
-          </button>
-          <button
-            className="all-assets-item"
-            type="button"
-            onClick={() => { setSidebarOpen(false); setTagManagerOpen(true); }}
-          >
-            <span className="project-icon"><Tags size={16} /></span>
-            <span className="project-copy"><strong>标签管理</strong><small>词库与标签维护</small></span>
-          </button>
-          <div className="sidebar-section-title">
-            <span>项目</span><span>{projects.length}</span>
-          </div>
-          <button className="new-project-button" type="button" onClick={() => setCreateOpen(true)}>
-            <Plus size={17} /> 新建项目
-          </button>
-          <button
-            className={`trash-nav-item ${activeArea === "trash" ? "active" : ""}`}
-            type="button"
-            onClick={() => { setActiveArea("trash"); setSelectedAssetId(null); setSidebarOpen(false); void loadTrash(); }}
-          >
-            <span className="project-icon"><Trash2 size={16} /></span>
-            <span className="project-copy"><strong>回收站</strong><small>{trashAssets.length} 个已删除素材</small></span>
-          </button>
+
+          <SidebarNavItem
+            className="mt-auto"
+            icon={<Trash2 size={16} aria-hidden />}
+            title="回收站"
+            subtitle={`${trashAssets.length} 个已删除素材`}
+            active={activeArea === "trash"}
+            onClick={() => {
+              setActiveArea("trash");
+              setSelectedAssetId(null);
+              setSidebarOpen(false);
+              void loadTrash();
+            }}
+          />
         </aside>
       ) : null}
 
@@ -856,93 +827,104 @@ export function ArtDatabaseApp({ user, onLogout }: { user: SessionUser; onLogout
         onDrop={(event) => { event.preventDefault(); setDragActive(false); acceptUpload(event.dataTransfer.files[0]); }}
       >
         <input ref={fileInputRef} className="visually-hidden" type="file" accept="image/jpeg,image/png,image/webp,image/gif,image/svg+xml,image/tiff,image/heic,image/heif,image/avif,video/mp4,video/webm,video/quicktime,video/x-msvideo,video/x-matroska,video/mpeg,video/3gpp,video/3gpp2" onChange={(event) => { acceptUpload(event.target.files?.[0]); event.currentTarget.value = ""; }} />
-        {dragActive ? <div className="drop-overlay"><Upload size={28} /><strong>松开即可添加图片</strong><span>填写素材信息后上传，再手动加入维度 Page</span></div> : null}
+        {dragActive ? (
+          <div className="pointer-events-none fixed bottom-[22px] left-[294px] right-[22px] top-[78px] z-overlay flex flex-col items-center justify-center gap-2 border-2 border-dashed border-accent bg-paper/95 text-accent max-md:left-[22px]">
+            <Upload size={28} aria-hidden />
+            <strong className="text-md font-semibold">松开即可添加图片</strong>
+            <span className="text-sm">填写素材信息后上传，再手动加入维度 Page</span>
+          </div>
+        ) : null}
         <header className="topbar">
           <div className="topbar-leading">
             {activeArea === "project" ? (
-              <button className="back-button" type="button" onClick={returnHome}><ArrowLeft size={17} />返回主页</button>
+              <Button variant="secondary" icon={<ArrowLeft size={17} aria-hidden />} onClick={returnHome} className="flex-none">
+                返回主页
+              </Button>
             ) : (
-              <button className={`icon-button menu-button ${sidebarCollapsed ? "force-visible" : ""}`} type="button" onClick={() => { setSidebarCollapsed(false); setSidebarOpen(true); }} aria-label="展开导航栏">{sidebarCollapsed ? <PanelLeftOpen size={18} /> : <Menu size={19} />}</button>
+              <IconButton
+                label="展开导航栏"
+                className={sidebarCollapsed ? "" : "hidden max-md:inline-grid"}
+                onClick={() => {
+                  setSidebarCollapsed(false);
+                  setSidebarOpen(true);
+                }}
+              >
+                {sidebarCollapsed ? <PanelLeftOpen size={18} aria-hidden /> : <Menu size={19} aria-hidden />}
+              </IconButton>
             )}
+
             {activeArea === "project" && workspace ? (
-              <div className="topbar-project">
-                <div className="topbar-title">
-                  <h1>{workspace.project.name}</h1>
-                  <button className="icon-button" type="button" onClick={() => { setEditingProject(workspace.project); setEditOpen(true); }} aria-label="编辑项目"><Pencil size={14} /></button>
+              <div className="flex min-w-0 flex-col gap-1">
+                <div className="flex min-w-0 items-center gap-1.5">
+                  <h1 className="truncate text-lg font-semibold tracking-[-.01em] text-ink">{workspace.project.name}</h1>
+                  <IconButton
+                    size="sm"
+                    label="编辑项目"
+                    className="flex-none"
+                    onClick={() => {
+                      setEditingProject(workspace.project);
+                      setEditOpen(true);
+                    }}
+                  >
+                    <Pencil size={14} aria-hidden />
+                  </IconButton>
                 </div>
-                <div className="topbar-subtitle">
-                  <span>{workspace.project.description || "还没有项目说明"}</span>
-                  <em className="topbar-count-badge">{workspace.assets.length} 素材</em>
+                <div className="flex min-w-0 items-center gap-2 max-sm:hidden">
+                  <span className="truncate text-sm text-muted">{workspace.project.description || "还没有项目说明"}</span>
+                  <span className="flex-none rounded-full bg-surface-sunken px-2 py-0.5 text-sm text-muted">{workspace.assets.length} 素材</span>
                 </div>
               </div>
             ) : activeArea === "home" ? (
-              <div className="topbar-project">
-                <div className="topbar-title">
-                  <h1>项目</h1>
-                  <em className="topbar-title-total">{filteredProjects.length}</em>
-                </div>
-              </div>
+              <TopbarTitle title="项目" count={filteredProjects.length} />
             ) : activeArea === "library" ? (
-              <div className="topbar-project">
-                <div className="topbar-title">
-                  <h1>全部素材</h1>
-                  <em className="topbar-title-total">{libraryAssets.length}</em>
-                </div>
-              </div>
+              <TopbarTitle title="全部素材" count={libraryAssets.length} />
             ) : activeArea === "trash" ? (
-              <div className="topbar-project">
-                <div className="topbar-title">
-                  <h1>回收站</h1>
-                  <em className="topbar-title-total">{trashAssets.length}</em>
-                </div>
-              </div>
+              <TopbarTitle title="回收站" count={trashAssets.length} />
             ) : activeArea === "components" ? (
-              <div className="topbar-project">
-                <div className="topbar-title">
-                  <h1>视觉组件</h1>
-                </div>
-                <div className="topbar-subtitle"><span>产品样式与交互模式</span></div>
+              <div className="flex min-w-0 flex-col gap-1">
+                <TopbarTitle title="视觉组件" />
+                <span className="truncate text-sm text-muted">产品样式与交互模式</span>
               </div>
+            ) : null}
+
+            {activeArea === "project" && workspace ? <TopbarTabs value={surface} onChange={setSurface} /> : null}
+          </div>
+
+          <div className="topbar-actions">
+            {activeArea === "library" ? (
+              <Button variant="secondary" size="sm" icon={<Tags size={14} aria-hidden />} onClick={() => setTagManagerOpen(true)}>
+                标签管理
+              </Button>
+            ) : null}
+            {activeArea !== "components" ? (
+              <SearchInput
+                value={search}
+                onValueChange={setSearch}
+                placeholder={activeArea === "home" ? "搜索项目名称或说明" : "搜索名称、文件或标签"}
+                aria-label={activeArea === "home" ? "搜索项目" : "搜索素材"}
+                className="w-[min(205px,27.5vw)] max-sm:w-auto max-sm:flex-1"
+              />
             ) : null}
             {activeArea === "project" && workspace ? (
-              <nav className="surface-tabs topbar-tabs" aria-label="项目视图">
-                <button type="button" className={surface === "preview" ? "active" : ""} onClick={() => setSurface("preview")}><SlidersHorizontal size={16} />维度预览</button>
-                <button type="button" className={surface === "board" ? "active" : ""} onClick={() => setSurface("board")}><ImagePlus size={16} />自由画板</button>
-                <button type="button" className={surface === "assets" ? "active" : ""} onClick={() => setSurface("assets")}><LayoutGrid size={16} />素材库</button>
-              </nav>
+              <Button variant="primary" size="lg" icon={<Upload size={15} aria-hidden />} onClick={() => fileInputRef.current?.click()}>
+                上传素材
+              </Button>
             ) : null}
-          </div>
-          <div className="topbar-actions">
-            {activeArea === "library" ? <button className="tag-manager-open-button" type="button" onClick={() => setTagManagerOpen(true)}><Tags size={14} />标签管理</button> : null}
-            {activeArea !== "components" ? <div className="search-box"><Search size={17} /><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder={activeArea === "home" ? "搜索项目名称或说明" : "搜索名称、文件或标签"} aria-label={activeArea === "home" ? "搜索项目" : "搜索素材"} /></div> : null}
-            {activeArea === "project" && workspace ? <button className="upload-button" type="button" onClick={() => fileInputRef.current?.click()}><Upload size={15} />上传素材</button> : null}
-            <div className="user-menu" ref={userMenuRef}>
-              <button className="user-menu-trigger" type="button" onClick={() => setUserMenuOpen((open) => !open)} aria-haspopup="menu" aria-expanded={userMenuOpen}>
-                <span className="user-avatar">{currentUser.displayName.slice(0, 1).toUpperCase()}</span>
-                <span className="user-menu-copy">
-                  <strong>{currentUser.displayName}</strong>
-                  <small>{currentUser.role === "admin" ? "管理员" : "成员"}</small>
-                </span>
-                <ChevronDown size={14} />
-              </button>
-              {userMenuOpen ? (
-                <div className="user-menu-dropdown" role="menu">
-                  <button type="button" role="menuitem" onClick={() => { setAccountOpen(true); setUserMenuOpen(false); }}><UserCog size={15} />账号设置</button>
-                  <button type="button" role="menuitem" onClick={() => { setTokenSettingsOpen(true); setUserMenuOpen(false); }}><KeyRound size={15} />插件令牌</button>
-                  {currentUser.role === "admin" ? (
-                    <button type="button" role="menuitem" onClick={() => { setUserManagerOpen(true); setUserMenuOpen(false); }}><Users size={15} />成员管理</button>
-                  ) : null}
-                  {currentUser.role === "admin" ? (
-                    <button type="button" role="menuitem" onClick={() => { setAnnouncementOpen(true); setUserMenuOpen(false); }}><Megaphone size={15} />登录页公告</button>
-                  ) : null}
-                  {currentUser.role === "admin" ? (
-                    <button type="button" role="menuitem" onClick={() => { setActiveArea("components"); setSelectedAssetId(null); setSidebarOpen(false); setUserMenuOpen(false); }}><Palette size={15} />视觉组件</button>
-                  ) : null}
-                  <div className="user-menu-divider" />
-                  <button className="user-menu-logout" type="button" role="menuitem" onClick={() => { setUserMenuOpen(false); onLogout(); }}><LogOut size={15} />退出登录</button>
-                </div>
-              ) : null}
-            </div>
+            <UserMenu
+              displayName={currentUser.displayName}
+              role={currentUser.role}
+              onAction={(action) => {
+                if (action === "account") setAccountOpen(true);
+                else if (action === "tokens") setTokenSettingsOpen(true);
+                else if (action === "members") setUserManagerOpen(true);
+                else if (action === "announcement") setAnnouncementOpen(true);
+                else if (action === "components") {
+                  setActiveArea("components");
+                  setSelectedAssetId(null);
+                  setSidebarOpen(false);
+                } else if (action === "logout") onLogout();
+              }}
+            />
           </div>
         </header>
 
@@ -981,21 +963,24 @@ export function ArtDatabaseApp({ user, onLogout }: { user: SessionUser; onLogout
             onDelete={(project) => void deleteProject(project)}
           />
         ) : loading && !workspace ? (
-          <div className="loading-state"><LoaderCircle className="spin" size={22} /> 正在整理素材库…</div>
+          <div className="flex min-h-[65vh] items-center justify-center gap-2 text-md text-muted">
+            <Spinner size={22} />
+            正在整理素材库…
+          </div>
         ) : workspace ? (
           <>
-            {surface === "assets" ? <><div className="content-toolbar">
-              <div><h2>项目素材</h2><p>{search || projectTagFilter.length ? `找到 ${filteredAssets.length} 项` : "按维度整理与比较你的视觉参考"}</p></div>
-              <div className="content-toolbar-actions">
-                <button className="tag-manager-open-button" type="button" onClick={() => setProjectTagManagerOpen(true)}><Tags size={14} />标签管理</button>
-                <div className="view-toggle" aria-label="显示方式">
-                  <button type="button" className={view === "grid" ? "active" : ""} onClick={() => setView("grid")} aria-label="网格显示"><LayoutGrid size={16} /></button>
-                  <button type="button" className={view === "list" ? "active" : ""} onClick={() => setView("list")} aria-label="列表显示"><List size={17} /></button>
-                </div>
+            {surface === "assets" ? <><div className="mx-[42px] flex items-end justify-between gap-6 pb-[18px] pt-[34px] max-md:mx-6">
+              <div>
+                <h2 className="m-0 text-lg font-semibold text-ink">项目素材</h2>
+                <p className="mt-1 text-sm text-muted">{search || projectTagFilter.length ? `找到 ${filteredAssets.length} 项` : "按维度整理与比较你的视觉参考"}</p>
+              </div>
+              <div className="flex items-center gap-2.5">
+                <Button variant="secondary" size="sm" icon={<Tags size={14} aria-hidden />} onClick={() => setProjectTagManagerOpen(true)}>标签管理</Button>
+                <ViewToggle value={view} onChange={setView} />
               </div>
             </div>
 
-            <div className="library-filter-bar project-tag-filter">
+            <div className="mx-[42px] mb-[18px] mt-0 border border-line bg-surface px-3.5 py-3 max-md:mx-6">
               <TagFilterBar
                 tags={projectTags}
                 selected={projectTagFilter}
@@ -1005,24 +990,44 @@ export function ArtDatabaseApp({ user, onLogout }: { user: SessionUser; onLogout
             </div>
 
             {filteredAssets.length ? (
-              <div className={`asset-collection ${view === "list" ? "asset-list" : "asset-grid"}`}>
+              <div className={cn("asset-collection", view === "list" ? "asset-list" : "asset-grid")}>
                 {filteredAssets.map((asset, index) => (
-                  <button className="asset-card" type="button" key={asset.id} onClick={() => setSelectedAssetId(asset.id)}>
-                    <span className="asset-image-wrap">
-                      {asset.thumbnailUrl ? <img src={asset.thumbnailUrl} alt="" loading={index > 3 ? "lazy" : "eager"} /> : <span className="asset-fallback"><ImageIcon /></span>}
-                      <span className="asset-index">{String(index + 1).padStart(2, "0")}</span>
-                      {isVideoMime(asset.mimeType) && asset.transcodeStatus === "processing" ? <span className="transcode-badge"><span>转码中 {transcodePercent(asset.transcodeProgress)}%</span><i className="transcode-bar"><span style={{ width: `${transcodePercent(asset.transcodeProgress)}%` }} /></i></span> : null}
-                    </span>
-                    <span className="asset-meta"><strong>{asset.name}</strong><span className="tag-row">{asset.tags.map((tag) => <i key={tag}>{tag}</i>)}</span></span>
-                  </button>
+                  <AssetCard
+                    key={asset.id}
+                    asset={asset}
+                    index={index}
+                    variant={view}
+                    thumbnailLoading={index > 3 ? "lazy" : "eager"}
+                    onOpen={() => setSelectedAssetId(asset.id)}
+                  />
                 ))}
               </div>
             ) : (
-              <div className="empty-state"><Grid2X2 size={25} /><h3>{search || projectTagFilter.length ? "没有匹配的素材" : "项目还是空的"}</h3><p>{search || projectTagFilter.length ? "换一个关键词或标签试试。" : "拖入、粘贴或选择图片/视频开始。"}</p><button className="primary-button" type="button" onClick={() => fileInputRef.current?.click()}><Upload size={15} />上传素材</button></div>
+              <EmptyState
+                icon={<Grid2X2 size={25} aria-hidden />}
+                title={search || projectTagFilter.length ? "没有匹配的素材" : "项目还是空的"}
+                description={search || projectTagFilter.length ? "换一个关键词或标签试试。" : "拖入、粘贴或选择图片/视频开始。"}
+                className="mx-[42px] max-md:mx-6"
+                action={
+                  <Button variant="primary" icon={<Upload size={15} aria-hidden />} onClick={() => fileInputRef.current?.click()}>
+                    上传素材
+                  </Button>
+                }
+              />
             )}</> : surface === "preview" ? <DimensionPages key={workspace.project.id} projectId={workspace.project.id} assets={workspace.assets} page={currentPreviewPage} onPageChange={setPreviewPage} revision={previewRevision} onMessage={setMessage} onSelectAsset={setSelectedAssetId} onUpdateAssetDimensions={savePreviewDimensionValues} onAddDimension={() => setDimensionOpen(true)} onEditDimension={(dimension) => setEditingDimensionId(dimension.id)} /> : <BoardView key={workspace.project.id} projectId={workspace.project.id} assets={workspace.assets} onMessage={setMessage} onSelectAsset={setSelectedAssetId} />}
           </>
         ) : (
-          <div className="empty-state project-empty"><Archive size={28} /><h2>建立第一个项目</h2><p>项目用于保存独立的素材集合与分类维度。</p><button className="primary-button" type="button" onClick={() => setCreateOpen(true)}><Plus size={16} /> 新建项目</button></div>
+          <EmptyState
+            icon={<Archive size={28} aria-hidden />}
+            title="建立第一个项目"
+            description="项目用于保存独立的素材集合与分类维度。"
+            className="mx-[42px] max-md:mx-6"
+            action={
+              <Button variant="primary" icon={<Plus size={16} aria-hidden />} onClick={() => setCreateOpen(true)}>
+                新建项目
+              </Button>
+            }
+          />
         )}
       </section>
 
@@ -1039,8 +1044,8 @@ export function ArtDatabaseApp({ user, onLogout }: { user: SessionUser; onLogout
                 return (
                   <span className="drawer-image-fallback" onClick={(event) => event.stopPropagation()}>
                     {status === "failed"
-                      ? <><AlertTriangle size={30} /><small>转码失败，原文件已保留</small><button className="secondary-button" type="button" onClick={(event) => { event.stopPropagation(); void retranscodeVideo(selectedAsset); }}><RotateCcw size={13} />重新转码</button></>
-                      : <><LoaderCircle className="spin" size={30} /><small>视频转码中 {transcodePercent(selectedAsset.transcodeProgress)}%</small><span className="drawer-progress"><span style={{ width: `${transcodePercent(selectedAsset.transcodeProgress)}%` }} /></span></>}
+                      ? <><AlertTriangle size={30} /><small>转码失败，原文件已保留</small><Button size="sm" icon={<RotateCcw size={13} aria-hidden />} onClick={(event) => { event.stopPropagation(); void retranscodeVideo(selectedAsset); }}>重新转码</Button></>
+                      : <><Spinner size={30} /><small>视频转码中 {transcodePercent(selectedAsset.transcodeProgress)}%</small><span className="drawer-progress"><span style={{ width: `${transcodePercent(selectedAsset.transcodeProgress)}%` }} /></span></>}
                   </span>
                 );
               }
@@ -1048,7 +1053,7 @@ export function ArtDatabaseApp({ user, onLogout }: { user: SessionUser; onLogout
             })()}
           </div>
           <div className="drawer-panel">
-            <div className="drawer-heading"><div><p className="eyebrow">ASSET DETAIL</p><h2>素材详情</h2></div><button className="icon-button" type="button" onClick={() => void closeAssetDetail()} aria-label="关闭素材详情"><X size={18} /></button></div>
+            <div className="drawer-heading"><div><p className="mb-1 text-2xs font-bold uppercase tracking-[.15em] text-accent">ASSET DETAIL</p><h2>素材详情</h2></div><IconButton label="关闭素材详情" onClick={() => void closeAssetDetail()}><X size={18} aria-hidden /></IconButton></div>
             <div className="drawer-scroll">
               <div className="drawer-file"><small>文件名</small><span>{selectedAsset.fileName}</span></div>
               {selectedAsset.createdByName ? <div className="drawer-file"><small>上传者</small><span>{selectedAsset.createdByName}</span></div> : null}
@@ -1077,35 +1082,149 @@ export function ArtDatabaseApp({ user, onLogout }: { user: SessionUser; onLogout
                 onAiTag={() => void runAiTag(selectedAsset)}
                 onSave={(update) => saveAssetMetadata(selectedAsset, update)}
               />
-              {selectedPageAsset && currentPreviewPage ? <><div className="drawer-section-title"><Settings2 size={16} /><strong>{currentPreviewPage.name} · 维度位置</strong></div>
-              {currentPreviewPage.dimensions.length ? <DimensionControlsEditor
-                ref={dimensionEditorRef}
-                dimensions={currentPreviewPage.dimensions}
-                values={selectedAsset.dimensionValues}
-                assetId={selectedAsset.id}
-                busy={busy}
-                onChangeValue={setLocalDimensionValue}
-                onSaveValue={saveDimensionValue}
-              /> : <p className="drawer-empty">先为当前 Page 添加维度，再给素材定位。</p>}
-              <button className="drawer-remove" type="button" onClick={async () => {
-                if (await metadataEditorRef.current?.save() === false) return;
-                try {
-                  await apiFetch(`/api/preview-page-assets?projectId=${encodeURIComponent(workspace.project.id)}&pageId=${encodeURIComponent(currentPreviewPage.id)}&assetId=${encodeURIComponent(selectedAsset.id)}`, { method: "DELETE" });
-                  setSelectedAssetId(null);
-                  setPreviewRevision((v) => v + 1);
-                  setMessage("已从当前 Page 移除，项目素材保留");
-                } catch (error) { setMessage(error instanceof Error ? error.message : "移除失败"); }
-              }}><Trash2 size={14} />从当前 Page 移除</button></> : <button className="drawer-remove" type="button" onClick={() => void removeAssetFromProject(selectedAsset)}><Trash2 size={14} />从当前项目移除</button>}
+              {selectedPageAsset && currentPreviewPage ? (
+                <>
+                  <div className="mb-2 mt-4 flex items-center gap-2 text-sm">
+                    <Settings2 size={16} aria-hidden />
+                    <strong>{currentPreviewPage.name} · 维度位置</strong>
+                  </div>
+                  {currentPreviewPage.dimensions.length ? (
+                    <DimensionControlsEditor
+                      ref={dimensionEditorRef}
+                      dimensions={currentPreviewPage.dimensions}
+                      values={selectedAsset.dimensionValues}
+                      assetId={selectedAsset.id}
+                      busy={busy}
+                      onChangeValue={setLocalDimensionValue}
+                      onSaveValue={saveDimensionValue}
+                    />
+                  ) : (
+                    <p className="text-sm text-muted">先为当前 Page 添加维度，再给素材定位。</p>
+                  )}
+                  <Button
+                    variant="danger"
+                    size="sm"
+                    className="mt-4 w-full"
+                    icon={<Trash2 size={14} aria-hidden />}
+                    onClick={async () => {
+                      if (await metadataEditorRef.current?.save() === false) return;
+                      try {
+                        await apiFetch(`/api/preview-page-assets?projectId=${encodeURIComponent(workspace.project.id)}&pageId=${encodeURIComponent(currentPreviewPage.id)}&assetId=${encodeURIComponent(selectedAsset.id)}`, { method: "DELETE" });
+                        setSelectedAssetId(null);
+                        setPreviewRevision((v) => v + 1);
+                        setMessage("已从当前 Page 移除，项目素材保留");
+                      } catch (error) { setMessage(error instanceof Error ? error.message : "移除失败"); }
+                    }}
+                  >
+                    从当前 Page 移除
+                  </Button>
+                </>
+              ) : (
+                <Button
+                  variant="danger"
+                  size="sm"
+                  className="mt-4 w-full"
+                  icon={<Trash2 size={14} aria-hidden />}
+                  onClick={() => void removeAssetFromProject(selectedAsset)}
+                >
+                  从当前项目移除
+                </Button>
+              )}
             </div>
           </div>
         </aside>
       ) : null}
 
-      {createOpen ? <Modal title="新建项目" description="为一组视觉探索建立独立空间。" onClose={() => setCreateOpen(false)}><form className="modal-form" onSubmit={createProject}><label>项目名称<input name="name" required maxLength={50} placeholder="例如：2026 产品视觉方向" /></label><label>项目说明<textarea name="description" maxLength={240} rows={3} placeholder="这组素材要解决什么问题？" /></label><div className="modal-actions"><button className="secondary-button" type="button" onClick={() => setCreateOpen(false)}>取消</button><button className="primary-button" type="submit" disabled={busy}>{busy ? "创建中…" : "创建项目"}</button></div></form></Modal> : null}
+      {createOpen ? (
+        <Modal
+          open
+          onClose={() => setCreateOpen(false)}
+          eyebrow="PROJECT"
+          title="新建项目"
+          description="为一组视觉探索建立独立空间。"
+          footer={
+            <>
+              <Button onClick={() => setCreateOpen(false)}>取消</Button>
+              <Button type="submit" form="create-project-form" variant="primary" loading={busy}>
+                {busy ? "创建中…" : "创建项目"}
+              </Button>
+            </>
+          }
+        >
+          <form id="create-project-form" className="flex flex-col gap-4" onSubmit={createProject}>
+            <Field label="项目名称" required htmlFor="create-project-name">
+              <Input id="create-project-name" name="name" required maxLength={50} placeholder="例如：2026 产品视觉方向" />
+            </Field>
+            <Field label="项目说明" htmlFor="create-project-description">
+              <Textarea id="create-project-description" name="description" maxLength={240} rows={3} placeholder="这组素材要解决什么问题？" />
+            </Field>
+          </form>
+        </Modal>
+      ) : null}
 
-      {editOpen && editingProject ? <Modal title="项目设置" description="修改项目名称和用途说明。" onClose={() => { setEditOpen(false); setEditingProject(null); }}><form className="modal-form" onSubmit={editProject}><label>项目名称<input name="name" required maxLength={50} defaultValue={editingProject.name} /></label><label>项目说明<textarea name="description" maxLength={240} rows={3} defaultValue={editingProject.description} /></label><div className="danger-zone"><button type="button" onClick={() => void deleteProject()} disabled={busy}><Trash2 size={15} /> 删除项目</button><span>素材原文件不会被删除</span></div><div className="modal-actions"><button className="secondary-button" type="button" onClick={() => { setEditOpen(false); setEditingProject(null); }}>取消</button><button className="primary-button" type="submit" disabled={busy}>{busy ? "保存中…" : "保存修改"}</button></div></form></Modal> : null}
+      {editOpen && editingProject ? (
+        <Modal
+          open
+          onClose={() => { setEditOpen(false); setEditingProject(null); }}
+          eyebrow="PROJECT"
+          title="项目设置"
+          description="修改项目名称和用途说明。"
+          footer={
+            <>
+              <Button onClick={() => { setEditOpen(false); setEditingProject(null); }}>取消</Button>
+              <Button type="submit" form="edit-project-form" variant="primary" loading={busy}>
+                {busy ? "保存中…" : "保存修改"}
+              </Button>
+            </>
+          }
+        >
+          <form id="edit-project-form" className="flex flex-col gap-4" onSubmit={editProject}>
+            <Field label="项目名称" required htmlFor="edit-project-name">
+              <Input id="edit-project-name" name="name" required maxLength={50} defaultValue={editingProject.name} />
+            </Field>
+            <Field label="项目说明" htmlFor="edit-project-description">
+              <Textarea id="edit-project-description" name="description" maxLength={240} rows={3} defaultValue={editingProject.description} />
+            </Field>
+            <div className="flex flex-wrap items-center gap-3 border-t border-line-soft pt-3">
+              <Button variant="danger" size="sm" icon={<Trash2 size={15} aria-hidden />} onClick={() => void deleteProject()} disabled={busy}>
+                删除项目
+              </Button>
+              <span className="text-xs text-muted">素材原文件不会被删除</span>
+            </div>
+          </form>
+        </Modal>
+      ) : null}
 
-      {dimensionOpen && currentPreviewPage ? <Modal title="添加分类维度" description="维度仅属于当前 Page，最多同时选择 3 个坐标轴。" onClose={() => setDimensionOpen(false)}><form className="modal-form" onSubmit={addDimension}><div className="dimension-form-row"><label>左端名称<input name="leftLabel" required maxLength={24} placeholder="例如：克制" /></label><span>—</span><label>右端名称<input name="rightLabel" required maxLength={24} placeholder="例如：张扬" /></label></div><p className="form-hint">添加后，当前 Page 内的素材会先放在新维度中点。</p><div className="modal-actions"><button className="secondary-button" type="button" onClick={() => setDimensionOpen(false)}>取消</button><button className="primary-button" type="submit" disabled={busy}>{busy ? "添加中…" : "添加维度"}</button></div></form></Modal> : null}
+      {dimensionOpen && currentPreviewPage ? (
+        <Modal
+          open
+          onClose={() => setDimensionOpen(false)}
+          eyebrow="DIMENSION"
+          title="添加分类维度"
+          description="维度仅属于当前 Page，最多同时选择 3 个坐标轴。"
+          footer={
+            <>
+              <Button onClick={() => setDimensionOpen(false)}>取消</Button>
+              <Button type="submit" form="add-dimension-form" variant="primary" loading={busy}>
+                {busy ? "添加中…" : "添加维度"}
+              </Button>
+            </>
+          }
+        >
+          <form id="add-dimension-form" className="flex flex-col gap-4" onSubmit={addDimension}>
+            <div className="grid gap-3 sm:grid-cols-[1fr_auto_1fr] sm:items-end">
+              <Field label="左端名称" required htmlFor="dimension-left">
+                <Input id="dimension-left" name="leftLabel" required maxLength={24} placeholder="例如：克制" />
+              </Field>
+              <span className="hidden pb-2 text-center text-muted sm:block">—</span>
+              <Field label="右端名称" required htmlFor="dimension-right">
+                <Input id="dimension-right" name="rightLabel" required maxLength={24} placeholder="例如：张扬" />
+              </Field>
+            </div>
+            <p className="m-0 text-xs text-muted">添加后，当前 Page 内的素材会先放在新维度中点。</p>
+          </form>
+        </Modal>
+      ) : null}
 
       {currentPreviewPage ? (() => { const editingDimension = currentPreviewPage.dimensions.find((dimension) => dimension.id === editingDimensionId); return editingDimension
         ? <DimensionEditorModal
@@ -1165,7 +1284,7 @@ export function ArtDatabaseApp({ user, onLogout }: { user: SessionUser; onLogout
         <AnnouncementModal onClose={() => setAnnouncementOpen(false)} />
       ) : null}
 
-      {message ? <div className="toast" role="status">{message}</div> : null}
+      {message ? <Toast open>{message}</Toast> : null}
       {pendingDeletion ? (
         <DeletionToast
           label={`维度“${pendingDeletion.dimension.leftLabel} — ${pendingDeletion.dimension.rightLabel}”`}

@@ -1,0 +1,156 @@
+/*
+ * 页面骨架：应用外壳、侧栏、顶栏。
+ * 只允许 token 与布局数值；控件本身在 components/ 与 ui/ 中实现。
+ */
+
+@layer components {
+  .app-shell {
+    min-height: 100vh;
+    display: flex;
+    background: var(--color-paper);
+  }
+
+  .workspace {
+    flex: 1;
+    min-width: 0;
+    padding-bottom: 60px;
+  }
+
+  .workspace.preview-active,
+  .workspace.board-active {
+    height: 100dvh;
+    padding-bottom: 0;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+  }
+
+  .workspace.preview-active > .topbar,
+  .workspace.board-active > .topbar {
+    flex: 0 0 auto;
+  }
+
+  .workspace.preview-active .preview-layout {
+    flex: 1 1 auto;
+    height: auto;
+    min-height: 0;
+  }
+
+  .workspace.preview-active .scene-viewport {
+    min-width: 0;
+    min-height: 0;
+  }
+
+  .workspace.board-active .board-shell {
+    flex: 1 1 auto;
+    height: auto;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+  }
+
+  .workspace.board-active .board-body {
+    flex: 1 1 auto;
+    height: auto;
+    min-height: 0;
+  }
+
+  .sidebar {
+    width: 272px;
+    flex: 0 0 272px;
+    min-height: 100vh;
+    padding: 22px 16px 18px;
+    background: var(--color-ink-panel);
+    color: var(--color-white);
+    display: flex;
+    flex-direction: column;
+    position: sticky;
+    top: 0;
+    height: 100vh;
+    z-index: var(--z-sidebar);
+    transition:
+      margin-left var(--duration-slow) var(--ease-out-soft),
+      transform var(--duration-slow) var(--ease-out-soft);
+  }
+
+  .app-shell.sidebar-hidden .sidebar {
+    margin-left: -272px;
+  }
+
+  .sidebar-open {
+    transform: translateX(0);
+  }
+
+  @media (max-width: 850px) {
+    .sidebar {
+      position: fixed;
+      left: 0;
+      transform: translateX(-100%);
+      transition: transform var(--duration-slow) var(--ease-out-soft);
+      box-shadow: var(--shadow-lg);
+    }
+
+    .app-shell.sidebar-hidden .sidebar {
+      margin-left: 0;
+    }
+
+    .sidebar-open {
+      transform: translateX(0);
+    }
+  }
+
+  .topbar {
+    min-height: 67px;
+    padding: 10px 34px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 18px;
+    border-bottom: 1px solid var(--color-line);
+    background: color-mix(in srgb, var(--color-paper) 94%, transparent);
+    position: sticky;
+    top: 0;
+    z-index: var(--z-sticky);
+    backdrop-filter: blur(10px);
+    flex: 0 0 auto;
+  }
+
+  .topbar-leading {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    min-width: 0;
+    flex: 1 1 auto;
+  }
+
+  .topbar-actions {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex: none;
+  }
+
+  @media (max-width: 850px) {
+    .topbar {
+      padding: 10px 20px;
+      gap: 12px;
+    }
+  }
+
+  @media (max-width: 620px) {
+    .topbar {
+      padding: 8px 14px;
+      flex-wrap: wrap;
+      gap: 8px 12px;
+    }
+
+    .topbar-leading {
+      flex: 1 1 auto;
+    }
+
+    .topbar-actions {
+      flex: 1 1 100%;
+      width: 100%;
+    }
+  }
+}

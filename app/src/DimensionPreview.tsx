@@ -2,6 +2,7 @@
 
 import { Aperture, Box, Bug, Images, Maximize2, Minimize2, Minus, MousePointer2, Pencil, Plus, RotateCcw } from "lucide-react";
 import { CSSProperties, PointerEvent, useEffect, useMemo, useRef, useState } from "react";
+import { Button, EmptyState, IconButton, RangeSlider, cn } from "./ui";
 import { useViewportGestures } from "./useViewportGestures";
 import { displayDimensionValue } from "./dimensionScale";
 import { centeredGridStepFor, gridClusterCell, gridClusterKey, gridMinimumSpacing, gridStepFor, gridTicksFor, PREVIEW_ASSET_WIDTH, previewAssetAspectRatio as aspectRatioFor, usesCenteredGrid, zoomPanAtPointer } from "./previewGrid";
@@ -12,6 +13,17 @@ type CameraDrag = { pointerId: number; startX: number; startY: number; rotateX: 
 type ViewPan = { pointerId: number; startX: number; startY: number; panX: number; panY: number };
 type AxisSign = -1 | 1;
 type Octant = { x: AxisSign; y: AxisSign; z: AxisSign };
+const octantKeyOf = (octant: Octant) => `${octant.x},${octant.y},${octant.z}`;
+/** 选中象限并集的中心：单选=该格中心，选两格=两格中点，选满 8 格=回到原点。 */
+function octantPivotCenter(octants: Octant[], planeSize: number) {
+  if (!octants.length || !planeSize) return { x: 0, y: 0, z: 0 };
+  const centerOf = (values: AxisSign[]) => (Math.min(...values) + Math.max(...values)) / 2;
+  return {
+    x: centerOf(octants.map((octant) => octant.x)) * planeSize / 4,
+    y: -centerOf(octants.map((octant) => octant.y)) * planeSize / 4,
+    z: centerOf(octants.map((octant) => octant.z)) * planeSize / 4,
+  };
+}
 // Ctrl/Cmd+Z 撤销：记录一次拖动前实际变化的维度值
 type DimensionUndoEntry = { assetId: string; before: Record<string, number> };
 type AssetDrag = {
@@ -34,12 +46,12 @@ const sameTarget = (a: FocusTarget | null, b: FocusTarget | null) =>
 
 /** 顶部浮层（素材详情、弹窗、确认框）打开时，Esc 优先关闭浮层，不退出专注模式。 */
 function hasOpenOverlay() {
-  return Boolean(document.querySelector(".modal-backdrop, .dimension-editor-backdrop, .asset-drawer, .frame-delete-backdrop"));
+  return Boolean(document.querySelector('[role="dialog"][aria-modal="true"], .modal-backdrop, .dimension-editor-backdrop, .asset-drawer, .frame-delete-backdrop'));
 }
 
 /** 弹窗/确认框打开时把撤销快捷键让给浮层（素材详情抽屉不阻塞撤销）。 */
 function hasBlockingOverlay() {
-  return Boolean(document.querySelector(".modal-backdrop, .dimension-editor-backdrop, .frame-delete-backdrop"));
+  return Boolean(document.querySelector('[role="dialog"][aria-modal="true"], .modal-backdrop, .dimension-editor-backdrop, .frame-delete-backdrop'));
 }
 
 const clampValue = (value: number) => Math.max(0, Math.min(1000, Math.round(value)));
@@ -123,7 +135,9 @@ export function DimensionPreview({
   const [cameraMoving, setCameraMoving] = useState(false);
   const [viewPanning, setViewPanning] = useState(false);
   const [viewPan, setViewPan] = useState({ x: 0, y: 0 });
-  const [isolatedOctant, setIsolatedOctant] = useState<Octant | null>(null);
+  const [isolatedOctants, setIsolatedOctants] = useState<Octant[]>([]);
+  // 立方体选择器：点击任意格子即进入/切换隔离，命中集合即隔离集合；hover 只做高亮预览
+  const [hoverOctant, setHoverOctant] = useState<Octant | null>(null);
   const [octantTransitioning, setOctantTransitioning] = useState(false);
   const [focusMode, setFocusMode] = useState(false);
   const [draggingAssetId, setDraggingAssetId] = useState<string | null>(null);
@@ -192,7 +206,7 @@ export function DimensionPreview({
     mode,
     assetScale,
     zoom,
-  ), [assets, mode, assetScale, zoom, selected, isolatedOctant]);
+  ), [assets, mode, assetScale, zoom, selected, isolatedOctants]);
   useEffect(() => {
     if (sceneSize > 0) setGridStep((previous) => gridStepFor(sceneSize * zoom / 200, minimumGridSpacing, previous));
   }, [sceneSize, zoom, minimumGridSpacing]);
@@ -204,13 +218,64 @@ export function DimensionPreview({
   const sceneRotateX = ((rotateX + 180) % 360 + 360) % 360 - 180;
   const sceneRotateZ = ((rotateZ + 180) % 360 + 360) % 360 - 180;
   const planeSize = scenePlaneRef.current?.offsetWidth ?? 0;
-  const scenePivot = isolatedOctant
-    ? {
-        x: isolatedOctant.x * planeSize / 4,
-        y: -isolatedOctant.y * planeSize / 4,
-        z: isolatedOctant.z * planeSize / 4,
+  const scenePivot = octantPivotCenter(isolatedOctants, planeSize);
+
+  // 右上角 8 格立方体：与场景共用同一组俯仰/水平角度做正交投影，只负责选中象限，不改变主视图。
+  // 8 个格子 = 空间八个象限；每个格子只画朝外的三个面，背面按法线深度剔除，再按远近排序保证近处在上层。
+  const octantCubeFacets = useMemo(() => {
+    if (mode !== 3) return [];
+    const radius = 30;
+    const pitch = rotateX * Math.PI / 180;
+    const yaw = rotateZ * Math.PI / 180;
+    const sinPitch = Math.sin(pitch);
+    const cosPitch = Math.cos(pitch);
+    const sinYaw = Math.sin(yaw);
+    const cosYaw = Math.cos(yaw);
+    const project = (x: number, y: number, z: number) => {
+      const alongX = cosYaw * x - sinYaw * y;
+      const alongY = sinYaw * x + cosYaw * y;
+      return {
+        x: alongX * radius,
+        y: (cosPitch * alongY - sinPitch * z) * radius,
+        depth: sinPitch * alongY + cosPitch * z,
+      };
+    };
+    const facets: Array<{ key: string; octant: Octant; points: string; depth: number }> = [];
+    for (const signX of [-1, 1] as AxisSign[]) {
+      for (const signY of [-1, 1] as AxisSign[]) {
+        for (const signZ of [-1, 1] as AxisSign[]) {
+          // 场景中 y=1 是屏幕上方（世界 y 为负），立方体沿用同一朝向
+          const y = -signY;
+          const faces: Array<{ normal: [number, number, number]; corners: Array<[number, number, number]> }> = [
+            { normal: [signX, 0, 0], corners: [[signX, 0, 0], [signX, y, 0], [signX, y, signZ], [signX, 0, signZ]] },
+            { normal: [0, y, 0], corners: [[0, y, 0], [signX, y, 0], [signX, y, signZ], [0, y, signZ]] },
+            { normal: [0, 0, signZ], corners: [[0, 0, signZ], [signX, 0, signZ], [signX, y, signZ], [0, y, signZ]] },
+          ];
+          for (const face of faces) {
+            const [normalX, normalY, normalZ] = face.normal;
+            // 面法线在投影深度方向上的分量 > 0 才朝向摄像机，否则是背面
+            const facing = sinPitch * (sinYaw * normalX + cosYaw * normalY) + cosPitch * normalZ;
+            if (facing <= 0) continue;
+            const projected = face.corners.map(([x, cornerY, z]) => project(x, cornerY, z));
+            // 正对某条轴时会出现零面积退化面，跳过以免 SVG 描边画出一条多余细线
+            const area = Math.abs(projected.reduce((sum, point, index) => {
+              const next = projected[(index + 1) % projected.length];
+              return sum + point.x * next.y - next.x * point.y;
+            }, 0)) / 2;
+            if (area < 0.6) continue;
+            facets.push({
+              key: `${signX},${signY},${signZ}|${normalX},${normalY},${normalZ}`,
+              octant: { x: signX, y: signY, z: signZ },
+              points: projected.map((point) => `${point.x.toFixed(2)},${point.y.toFixed(2)}`).join(" "),
+              depth: projected.reduce((sum, point) => sum + point.depth, 0) / projected.length,
+            });
+          }
+        }
       }
-    : { x: 0, y: 0, z: 0 };
+    }
+    facets.sort((a, b) => a.depth - b.depth);
+    return facets;
+  }, [mode, rotateX, rotateZ]);
 
   // 与渲染管线同源的投影：由 unprojectPointerToPlane 反解，屏幕坐标相对平面中心；用于深度与堆屏幕定位等展示用途
   const projectValuePoint = (xValue: number, yValue: number, zValue: number) => {
@@ -261,10 +326,10 @@ export function DimensionPreview({
     }
     for (const [cellKey, group] of groups) {
       if (group.length < 2) continue;
-      // Clamp edge cells to the domain and, during isolation, to the visible half.
-      const cells = group[0].values.map((value, index) => {
+      // 边缘格裁切到定义域；隔离时再按该堆自身所属象限裁切到可见半空间（多选时不同堆属于不同象限）
+      const cells = group[0].values.map((value) => {
         const cell = gridClusterCell(value, activeGridStep, centeredGrid);
-        const sign = isolatedOctant ? [isolatedOctant.x, isolatedOctant.y, isolatedOctant.z][index] : null;
+        const sign = isolatedOctants.length ? (value > 500 ? 1 : value < 500 ? -1 : 0) : null;
         const min = sign === 1 ? Math.max(500, cell.min) : cell.min;
         const max = sign === -1 ? Math.min(500, cell.max) : cell.max;
         return { min, max, center: (min + max) / 2 };
@@ -290,8 +355,10 @@ export function DimensionPreview({
       for (const entry of group) clusterOf.set(entry.asset.id, key);
     }
     return { clusters, clusterOf };
-  }, [assets, mode, selected, activeGridStep, centeredGrid, sceneSize, scenePivot.x, scenePivot.y, scenePivot.z, isolatedOctant, overrides, draggingAssetId, draggingPlaneAssetId, rotateX, rotateZ]);
+  }, [assets, mode, selected, activeGridStep, centeredGrid, sceneSize, scenePivot.x, scenePivot.y, scenePivot.z, isolatedOctants, overrides, draggingAssetId, draggingPlaneAssetId, rotateX, rotateZ]);
   function octantName(octant: Octant) {
+    // 切回 1D/2D 时可能还残留 3D 的选中象限，缺少第三个维度就退回空名，避免读取 undefined
+    if (!selected[0] || !selected[1] || !selected[2]) return "";
     return [
       octant.x === 1 ? selected[0].rightLabel : selected[0].leftLabel,
       octant.y === 1 ? selected[1].rightLabel : selected[1].leftLabel,
@@ -299,34 +366,12 @@ export function DimensionPreview({
     ].join("、");
   }
 
-  function computeNearestOctant(): Octant {
-    // sceneSize 可能因场景平面卸载（mode=0）而停在 0，兜底读取平面当前宽度，避免八个象限深度全部为 0、永远返回同一象限
-    const size = sceneSize || scenePlaneRef.current?.offsetWidth || 0;
-    const pitch = rotateX * Math.PI / 180;
-    const yaw = rotateZ * Math.PI / 180;
-    const signs: AxisSign[] = [-1, 1];
-    let nearest: Octant = { x: 1, y: 1, z: 1 };
-    let nearestDepth = Number.NEGATIVE_INFINITY;
-    for (const x of signs) {
-      for (const y of signs) {
-        for (const z of signs) {
-          const localX = x * size / 4;
-          const localY = -y * size / 4;
-          const localZ = z * size / 4;
-          const alongY = Math.sin(yaw) * localX + Math.cos(yaw) * localY;
-          const depth = Math.sin(pitch) * alongY + Math.cos(pitch) * localZ;
-          if (depth > nearestDepth) {
-            nearestDepth = depth;
-            nearest = { x, y, z };
-          }
-        }
-      }
-    }
-    return nearest;
-  }
-
-  const isolatedOctantLabel = isolatedOctant && mode === 3 ? octantName(isolatedOctant) : null;
-  const nearestOctantLabel = mode === 3 && !isolatedOctant ? octantName(computeNearestOctant()) : null;
+  // 立方体：点击格子即隔离（可多选，取消到空集合即退出隔离）
+  const isolatedOctantKeys = isolatedOctants.map(octantKeyOf);
+  const isOctantIsolated = isolatedOctants.length > 0;
+  const isOctantSideVisible = (axis: number, side: AxisSign) =>
+    isolatedOctants.some((octant) => [octant.x, octant.y, octant.z][axis] === side);
+  const octantLabel = isolatedOctants.map((octant) => octantName(octant)).filter(Boolean).join(" / ") || null;
   const cornerLabels = useMemo(() => {
     if (mode < 2 || !selected.length) return [];
     const signs: AxisSign[] = [-1, 1];
@@ -498,16 +543,21 @@ export function DimensionPreview({
   }, [modeTransitioning, mode]);
 
   useEffect(() => {
-    if (mode === 3 || !isolatedOctant) return;
+    if (mode === 3 || !isolatedOctants.length) return;
     clearFan();
-    setIsolatedOctant(null);
-  }, [mode, isolatedOctant]);
+    setIsolatedOctants([]);
+  }, [mode, isolatedOctants]);
+
+  // 退出 3D 时清掉立方体的 hover 预览，避免下次进入残留高亮
+  useEffect(() => {
+    setHoverOctant(null);
+  }, [mode]);
 
   useEffect(() => {
     if (!octantTransitioning) return;
     const timer = window.setTimeout(() => setOctantTransitioning(false), 480);
     return () => window.clearTimeout(timer);
-  }, [octantTransitioning, isolatedOctant]);
+  }, [octantTransitioning, isolatedOctants.length]);
 
   useEffect(() => {
     if (!planeCluster) return;
@@ -553,23 +603,26 @@ export function DimensionPreview({
     },
   });
 
-  function toggleOctantIsolation() {
+  function toggleOctant(octant: Octant) {
     if (mode !== 3) return;
     clearFan();
+    const key = octantKeyOf(octant);
+    // 点击格子即时进入隔离：在隔离集合里增删，取消到空集合就退回全部显示
+    const next = isolatedOctants.some((item) => octantKeyOf(item) === key)
+      ? isolatedOctants.filter((item) => octantKeyOf(item) !== key)
+      : [...isolatedOctants, octant];
     setOctantTransitioning(true);
-    if (isolatedOctant) {
-      setIsolatedOctant(null);
-      return;
-    }
-    setIsolatedOctant(computeNearestOctant());
+    setIsolatedOctants(next);
+    setHoverOctant(octant);
   }
 
   function assetBelongsToIsolatedOctant(values: Record<string, number>) {
-    if (!isolatedOctant || mode !== 3) return true;
+    if (!isolatedOctants.length || mode !== 3) return true;
     const matchesSide = (value: number, side: AxisSign) => value === 500 || (side === 1 ? value > 500 : value < 500);
-    return matchesSide(values[selected[0].id] ?? 500, isolatedOctant.x)
-      && matchesSide(values[selected[1].id] ?? 500, isolatedOctant.y)
-      && matchesSide(values[selected[2].id] ?? 500, isolatedOctant.z);
+    return isolatedOctants.some((octant) =>
+      matchesSide(values[selected[0].id] ?? 500, octant.x)
+      && matchesSide(values[selected[1].id] ?? 500, octant.y)
+      && matchesSide(values[selected[2].id] ?? 500, octant.z));
   }
 
   function unprojectPointerToPlane(clientX: number, clientY: number, localZ: number) {
@@ -1223,9 +1276,15 @@ export function DimensionPreview({
 
   return (
     <section className={`preview-layout ${focusMode ? "focus-mode" : ""}`}>
-      <aside className="preview-settings">
-        <div className="preview-settings-heading"><Box size={17} /><div><strong>选择预览维度</strong><span>最多同时使用 3 个</span></div></div>
-        <div className="preview-dimension-options">
+      <aside className="min-h-0 overflow-y-auto border-r border-line p-[17px] max-sm:border-r-0 max-sm:border-b">
+        <div className="flex items-start gap-2.5 border-b border-line-soft pb-3.5">
+          <Box size={17} aria-hidden className="mt-0.5 flex-none text-muted" />
+          <div>
+            <strong className="block text-md font-semibold text-ink">选择预览维度</strong>
+            <span className="mt-0.5 block text-sm text-muted">最多同时使用 3 个</span>
+          </div>
+        </div>
+        <div className="flex max-h-[410px] flex-col gap-1.5 overflow-y-auto py-3 max-sm:max-h-[180px]">
           {dimensions.map((dimension, index) => {
             const active = selectedIds.includes(dimension.id);
             const disabled = !active && selectedIds.length >= 3;
@@ -1233,7 +1292,11 @@ export function DimensionPreview({
             const axisLetter = active ? "xyz"[selectedIds.indexOf(dimension.id)] : null;
             return (
               <div
-                className={`preview-dimension-option ${active ? "active" : ""} ${disabled ? "disabled" : ""}`}
+                className={cn(
+                  "group relative flex min-h-[42px] w-full cursor-pointer items-center gap-2 border bg-white py-[7px] pl-[7px] pr-[30px] text-left transition-colors",
+                  active ? "border-sage bg-sage-wash" : "border-line-soft hover:border-line-strong",
+                  disabled && "cursor-not-allowed",
+                )}
                 key={dimension.id}
                 role="button"
                 tabIndex={0}
@@ -1241,41 +1304,99 @@ export function DimensionPreview({
                 onClick={() => { if (!disabled) toggleDimension(dimension.id); }}
                 onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); if (!disabled) toggleDimension(dimension.id); } }}
               >
-                <span className="preview-dimension-index">{axisLetter ?? index + 1}</span>
-                <div className="preview-dimension-labels"><strong>{dimension.leftLabel}</strong><i>—</i><strong>{dimension.rightLabel}</strong></div>
-                <button className="preview-dimension-delete" type="button" onClick={(event) => { event.stopPropagation(); if (!disabled) onEditDimension(dimension); }} aria-label={`编辑${dimension.leftLabel}到${dimension.rightLabel}维度`} title="编辑维度名称"><Pencil size={13} /></button>
+                <span className={cn("grid size-[23px] flex-none place-items-center rounded-full text-2xs", active ? "bg-sage text-xs font-bold text-white" : "bg-line-soft text-muted", disabled && "opacity-40")}>
+                  {axisLetter ?? index + 1}
+                </span>
+                <div className={cn("grid min-w-0 flex-1 grid-cols-[1fr_auto_1fr] items-center gap-1 text-sm", disabled && "opacity-40")}>
+                  <strong className="truncate text-left font-medium">{dimension.leftLabel}</strong>
+                  <i className="not-italic text-faint">—</i>
+                  <strong className="truncate text-right font-medium">{dimension.rightLabel}</strong>
+                </div>
+                <IconButton
+                  size="sm"
+                  label={`编辑${dimension.leftLabel}到${dimension.rightLabel}维度`}
+                  title="编辑维度名称"
+                  className="absolute right-[5px] top-[5px] opacity-0 transition-opacity group-hover:opacity-100 focus-visible:opacity-100"
+                  onClick={(event) => { event.stopPropagation(); if (!disabled) onEditDimension(dimension); }}
+                >
+                  <Pencil size={13} aria-hidden />
+                </IconButton>
               </div>
             );
           })}
-          <button className="preview-dimension-add" type="button" onClick={onAddDimension}><Plus size={14} /> 添加维度</button>
+          <Button
+            variant="secondary"
+            className="mt-1 w-full flex-none border-dashed"
+            icon={<Plus size={14} aria-hidden />}
+            onClick={onAddDimension}
+          >
+            添加维度
+          </Button>
         </div>
       </aside>
       <div className="preview-workspace">
-        <div className="preview-toolbar">
-          <span>{mode ? `${mode}D 预览` : "未选择维度"} · {mode === 1 ? "左右拖动图片改变维度值" : mode === 2 ? "在平面中拖动图片改变两项维度" : mode === 3 ? "左键拖动旋转视角；点击图片查看详情" : "选择 1～3 个维度开始预览"}</span>
-          <div className="preview-tools">
-            <span className="camera-hint" title="双指滑动平移，鼠标滚轮或触控板捏合缩放；也可用空格 + 左键或中键拖动平移"><MousePointer2 size={13} />双指平移 · 捏合缩放</span>
-            <div className="preview-zoom"><button type="button" onClick={() => { clearFan(); setZoom((value) => Math.max(.35, value - .1)); }} aria-label="缩小"><Minus size={14} /></button><span>{Math.round(zoom * 100)}%</span><button type="button" onClick={() => { clearFan(); setZoom((value) => Math.min(2.8, value + .1)); }} aria-label="放大"><Plus size={14} /></button></div>
-            <div className="preview-asset-scale" role="group" aria-label="图片缩放系数" title="图片缩放系数：作用于预览内所有图片（50%～200%）">
-              <Images size={13} />
-              <input type="range" min={50} max={200} step={5} value={Math.round(assetScale * 100)} onChange={(event) => { clearFan(); setAssetScale(Number(event.currentTarget.value) / 100); }} aria-label="图片缩放系数" />
-              <span>{Math.round(assetScale * 100)}%</span>
+        <div className="flex min-h-[52px] items-center justify-between gap-2.5 border-b border-line px-[13px] py-2.5 max-sm:overflow-x-auto">
+          <span className="min-w-0 flex-1 truncate text-sm text-muted">{mode ? `${mode}D 预览` : "未选择维度"} · {mode === 1 ? "左右拖动图片改变维度值" : mode === 2 ? "在平面中拖动图片改变两项维度" : mode === 3 ? "左键拖动旋转视角；点击图片查看详情" : "选择 1～3 个维度开始预览"}</span>
+          <div className="flex flex-none items-center gap-2.5">
+            <span className="flex items-center gap-1 whitespace-nowrap text-2xs text-sage" title="双指滑动平移，鼠标滚轮或触控板捏合缩放；也可用空格 + 左键或中键拖动平移">
+              <MousePointer2 size={13} aria-hidden />双指平移 · 捏合缩放
+            </span>
+            <div className="flex h-[29px] items-center rounded-md border border-line bg-white">
+              <IconButton size="sm" label="缩小" className="size-[27px] rounded-none border-0" onClick={() => { clearFan(); setZoom((value) => Math.max(.35, value - .1)); }}>
+                <Minus size={14} aria-hidden />
+              </IconButton>
+              <span className="min-w-[42px] text-center text-2xs text-muted">{Math.round(zoom * 100)}%</span>
+              <IconButton size="sm" label="放大" className="size-[27px] rounded-none border-0" onClick={() => { clearFan(); setZoom((value) => Math.min(2.8, value + .1)); }}>
+                <Plus size={14} aria-hidden />
+              </IconButton>
             </div>
-            <button className="fullscreen-button" type="button" onClick={resetView} aria-label="重置视角" title="重置视角"><RotateCcw size={15} /></button>
-            <button className="fullscreen-button" type="button" onClick={toggleFocusMode} aria-label={focusMode ? "退出专注模式" : "专注显示视图"}>{focusMode ? <Minimize2 size={15} /> : <Maximize2 size={15} />}</button>
-            <button className={`fullscreen-button ${dofEnabled ? "dof-active" : ""}`} type="button" onClick={() => setDofEnabled((active) => !active)} aria-label={dofEnabled ? "关闭景深" : "开启景深"} title={dofEnabled ? "关闭景深" : "开启景深"}><Aperture size={15} /></button>
-            {debugEnabled ? <button
-              className="fullscreen-button"
-              type="button"
-              onClick={() => setShowClusterDebug((active) => !active)}
-              aria-label="调试：显示聚簇范围"
-              title="调试：显示聚簇范围"
-              style={showClusterDebug ? { borderColor: "#c23d2e", background: "#fff3f0", color: "#c23d2e" } : undefined}
-            ><Bug size={15} /></button> : null}
+            <div className="flex h-[29px] items-center gap-1.5 rounded-md border border-line bg-white px-2 text-muted" role="group" aria-label="图片缩放系数" title="图片缩放系数：作用于预览内所有图片（50%～200%）">
+              <Images size={13} aria-hidden />
+              <RangeSlider
+                min={50}
+                max={200}
+                step={5}
+                value={Math.round(assetScale * 100)}
+                onValueChange={(value) => { clearFan(); setAssetScale(value / 100); }}
+                aria-label="图片缩放系数"
+                className="h-1 w-[76px]"
+              />
+              <span className="min-w-[34px] text-center text-2xs">{Math.round(assetScale * 100)}%</span>
+            </div>
+            <IconButton size="sm" variant="solid" label="重置视角" title="重置视角" className="size-[31px]" onClick={resetView}>
+              <RotateCcw size={15} aria-hidden />
+            </IconButton>
+            <IconButton size="sm" variant="solid" label={focusMode ? "退出专注模式" : "专注显示视图"} className="size-[31px]" onClick={toggleFocusMode}>
+              {focusMode ? <Minimize2 size={15} aria-hidden /> : <Maximize2 size={15} aria-hidden />}
+            </IconButton>
+            <IconButton
+              size="sm"
+              variant="solid"
+              active={dofEnabled}
+              label={dofEnabled ? "关闭景深" : "开启景深"}
+              title={dofEnabled ? "关闭景深" : "开启景深"}
+              className="size-[31px]"
+              onClick={() => setDofEnabled((active) => !active)}
+            >
+              <Aperture size={15} aria-hidden />
+            </IconButton>
+            {debugEnabled ? (
+              <IconButton
+                size="sm"
+                variant="solid"
+                active={showClusterDebug}
+                label="调试：显示聚簇范围"
+                title="调试：显示聚簇范围"
+                className="size-[31px]"
+                onClick={() => setShowClusterDebug((active) => !active)}
+              >
+                <Bug size={15} aria-hidden />
+              </IconButton>
+            ) : null}
           </div>
         </div>
         {mode ? (
-          <div className={`dimension-scene mode-${mode} ${cameraMoving ? "camera-moving" : ""} ${viewPanning ? "view-panning" : ""} ${draggingAssetId ? "asset-dragging" : ""} ${hoveredAssetId ? "asset-hovered" : ""} ${planeCluster ? "stack-hovered" : ""} ${modeTransitioning ? "mode-transitioning" : ""} ${octantTransitioning ? "octant-transitioning" : ""} ${isolatedOctant ? "octant-isolated" : ""} ${spaceHeld ? "space-held" : ""}`}>
+          <div className={`dimension-scene mode-${mode} ${cameraMoving ? "camera-moving" : ""} ${viewPanning ? "view-panning" : ""} ${draggingAssetId ? "asset-dragging" : ""} ${hoveredAssetId ? "asset-hovered" : ""} ${planeCluster ? "stack-hovered" : ""} ${modeTransitioning ? "mode-transitioning" : ""} ${octantTransitioning ? "octant-transitioning" : ""} ${isOctantIsolated ? "octant-isolated" : ""} ${spaceHeld ? "space-held" : ""}`}>
             <div
               ref={sceneViewportRef}
               className="scene-viewport"
@@ -1305,21 +1426,24 @@ export function DimensionPreview({
                   {gridTicks.map((tick) => <span className="grid-line grid-line-y" style={{ top: `${100 - tick / 10}%` }} key={`grid-y-${tick}`} />)}
                 </div> : null}
                 <div className="axis-bar axis-bar-x" aria-hidden="true">
-                  <div className={`axis-half axis-half-x-pos ${isolatedOctant && isolatedOctant.x !== 1 ? "octant-hidden" : ""}`}><AxisFaces /></div>
-                  <div className={`axis-half axis-half-x-neg ${isolatedOctant && isolatedOctant.x !== -1 ? "octant-hidden" : ""}`}><AxisFaces /></div>
+                  <div className={`axis-half axis-half-x-pos ${isOctantIsolated && !isOctantSideVisible(0, 1) ? "octant-hidden" : ""}`}><AxisFaces /></div>
+                  <div className={`axis-half axis-half-x-neg ${isOctantIsolated && !isOctantSideVisible(0, -1) ? "octant-hidden" : ""}`}><AxisFaces /></div>
                 </div>
                 {mode >= 2 ? <div className="axis-bar axis-bar-y" aria-hidden="true">
-                  <div className={`axis-half axis-half-y-pos ${isolatedOctant && isolatedOctant.y !== 1 ? "octant-hidden" : ""}`}><AxisFaces /></div>
-                  <div className={`axis-half axis-half-y-neg ${isolatedOctant && isolatedOctant.y !== -1 ? "octant-hidden" : ""}`}><AxisFaces /></div>
+                  <div className={`axis-half axis-half-y-pos ${isOctantIsolated && !isOctantSideVisible(1, 1) ? "octant-hidden" : ""}`}><AxisFaces /></div>
+                  <div className={`axis-half axis-half-y-neg ${isOctantIsolated && !isOctantSideVisible(1, -1) ? "octant-hidden" : ""}`}><AxisFaces /></div>
                 </div> : null}
                 {mode === 3 ? <div className="axis-bar axis-bar-z" aria-hidden="true">
-                  <div className={`axis-half axis-half-z-pos ${isolatedOctant && isolatedOctant.z !== 1 ? "octant-hidden" : ""}`}><AxisFaces /></div>
-                  <div className={`axis-half axis-half-z-neg ${isolatedOctant && isolatedOctant.z !== -1 ? "octant-hidden" : ""}`}><AxisFaces /></div>
+                  <div className={`axis-half axis-half-z-pos ${isOctantIsolated && !isOctantSideVisible(2, 1) ? "octant-hidden" : ""}`}><AxisFaces /></div>
+                  <div className={`axis-half axis-half-z-neg ${isOctantIsolated && !isOctantSideVisible(2, -1) ? "octant-hidden" : ""}`}><AxisFaces /></div>
                 </div> : null}
                 <span className="axis-origin" />
                 {selected.map((dimension, axis) => gridTicks.map((tick) => {
-                  const sign = isolatedOctant ? [isolatedOctant.x, isolatedOctant.y, isolatedOctant.z][axis] : null;
-                  if ((sign === 1 && tick < 500) || (sign === -1 && tick > 500)) return null;
+                  // 隔离时只保留选中象限涉及的半轴刻度（多选时任一选中格涉及的都显示）
+                  if (isOctantIsolated) {
+                    const needed = tick === 500 ? null : tick > 500 ? 1 : -1;
+                    if (needed && !isOctantSideVisible(axis, needed)) return null;
+                  }
                   return (
                     <span className={`preview-axis-tick tick-axis-${axis}`} key={`${dimension.id}:${tick}`} aria-hidden="true" style={{
                       left: axis === 0 ? `${tick / 10}%` : "50%",
@@ -1330,16 +1454,15 @@ export function DimensionPreview({
                     </span>
                   );
                 }))}
-                <span className={`axis-label axis-label-x-start ${isolatedOctant && isolatedOctant.x === 1 ? "octant-hidden" : ""}`}><i style={{ "--billboard-rx": `${mode === 3 ? -sceneRotateX : 0}deg`, "--billboard-rz": `${mode === 3 ? -sceneRotateZ : 0}deg` } as CSSProperties}>{selected[0].leftLabel}</i></span>
-                <span className={`axis-label axis-label-x-end ${isolatedOctant && isolatedOctant.x === -1 ? "octant-hidden" : ""}`}><i style={{ "--billboard-rx": `${mode === 3 ? -sceneRotateX : 0}deg`, "--billboard-rz": `${mode === 3 ? -sceneRotateZ : 0}deg` } as CSSProperties}>{selected[0].rightLabel}</i></span>
-                {mode >= 2 ? <><span className={`axis-label axis-label-y-start ${isolatedOctant && isolatedOctant.y === -1 ? "octant-hidden" : ""}`}><i style={{ "--billboard-rx": `${mode === 3 ? -sceneRotateX : 0}deg`, "--billboard-rz": `${mode === 3 ? -sceneRotateZ : 0}deg` } as CSSProperties}>{selected[1].rightLabel}</i></span><span className={`axis-label axis-label-y-end ${isolatedOctant && isolatedOctant.y === 1 ? "octant-hidden" : ""}`}><i style={{ "--billboard-rx": `${mode === 3 ? -sceneRotateX : 0}deg`, "--billboard-rz": `${mode === 3 ? -sceneRotateZ : 0}deg` } as CSSProperties}>{selected[1].leftLabel}</i></span></> : null}
-                {mode === 3 ? <><span className={`axis-label axis-label-z-start ${isolatedOctant && isolatedOctant.z === 1 ? "octant-hidden" : ""}`}><i style={{ "--billboard-rx": `${-sceneRotateX}deg`, "--billboard-rz": `${-sceneRotateZ}deg` } as CSSProperties}>{selected[2].leftLabel}</i></span><span className={`axis-label axis-label-z-end ${isolatedOctant && isolatedOctant.z === -1 ? "octant-hidden" : ""}`}><i style={{ "--billboard-rx": `${-sceneRotateX}deg`, "--billboard-rz": `${-sceneRotateZ}deg` } as CSSProperties}>{selected[2].rightLabel}</i></span></> : null}
+                <span className={`axis-label axis-label-x-start ${isOctantIsolated && !isOctantSideVisible(0, -1) ? "octant-hidden" : ""}`}><i style={{ "--billboard-rx": `${mode === 3 ? -sceneRotateX : 0}deg`, "--billboard-rz": `${mode === 3 ? -sceneRotateZ : 0}deg` } as CSSProperties}>{selected[0].leftLabel}</i></span>
+                <span className={`axis-label axis-label-x-end ${isOctantIsolated && !isOctantSideVisible(0, 1) ? "octant-hidden" : ""}`}><i style={{ "--billboard-rx": `${mode === 3 ? -sceneRotateX : 0}deg`, "--billboard-rz": `${mode === 3 ? -sceneRotateZ : 0}deg` } as CSSProperties}>{selected[0].rightLabel}</i></span>
+                {mode >= 2 ? <><span className={`axis-label axis-label-y-start ${isOctantIsolated && !isOctantSideVisible(1, 1) ? "octant-hidden" : ""}`}><i style={{ "--billboard-rx": `${mode === 3 ? -sceneRotateX : 0}deg`, "--billboard-rz": `${mode === 3 ? -sceneRotateZ : 0}deg` } as CSSProperties}>{selected[1].rightLabel}</i></span><span className={`axis-label axis-label-y-end ${isOctantIsolated && !isOctantSideVisible(1, -1) ? "octant-hidden" : ""}`}><i style={{ "--billboard-rx": `${mode === 3 ? -sceneRotateX : 0}deg`, "--billboard-rz": `${mode === 3 ? -sceneRotateZ : 0}deg` } as CSSProperties}>{selected[1].leftLabel}</i></span></> : null}
+                {mode === 3 ? <><span className={`axis-label axis-label-z-start ${isOctantIsolated && !isOctantSideVisible(2, -1) ? "octant-hidden" : ""}`}><i style={{ "--billboard-rx": `${-sceneRotateX}deg`, "--billboard-rz": `${-sceneRotateZ}deg` } as CSSProperties}>{selected[2].leftLabel}</i></span><span className={`axis-label axis-label-z-end ${isOctantIsolated && !isOctantSideVisible(2, 1) ? "octant-hidden" : ""}`}><i style={{ "--billboard-rx": `${-sceneRotateX}deg`, "--billboard-rz": `${-sceneRotateZ}deg` } as CSSProperties}>{selected[2].rightLabel}</i></span></> : null}
                 {cornerLabels.map((corner) => {
-                  const octantHidden = isolatedOctant && !(
-                    (corner.x === 0 || corner.x === isolatedOctant.x) &&
-                    (corner.y === 0 || corner.y === isolatedOctant.y) &&
-                    (corner.z === 0 || corner.z === isolatedOctant.z)
-                  );
+                  const octantHidden = isOctantIsolated && !isolatedOctants.some((octant) =>
+                    (corner.x === 0 || corner.x === octant.x) &&
+                    (corner.y === 0 || corner.y === octant.y) &&
+                    (corner.z === 0 || corner.z === octant.z));
                   return (
                     <span
                       className={`corner-label ${octantHidden ? "octant-hidden" : ""}`}
@@ -1389,7 +1512,7 @@ export function DimensionPreview({
                   const planeSize = scenePlaneRef.current?.offsetWidth ?? 0;
                   const stackWorldZ = projectValuePoint(cluster.x, cluster.y, cluster.z)?.worldZ ?? cluster.meanDepth;
                   const stackPersp = 1 - stackWorldZ / SCENE_PERSPECTIVE;
-                  const stackBlur = !dofEnabled || isolatedOctant ? undefined : depthBlurStyle(stackWorldZ);
+                  const stackBlur = !dofEnabled || isOctantIsolated ? undefined : depthBlurStyle(stackWorldZ);
                   const isDropTarget = dropTargetClusterKey === cluster.key;
                   return (
                     <button
@@ -1442,7 +1565,7 @@ export function DimensionPreview({
                   const alongY = Math.sin(yaw) * centeredX + Math.cos(yaw) * centeredY;
                   const worldZ = Math.sin(pitch) * alongY + Math.cos(pitch) * centeredZ;
                   const persp = 1 - worldZ / SCENE_PERSPECTIVE;
-                  const blurStyle = !dofEnabled || isolatedOctant || hoveredAssetId === asset.id ? undefined : depthBlurStyle(worldZ);
+                  const blurStyle = !dofEnabled || isOctantIsolated || hoveredAssetId === asset.id ? undefined : depthBlurStyle(worldZ);
                   return (
                     <button
                       type="button"
@@ -1556,11 +1679,41 @@ export function DimensionPreview({
               })() : null}
             </div>
             {mode === 3 ? <div className="octant-isolation-controls">
-              <button className={`octant-isolation-button ${isolatedOctant ? "active" : ""}`} type="button" onClick={toggleOctantIsolation}>{isolatedOctant ? "退出象限隔离" : "隔离当前象限"}</button>
-              {isolatedOctantLabel ? <span className="octant-isolation-label" aria-label={`当前隔离象限：${isolatedOctantLabel}`}>{isolatedOctantLabel}</span> : nearestOctantLabel ? <span className="octant-isolation-label" aria-label={`即将隔离象限：${nearestOctantLabel}`}>{nearestOctantLabel}</span> : null}
+              <svg
+                className="octant-cube"
+                viewBox="-48 -48 96 96"
+                role="group"
+                aria-label="空间象限选择：点击任意格子进入隔离，可连续点选多个；再次点击移出，全部取消即退出隔离"
+                onPointerLeave={() => setHoverOctant(null)}
+              >
+                <title>点击格子隔离该象限，可多选；再次点击取消，全部取消即退出隔离</title>
+                {octantCubeFacets.map((facet) => {
+                  const facetKey = octantKeyOf(facet.octant);
+                  const isHovered = hoverOctant ? octantKeyOf(hoverOctant) === facetKey : false;
+                  const isIsolated = isolatedOctantKeys.includes(facetKey);
+                  return (
+                    <polygon
+                      key={facet.key}
+                      className={`octant-cube-face${isHovered ? " is-hover" : ""}${isIsolated ? " is-isolated" : ""}`}
+                      points={facet.points}
+                      onPointerEnter={() => setHoverOctant(facet.octant)}
+                      onClick={() => toggleOctant(facet.octant)}
+                    />
+                  );
+                })}
+              </svg>
+              {octantLabel ? <span className="octant-isolation-label" aria-label={`当前隔离象限：${octantLabel}`}>{octantLabel}</span> : null}
             </div> : null}
           </div>
-        ) : <div className="preview-empty"><Box size={28} /><h3>选择预览维度</h3><p>项目可以拥有任意数量的维度，每次预览最多选择 3 个。</p></div>}
+        ) : (
+          <EmptyState
+            className="flex-1"
+            compact
+            icon={<Box size={28} aria-hidden />}
+            title="选择预览维度"
+            description="项目可以拥有任意数量的维度，每次预览最多选择 3 个。"
+          />
+        )}
       </div>
     </section>
   );

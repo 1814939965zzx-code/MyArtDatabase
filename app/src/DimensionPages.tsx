@@ -1,8 +1,9 @@
 import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
-import { Box, Check, Pencil, Plus, Search, Trash2, X } from "lucide-react";
+import { AlertTriangle, Box, Check, Pencil, Plus, Trash2 } from "lucide-react";
 import { apiFetch } from "./api";
 import { DimensionPreview } from "./DimensionPreview";
 import { TagFilterBar } from "./TagFilterBar";
+import { Button, ConfirmDialog, EmptyState, Field, IconButton, Input, Modal, SearchInput, Spinner, Tabs, cn } from "./ui";
 
 export type PageDimension = { id: string; projectId: string; pageId: string; leftLabel: string; rightLabel: string; sortOrder: number };
 export type PreviewPage = {
@@ -27,6 +28,7 @@ export function DimensionPages({ projectId, assets, page, onPageChange, revision
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [edit, setEdit] = useState<"create" | "rename" | "delete" | null>(null);
+  const [editTargetId, setEditTargetId] = useState("");
   const [name, setName] = useState("");
   const [picker, setPicker] = useState(false);
   const [search, setSearch] = useState("");
@@ -38,15 +40,6 @@ export function DimensionPages({ projectId, assets, page, onPageChange, revision
   const pageRef = useRef(page);
   pageRef.current = page;
   const axesQueue = useRef<Promise<unknown>>(Promise.resolve());
-
-  useEffect(() => {
-    if ((!picker && !edit) || busy) return;
-    const dismiss = (event: KeyboardEvent) => {
-      if (event.key === "Escape") { setPicker(false); setEdit(null); }
-    };
-    window.addEventListener("keydown", dismiss);
-    return () => window.removeEventListener("keydown", dismiss);
-  }, [picker, edit, busy]);
 
   useEffect(() => {
     let active = true;
@@ -84,22 +77,49 @@ export function DimensionPages({ projectId, assets, page, onPageChange, revision
     setPageId(id);
     setPicker(false);
   }
-  async function editPage(event: FormEvent) {
+
+  function closePageDialog() {
+    if (busy) return;
+    setEdit(null);
+  }
+
+  async function savePage(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    if (!name.trim()) return;
     setBusy(true);
     try {
-      if (edit === "delete") {
-        await apiFetch(`/api/preview-pages?projectId=${encodeURIComponent(projectId)}&pageId=${encodeURIComponent(pageId)}`, { method: "DELETE" });
-        switchPage("");
-      } else {
-        const result = await apiFetch<{ page?: PreviewPage }>("/api/preview-pages", { method: edit === "create" ? "POST" : "PATCH", body: JSON.stringify({ projectId, pageId, name }) });
+      if (edit === "create") {
+        const result = await apiFetch<{ page?: PreviewPage }>("/api/preview-pages", { method: "POST", body: JSON.stringify({ projectId, name }) });
         if (result.page) switchPage(result.page.id);
+      } else {
+        await apiFetch("/api/preview-pages", {
+          method: "PATCH",
+          body: JSON.stringify({ projectId, pageId: editTargetId || pageId, name }),
+        });
       }
       setEdit(null);
       setReload((v) => v + 1);
-    } catch (reason) { onMessage(reason instanceof Error ? reason.message : "操作失败"); }
-    finally { setBusy(false); }
+    } catch (reason) {
+      onMessage(reason instanceof Error ? reason.message : "操作失败");
+    } finally {
+      setBusy(false);
+    }
   }
+
+  async function deletePage() {
+    setBusy(true);
+    try {
+      await apiFetch(`/api/preview-pages?projectId=${encodeURIComponent(projectId)}&pageId=${encodeURIComponent(pageId)}`, { method: "DELETE" });
+      switchPage("");
+      setEdit(null);
+      setReload((v) => v + 1);
+    } catch (reason) {
+      onMessage(reason instanceof Error ? reason.message : "删除失败");
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function addAssets() {
     setBusy(true);
     try {
@@ -109,6 +129,7 @@ export function DimensionPages({ projectId, assets, page, onPageChange, revision
     } catch (reason) { onMessage(reason instanceof Error ? reason.message : "添加失败"); }
     finally { setBusy(false); }
   }
+
   function selectAxes(selectedIds: string[]) {
     if (!current) return;
     onPageChange({ ...current, selectedIds });
@@ -120,33 +141,240 @@ export function DimensionPages({ projectId, assets, page, onPageChange, revision
     });
   }
 
-  return <div className="dimension-pages">
-    <div className="dimension-pages-bar">
-      <div className="dimension-pages-tabs" role="tablist" aria-label="维度 Pages">
-        {pages.map((p) => <button key={p.id} role="tab" aria-selected={pageId === p.id} disabled={busy} className={pageId === p.id ? "active" : ""} onClick={() => switchPage(p.id)} onDoubleClick={() => { setName(p.name); setEdit("rename"); }}><Box size={14} />{p.name}<small>{p.id === current?.id ? pageAssets.length : p.assetCount}</small></button>)}
-        <button type="button" aria-label="新建维度 Page" onClick={() => { setName(`Page ${pages.length + 1}`); setEdit("create"); }}><Plus size={15} /></button>
+  const tabItems = pages.map((p) => ({
+    value: p.id,
+    icon: <Box size={14} aria-hidden />,
+    label: (
+      <span
+        title="双击重命名"
+        onDoubleClick={() => {
+          setEditTargetId(p.id);
+          setName(p.name);
+          setEdit("rename");
+        }}
+      >
+        {p.name}
+      </span>
+    ),
+    count: p.id === current?.id ? pageAssets.length : p.assetCount,
+  }));
+
+  return (
+    <div className="dimension-pages">
+      <div className="flex flex-col gap-3 border-b border-line px-3 py-2.5 min-[900px]:flex-row min-[900px]:items-center min-[900px]:justify-between">
+        <div className={cn("flex min-w-0 items-center gap-1 overflow-x-auto", busy && "pointer-events-none opacity-60")}>
+          <Tabs variant="underline" ariaLabel="维度 Pages" value={pageId} onChange={switchPage} className="border-b-0" items={tabItems} />
+          <IconButton
+            size="sm"
+            label="新建维度 Page"
+            className="flex-none"
+            onClick={() => {
+              setEditTargetId("");
+              setName(`Page ${pages.length + 1}`);
+              setEdit("create");
+            }}
+          >
+            <Plus size={15} aria-hidden />
+          </IconButton>
+        </div>
+        <div className="flex flex-none items-center justify-end gap-1.5">
+          <IconButton
+            variant="solid"
+            size="sm"
+            label="重命名当前 Page"
+            disabled={!current || loading}
+            onClick={() => {
+              if (!current) return;
+              setEditTargetId(current.id);
+              setName(current.name);
+              setEdit("rename");
+            }}
+          >
+            <Pencil size={14} aria-hidden />
+          </IconButton>
+          <IconButton variant="solid" size="sm" label="删除当前 Page" disabled={!current || loading} onClick={() => setEdit("delete")}>
+            <Trash2 size={14} aria-hidden />
+          </IconButton>
+          <Button
+            variant="primary"
+            icon={<Plus size={14} aria-hidden />}
+            disabled={!current || loading}
+            onClick={() => {
+              setSearch("");
+              setTags([]);
+              setSelected([]);
+              setPicker(true);
+            }}
+          >
+            添加素材
+          </Button>
+        </div>
       </div>
-      <div className="dimension-pages-actions">
-        <button type="button" className="secondary-button" disabled={!current || loading} onClick={() => { setName(current!.name); setEdit("rename"); }} aria-label="重命名当前 Page"><Pencil size={14} /></button>
-        <button type="button" className="secondary-button" disabled={!current || loading} onClick={() => setEdit("delete")} aria-label="删除当前 Page"><Trash2 size={14} /></button>
-        <button type="button" className="primary-button" disabled={!current || loading} onClick={() => { setSearch(""); setTags([]); setSelected([]); setPicker(true); }}><Plus size={14} />添加素材</button>
-      </div>
+
+      {loading ? (
+        <div className="flex flex-1 items-center justify-center gap-2 text-md text-muted">
+          <Spinner size={20} />
+          正在载入 Page…
+        </div>
+      ) : error ? (
+        <EmptyState
+          className="flex-1"
+          compact
+          icon={<AlertTriangle size={26} aria-hidden />}
+          title="Page 载入失败"
+          description={error}
+          action={<Button onClick={() => setReload((v) => v + 1)}>重试</Button>}
+        />
+      ) : current ? (
+        <>
+          {!pageAssets.length ? (
+            <div className="border-b border-line-soft px-4 py-2 text-sm text-muted">
+              此 Page 暂无素材，点击“添加素材”从项目中选择。维度和位置仅属于当前 Page。
+            </div>
+          ) : null}
+          <DimensionPreview
+            key={current.id}
+            dimensions={current.dimensions}
+            assets={pageAssets}
+            selectedIds={current.selectedIds}
+            onSelectedIdsChange={selectAxes}
+            onSelectAsset={onSelectAsset}
+            onUpdateAssetDimensions={onUpdateAssetDimensions}
+            onAddDimension={onAddDimension}
+            onMessage={onMessage}
+            onEditDimension={(dimension) => { const found = current.dimensions.find((d) => d.id === dimension.id); if (found) onEditDimension(found); }}
+          />
+        </>
+      ) : (
+        <EmptyState
+          className="flex-1"
+          icon={<Box size={36} aria-hidden />}
+          title="还没有维度 Page"
+          description="新建一个 Page，然后从项目素材中添加要比较的素材。"
+          action={
+            <Button
+              variant="primary"
+              icon={<Plus size={15} aria-hidden />}
+              onClick={() => {
+                setEditTargetId("");
+                setName("Page 1");
+                setEdit("create");
+              }}
+            >
+              新建 Page
+            </Button>
+          }
+        />
+      )}
+
+      {edit && edit !== "delete" ? (
+        <Modal
+          open
+          onClose={closePageDialog}
+          size="md"
+          eyebrow="DIMENSION PAGE"
+          title={edit === "create" ? "新建维度 Page" : "重命名 Page"}
+          description="Page 名称最多 50 个字符；维度与位置仅属于当前 Page。"
+          footer={
+            <>
+              <Button type="button" onClick={closePageDialog} disabled={busy}>
+                取消
+              </Button>
+              <Button type="submit" form="page-edit-form" variant="primary" loading={busy} disabled={busy || !name.trim()}>
+                {edit === "create" ? "创建" : "保存"}
+              </Button>
+            </>
+          }
+        >
+          <form id="page-edit-form" className="flex flex-col gap-4" onSubmit={(event) => void savePage(event)}>
+            <Field label="Page 名称">
+              <Input {...{ "data-autofocus": true }} required maxLength={50} value={name} onChange={(event) => setName(event.target.value)} />
+            </Field>
+          </form>
+        </Modal>
+      ) : null}
+
+      {edit === "delete" ? (
+        <ConfirmDialog
+          open
+          onClose={closePageDialog}
+          onConfirm={() => void deletePage()}
+          tone="danger"
+          title="删除 Page？"
+          description={`删除“${current?.name ?? ""}”及其中的维度和位置数据？项目素材和其他 Page 不受影响。`}
+          confirmText="删除 Page"
+          busy={busy}
+        />
+      ) : null}
+
+      {picker ? (
+        <Modal
+          open
+          onClose={() => { if (!busy) setPicker(false); }}
+          size="xl"
+          className="flex max-h-[85dvh] flex-col overflow-hidden"
+          bodyClassName="min-h-0 flex-1"
+          eyebrow="ADD ASSETS"
+          title={`添加素材到“${current?.name ?? ""}”`}
+          description="从项目素材中选择，已加入的素材不会重复添加。"
+          footer={
+            <>
+              <Button type="button" onClick={() => { if (!busy) setPicker(false); }} disabled={busy}>
+                取消
+              </Button>
+              <Button variant="primary" loading={busy} disabled={busy || !selected.length} onClick={() => void addAssets()}>
+                {busy ? "添加中…" : `添加 ${selected.length} 个素材`}
+              </Button>
+            </>
+          }
+        >
+          <SearchInput value={search} onValueChange={setSearch} placeholder="搜索名称、文件名或标签" aria-label="搜索项目素材" />
+          <div className="min-w-0">
+            <TagFilterBar tags={allTags} selected={tags} onToggle={(tag) => setTags((v) => v.includes(tag) ? v.filter((t) => t !== tag) : [...v, tag])} />
+          </div>
+          <div className="flex flex-wrap items-center gap-3 text-sm text-muted">
+            <span>已选 {selected.length} 个 · 匹配 {filtered.length} 个</span>
+            <Button
+              variant="ghost"
+              size="xs"
+              disabled={busy}
+              onClick={() => setSelected((ids) => [...new Set([...ids, ...filtered.filter((a) => !existingIds.has(a.id)).map((a) => a.id)])].slice(0, 1000))}
+            >
+              选择筛选结果
+            </Button>
+            <Button variant="ghost" size="xs" disabled={busy} onClick={() => setSelected([])}>
+              清空选择
+            </Button>
+          </div>
+          <div className="grid min-h-[140px] grid-cols-[repeat(auto-fill,minmax(120px,1fr))] content-start gap-3 overflow-y-auto p-[3px]">
+            {filtered.map((asset) => {
+              const already = existingIds.has(asset.id);
+              const active = selected.includes(asset.id);
+              return (
+                <button
+                  type="button"
+                  key={asset.id}
+                  disabled={busy || already}
+                  aria-pressed={active}
+                  className={cn(
+                    "relative flex min-w-0 flex-col items-center gap-2 rounded-sm border bg-white p-2 text-ink transition-colors",
+                    active ? "border-accent outline outline-1 outline-accent" : "border-line hover:border-line-strong",
+                    already && "cursor-default opacity-45",
+                  )}
+                  onClick={() => setSelected((ids) => ids.includes(asset.id) ? ids.filter((id) => id !== asset.id) : ids.length < 1000 ? [...ids, asset.id] : ids)}
+                >
+                  {asset.thumbnailUrl ? <img src={asset.thumbnailUrl} alt="" loading="lazy" className="h-[100px] w-full object-contain" /> : <Box size={30} aria-hidden />}
+                  <span className="max-w-full truncate text-sm">{asset.name}</span>
+                  {already ? <small className="text-xs text-muted">已加入</small> : active ? <Check size={16} aria-hidden className="absolute right-2 top-2 text-accent" /> : null}
+                </button>
+              );
+            })}
+            {!filtered.length ? (
+              <EmptyState compact className="col-span-full" title="没有匹配的项目素材" description="换一个名称、文件名或标签试试。" />
+            ) : null}
+          </div>
+        </Modal>
+      ) : null}
     </div>
-    {loading ? <div className="dimension-pages-empty">正在载入 Page…</div> : error ? <div className="dimension-pages-empty"><p>{error}</p><button className="secondary-button" onClick={() => setReload((v) => v + 1)}>重试</button></div> : current ? <>
-      {!pageAssets.length && <div className="dimension-page-hint">此 Page 暂无素材，点击“添加素材”从项目中选择。维度和位置仅属于当前 Page。</div>}
-      <DimensionPreview key={current.id} dimensions={current.dimensions} assets={pageAssets} selectedIds={current.selectedIds} onSelectedIdsChange={selectAxes} onSelectAsset={onSelectAsset} onUpdateAssetDimensions={onUpdateAssetDimensions} onAddDimension={onAddDimension} onMessage={onMessage} onEditDimension={(dimension) => { const found = current.dimensions.find((d) => d.id === dimension.id); if (found) onEditDimension(found); }} />
-    </> : <div className="dimension-pages-empty"><Box size={36} /><p>还没有维度 Page</p><button className="primary-button" onClick={() => { setName("Page 1"); setEdit("create"); }}><Plus size={15} />新建 Page</button></div>}
-    {edit && <div className="modal-backdrop"><section className="modal-card" role="dialog" aria-modal="true" aria-labelledby="page-edit-title"><div className="modal-heading"><h2 id="page-edit-title">{edit === "create" ? "新建维度 Page" : edit === "rename" ? "重命名 Page" : "删除 Page"}</h2><button className="icon-button" disabled={busy} aria-label="关闭 Page 设置" onClick={() => setEdit(null)}><X size={18} /></button></div><form className="modal-form" onSubmit={(e) => void editPage(e)}>
-      {edit === "delete" ? <p>删除“{current?.name}”及其中的维度和位置数据？项目素材和其他 Page 不受影响。</p> : <label>Page 名称<input autoFocus required maxLength={50} value={name} onChange={(e) => setName(e.target.value)} /></label>}
-      <div className="modal-actions"><button type="button" className="secondary-button" disabled={busy} onClick={() => setEdit(null)}>取消</button><button className="primary-button" disabled={busy || (edit !== "delete" && !name.trim())}>{busy ? "处理中…" : edit === "delete" ? "删除 Page" : "保存"}</button></div>
-    </form></section></div>}
-    {picker && <div className="modal-backdrop"><section className="page-asset-picker" role="dialog" aria-modal="true" aria-labelledby="page-picker-title">
-      <div className="modal-heading"><div><h2 id="page-picker-title">添加素材到“{current?.name}”</h2><p>从项目素材中选择，已加入的素材不会重复添加。</p></div><button className="icon-button" disabled={busy} aria-label="关闭素材选择" onClick={() => setPicker(false)}><X size={18} /></button></div>
-      <label className="page-picker-search"><Search size={16} /><input placeholder="搜索名称、文件名或标签" value={search} onChange={(e) => setSearch(e.target.value)} /></label>
-      <TagFilterBar tags={allTags} selected={tags} onToggle={(tag) => setTags((v) => v.includes(tag) ? v.filter((t) => t !== tag) : [...v, tag])} />
-      <div className="page-picker-selection"><span>已选 {selected.length} 个 · 匹配 {filtered.length} 个</span><button type="button" disabled={busy} onClick={() => setSelected((ids) => [...new Set([...ids, ...filtered.filter((a) => !existingIds.has(a.id)).map((a) => a.id)])].slice(0, 1000))}>选择筛选结果</button><button type="button" disabled={busy} onClick={() => setSelected([])}>清空选择</button></div>
-      <div className="page-picker-grid">{filtered.map((a) => <button type="button" key={a.id} disabled={busy || existingIds.has(a.id)} aria-pressed={selected.includes(a.id)} className={selected.includes(a.id) ? "selected" : ""} onClick={() => setSelected((ids) => ids.includes(a.id) ? ids.filter((id) => id !== a.id) : ids.length < 1000 ? [...ids, a.id] : ids)}>{a.thumbnailUrl ? <img src={a.thumbnailUrl} alt="" loading="lazy" /> : <Box size={30} />}<span>{a.name}</span>{existingIds.has(a.id) ? <small>已加入</small> : selected.includes(a.id) ? <Check size={16} /> : null}</button>)}{!filtered.length && <p>没有匹配的项目素材</p>}</div>
-      <div className="modal-actions"><button className="secondary-button" disabled={busy} onClick={() => setPicker(false)}>取消</button><button className="primary-button" disabled={busy || !selected.length} onClick={() => void addAssets()}>{busy ? "添加中…" : `添加 ${selected.length} 个素材`}</button></div>
-    </section></div>}
-  </div>;
+  );
 }

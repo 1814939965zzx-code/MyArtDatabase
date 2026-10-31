@@ -1,0 +1,179 @@
+/*
+ * 设计系统 Token —— 全站唯一取值来源
+ *
+ * 约定：
+ * 1. 除本文件与 styles/modules/*.css 的布局数值外，app/src 内不允许出现 hex / rgba 字面量。
+ * 2. 业务代码只使用语义 token（text-muted / bg-surface），不使用 Tailwind 默认色板（text-neutral-500）。
+ * 3. 本文件刻意覆盖了 Tailwind 的默认字号档位：text-sm = 12px、text-base = 13px，
+ *    与现有产品字号一致；引用 Tailwind 文档时不要按默认 14px/16px 理解。
+ * 4. @theme static：保证所有 token 不论是否被 utility 使用都输出为 :root 变量，
+ *    这样 styles/modules/*.css 里的 var(--color-*) 不会因为“未被扫描到”而丢失。
+ */
+
+@theme static {
+  /* ── 中性 ───────────────────────────────────────────── */
+  --color-ink: #202321;
+  --color-ink-soft: #3b403c;
+  --color-ink-panel: #242825;
+  --color-ink-hover: #303531;
+  --color-ink-deep: #252925;
+  --color-ink-popover: #272b27;
+  --color-ink-label: #555a54;
+  --color-muted: #72776f;
+  --color-faint: #8a8e88;
+  --color-line: #dedfd9;
+  --color-line-soft: #ecece7;
+  --color-line-strong: #d5d6d0;
+  --color-paper: #f4f3ee;
+  --color-surface: #fbfaf7;
+  --color-surface-muted: #f1f0ea;
+  --color-surface-sunken: #e9e7de;
+  --color-white: #ffffff;
+
+  /* ── 遮罩 ───────────────────────────────────────────── */
+  --color-scrim: rgb(26 29 26 / 0.5);
+  --color-scrim-strong: rgb(15 17 15 / 0.93);
+
+  /* ── 品牌 ───────────────────────────────────────────── */
+  --color-accent: #e1512f;
+  --color-accent-strong: #b93b20;
+  --color-accent-soft: #fbf3f0;
+  --color-accent-border: #e6b7ab;
+  --color-accent-light: #f08a70;
+
+  --color-sage: #66755f;
+  --color-sage-strong: #4e6549;
+  --color-sage-deep: #3f4d3b;
+  --color-sage-soft: #eef2ec;
+  --color-sage-wash: #f1f4ef;
+
+  /* ── 语义 ───────────────────────────────────────────── */
+  --color-success: #2f6f4f;
+  --color-success-soft: #edf5ea;
+  --color-success-border: #cfdfc9;
+  --color-warning: #a85a00;
+  --color-warning-soft: #faf6ec;
+  --color-warning-border: #d8cdb2;
+  --color-danger: #b34127;
+  --color-danger-soft: #fbf1ee;
+  --color-danger-border: #e6b7ab;
+  --color-selection: #5078d5;
+
+  /* ── 场景（维度预览 / 自由画板）───────────────────────── */
+  --color-preview-bg: #efeee8;
+  --color-preview-grid: #5f685e;
+  --color-preview-grid-soft: #646d63;
+  --color-axis: #90978f;
+  --color-board-canvas: #d8d7d1;
+  --color-board-dot: #4d524c;
+  --color-canvas-item: #e2e2dc;
+  --color-guide: #db3f92;
+
+  /* ── 字体族 ─────────────────────────────────────────── */
+  --font-sans: "PingFang SC", "Microsoft YaHei", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-display: Georgia, "Songti SC", "Noto Serif SC", serif;
+  --font-mono: "SFMono-Regular", ui-monospace, Menlo, Consolas, monospace;
+
+  /* ── 字号（覆盖 Tailwind 默认档位）──────────────────── */
+  --text-2xs: 10px;
+  --text-2xs--line-height: 14px;
+  --text-xs: 11px;
+  --text-xs--line-height: 16px;
+  --text-sm: 12px;
+  --text-sm--line-height: 18px;
+  --text-base: 13px;
+  --text-base--line-height: 20px;
+  --text-md: 14px;
+  --text-md--line-height: 22px;
+  --text-lg: 16px;
+  --text-lg--line-height: 24px;
+  --text-xl: 20px;
+  --text-xl--line-height: 28px;
+  --text-2xl: 24px;
+  --text-2xl--line-height: 32px;
+  --text-3xl: 26px;
+  --text-3xl--line-height: 34px;
+  --text-display: clamp(28px, 3vw, 42px);
+  --text-display--line-height: 1.1;
+  --text-hero: clamp(34px, 5vw, 62px);
+  --text-hero--line-height: 1.05;
+
+  /* ── 字重 ───────────────────────────────────────────── */
+  --font-weight-normal: 400;
+  --font-weight-medium: 500;
+  --font-weight-semibold: 600;
+  --font-weight-bold: 700;
+
+  /* ── 间距（4px 基准）────────────────────────────────── */
+  --spacing: 4px;
+
+  /* ── 圆角 ───────────────────────────────────────────── */
+  --radius-xs: 3px;
+  --radius-sm: 5px;
+  --radius-md: 6px;
+  --radius-lg: 8px;
+  --radius-xl: 12px;
+  --radius-full: 999px;
+
+  /* ── 阴影 ───────────────────────────────────────────── */
+  --shadow-sm: 0 1px 3px rgb(20 24 20 / 0.2);
+  --shadow-md: 0 6px 18px rgb(35 40 35 / 0.12);
+  --shadow-lg: 0 12px 30px rgb(18 22 18 / 0.3);
+  --shadow-xl: 0 24px 70px rgb(15 17 15 / 0.22);
+  --shadow-panel: 0 16px 44px rgb(24 27 24 / 0.16);
+
+  /* ── 动效 ───────────────────────────────────────────── */
+  --ease-out-soft: cubic-bezier(0.22, 0.61, 0.36, 1);
+  --duration-fast: 150ms;
+  --duration-base: 180ms;
+  --duration-slow: 220ms;
+  --duration-slower: 300ms;
+
+  /* ── 断点（沿用现有 max-width 语义，用 max-md: 等变体）─ */
+  --breakpoint-sm: 620px;
+  --breakpoint-md: 850px;
+  --breakpoint-lg: 1050px;
+  --breakpoint-xl: 1180px;
+}
+
+/* ── 层级：Tailwind 没有 z-index 主题命名空间，用变量 + 自定义 utility ── */
+:root {
+  --z-sticky: 20;
+  --z-sidebar: 30;
+  --z-focus: 50;
+  --z-drawer: 60;
+  --z-popover: 65;
+  --z-overlay: 70;
+  --z-modal: 80;
+  --z-modal-nested: 90;
+  --z-toast: 100;
+  --z-toast-urgent: 180;
+}
+
+@utility z-sticky { z-index: var(--z-sticky); }
+@utility z-sidebar { z-index: var(--z-sidebar); }
+@utility z-focus { z-index: var(--z-focus); }
+@utility z-drawer { z-index: var(--z-drawer); }
+@utility z-popover { z-index: var(--z-popover); }
+@utility z-overlay { z-index: var(--z-overlay); }
+@utility z-modal { z-index: var(--z-modal); }
+@utility z-modal-nested { z-index: var(--z-modal-nested); }
+@utility z-toast { z-index: var(--z-toast); }
+@utility z-toast-urgent { z-index: var(--z-toast-urgent); }
+
+/*
+ * 兼容别名：旧 CSS 与现有页面仍在使用这些变量。
+ * 取值必须与 :root 原定义一致；B9 删除 legacy.css 后，这些别名会随后续迁移逐步移除。
+ */
+:root {
+  --ink: var(--color-ink);
+  --muted: var(--color-muted);
+  --line: var(--color-line);
+  --soft-line: var(--color-line-soft);
+  --paper: var(--color-paper);
+  --surface: var(--color-surface);
+  --white: var(--color-white);
+  --accent: var(--color-accent);
+  --accent-dark: var(--color-accent-strong);
+  --sage: var(--color-sage);
+}

@@ -1,9 +1,10 @@
 "use client";
 
-import { AlertTriangle, ClipboardPaste, ImagePlus, LoaderCircle, RotateCcw, Upload, X } from "lucide-react";
+import { AlertTriangle, ClipboardPaste, ImagePlus, LoaderCircle, RotateCcw, Upload } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { notifyUnauthorized } from "./api";
 import { isVideoMime } from "./assetMedia";
+import { Button, InlineMessage, Modal, Spinner } from "./ui";
 
 const ALLOWED_IMAGE_TYPES = new Set([
   "image/jpeg",
@@ -159,7 +160,7 @@ export function AssetImageReplacement({
   }
 
   return (
-    <div className="asset-image-replacement">
+    <div className="flex flex-col gap-2">
       <input
         ref={inputRef}
         className="visually-hidden"
@@ -167,37 +168,73 @@ export function AssetImageReplacement({
         accept={acceptTypes}
         onChange={(event) => { const file = event.target.files?.[0]; if (file) void prepareFile(file); }}
       />
-      <button className="replace-image-button" type="button" disabled={busy || preparing} onClick={() => inputRef.current?.click()}>
-        {preparing ? <LoaderCircle className="spin" size={14} /> : <ImagePlus size={14} />}
-        {preparing ? "正在读取…" : "替换素材"}
-      </button>
-      <span className="replace-image-hint"><ClipboardPaste size={12} />{assetIsVideo ? "视频请用文件选择替换" : "也可直接粘贴图片"}</span>
-      {error && !candidate ? <div className="form-error"><AlertTriangle size={15} />{error}</div> : null}
+      <div className="flex flex-wrap items-center gap-2">
+        <Button size="sm" disabled={busy || preparing} loading={preparing} icon={<ImagePlus size={14} aria-hidden />} onClick={() => inputRef.current?.click()}>
+          {preparing ? "正在读取…" : "替换素材"}
+        </Button>
+        <span className="flex items-center gap-1 text-xs text-muted">
+          <ClipboardPaste size={12} aria-hidden />
+          {assetIsVideo ? "视频请用文件选择替换" : "也可直接粘贴图片"}
+        </span>
+      </div>
+      {error && !candidate ? <InlineMessage tone="error">{error}</InlineMessage> : null}
 
-      {candidate ? (
-        <div className="modal-backdrop replacement-backdrop" role="presentation">
-          <section className="modal-card replacement-modal" role="dialog" aria-modal="true" aria-labelledby="replacement-title">
-            <div className="modal-heading">
-              <div><p className="eyebrow">REPLACE ASSET</p><h2 id="replacement-title">确认替换素材</h2><p>只替换文件；素材信息、项目引用、维度值和画板内容不会改变。</p></div>
-              <button className="icon-button" type="button" onClick={clearCandidate} aria-label="取消替换"><X size={18} /></button>
+      <Modal
+        open={Boolean(candidate)}
+        onClose={clearCandidate}
+        eyebrow="REPLACE ASSET"
+        title="确认替换素材"
+        description="只替换文件；素材信息、项目引用、维度值和画板内容不会改变。"
+        size="lg"
+        footer={
+          <>
+            <Button disabled={busy} onClick={clearCandidate}>
+              取消
+            </Button>
+            <Button variant="primary" loading={busy} icon={<Upload size={15} aria-hidden />} onClick={() => void confirmReplacement()}>
+              {busy ? "替换中…" : "确认替换"}
+            </Button>
+          </>
+        }
+      >
+        {candidate ? (
+          <>
+            <div className="grid grid-cols-2 gap-3 max-sm:grid-cols-1">
+              <figure className="m-0 flex flex-col gap-1.5 rounded-md border border-line bg-surface-muted p-2">
+                <figcaption className="text-xs text-muted">当前素材</figcaption>
+                {asset.thumbnailUrl ? (
+                  <img src={asset.thumbnailUrl} alt={asset.name} className="h-[220px] w-full rounded-sm object-contain" />
+                ) : (
+                  <span className="grid h-[220px] place-items-center text-sm text-muted">无预览</span>
+                )}
+              </figure>
+              <figure className="m-0 flex flex-col gap-1.5 rounded-md border border-line bg-surface-muted p-2">
+                <figcaption className="text-xs text-muted">替换后</figcaption>
+                {candidate.isVideo ? (
+                  <video src={candidate.previewUrl} controls muted playsInline className="h-[220px] w-full rounded-sm object-contain" />
+                ) : previewFailed ? (
+                  <span className="grid h-[220px] place-items-center text-sm text-muted">该格式无法预览</span>
+                ) : (
+                  <img src={candidate.previewUrl} alt="待替换素材预览" onError={() => setPreviewFailed(true)} className="h-[220px] w-full rounded-sm object-contain" />
+                )}
+              </figure>
             </div>
-            <div className="replacement-compare">
-              <figure><figcaption>当前素材</figcaption>{asset.thumbnailUrl ? <img src={asset.thumbnailUrl} alt={asset.name} /> : <span>无预览</span>}</figure>
-              <figure><figcaption>替换后</figcaption>{candidate.isVideo ? <video src={candidate.previewUrl} controls muted playsInline /> : previewFailed ? <span>该格式无法预览</span> : <img src={candidate.previewUrl} alt="待替换素材预览" onError={() => setPreviewFailed(true)} />}</figure>
+
+            <div className="flex flex-wrap items-baseline justify-between gap-2 border-t border-line-soft pt-3 text-sm">
+              <strong className="min-w-0 truncate text-ink">{candidate.file.name}</strong>
+              <span className="text-xs text-muted">
+                {candidate.isVideo ? "视频" : `${candidate.width} × ${candidate.height}`} · {(candidate.file.size / 1024 / 1024).toFixed(2)} MB
+              </span>
             </div>
-            <div className="replacement-file-facts">
-              <strong>{candidate.file.name}</strong>
-              <span>{candidate.isVideo ? "视频" : `${candidate.width} × ${candidate.height}`} · {(candidate.file.size / 1024 / 1024).toFixed(2)} MB</span>
-            </div>
-            {error ? <div className="form-error"><AlertTriangle size={15} />{error}</div> : null}
-            <p className="replacement-undo-hint"><RotateCcw size={13} />确认前可按 {navigator.platform.includes("Mac") ? "Command" : "Ctrl"} + Z 撤回</p>
-            <div className="modal-actions">
-              <button className="secondary-button" type="button" disabled={busy} onClick={clearCandidate}>取消</button>
-              <button className="primary-button" type="button" disabled={busy} onClick={() => void confirmReplacement()}><Upload size={15} />{busy ? "替换中…" : "确认替换"}</button>
-            </div>
-          </section>
-        </div>
-      ) : null}
+
+            {error ? <InlineMessage tone="error">{error}</InlineMessage> : null}
+            <p className="m-0 flex items-center gap-1.5 text-xs text-muted">
+              <RotateCcw size={13} aria-hidden />
+              确认前可按 {navigator.platform.includes("Mac") ? "Command" : "Ctrl"} + Z 撤回
+            </p>
+          </>
+        ) : null}
+      </Modal>
     </div>
   );
 }

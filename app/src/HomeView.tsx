@@ -1,6 +1,8 @@
 "use client";
 
-import { Archive, Grid2X2, LoaderCircle, Pencil, Plus, Trash2 } from "lucide-react";
+import { Archive, Grid2X2, Plus } from "lucide-react";
+import { Button, EmptyState, Spinner } from "./ui";
+import { ProjectCard } from "./components/home/ProjectCard";
 
 export type HomeProject = {
   id: string;
@@ -29,60 +31,53 @@ export function HomeView({
   onDelete: (project: HomeProject) => void;
 }) {
   if (loading) {
-    return <div className="loading-state"><LoaderCircle className="spin" size={22} /> 正在载入项目…</div>;
+    return (
+      <div className="flex min-h-[65vh] items-center justify-center gap-2 text-md text-muted">
+        <Spinner size={22} />
+        正在载入项目…
+      </div>
+    );
   }
 
   return (
-    <div className="home-view">
-      <div className="home-heading">
+    <div className="px-[42px] pb-[42px] pt-[34px] max-md:px-6 max-md:pb-[34px] max-md:pt-[30px]">
+      <div className="mb-[26px] flex items-end justify-between gap-6 max-sm:flex-col max-sm:items-start">
         <div>
-          <p className="eyebrow">PROJECTS</p>
-          <h2>项目</h2>
-          <p>选择一个项目进入，或新建一个独立空间开始整理素材。</p>
+          <p className="mb-1 text-2xs font-bold uppercase tracking-[.15em] text-accent">PROJECTS</p>
+          <h2 className="m-0 font-display text-2xl font-medium text-ink">项目</h2>
+          <p className="mt-2 text-sm text-muted">选择一个项目进入，或新建一个独立空间开始整理素材。</p>
         </div>
-        <button className="primary-button" type="button" onClick={onNewProject}><Plus size={16} />新建项目</button>
+        <Button variant="primary" icon={<Plus size={16} aria-hidden />} onClick={onNewProject}>
+          新建项目
+        </Button>
       </div>
 
       {!projects.length ? (
         search.trim() ? (
-          <div className="empty-state"><Grid2X2 size={25} /><h3>没有匹配的项目</h3><p>换一个关键词试试。</p></div>
+          <EmptyState icon={<Grid2X2 size={25} aria-hidden />} title="没有匹配的项目" description="换一个关键词试试。" className="mx-0" />
         ) : (
-          <div className="empty-state project-empty"><Archive size={28} /><h2>建立第一个项目</h2><p>项目用于保存独立的素材集合与分类维度。</p><button className="primary-button" type="button" onClick={onNewProject}><Plus size={16} /> 新建项目</button></div>
+          <EmptyState
+            icon={<Archive size={28} aria-hidden />}
+            title="建立第一个项目"
+            description="项目用于保存独立的素材集合与分类维度。"
+            className="mx-[18px] max-md:mx-0"
+            action={
+              <Button variant="primary" icon={<Plus size={16} aria-hidden />} onClick={onNewProject}>
+                新建项目
+              </Button>
+            }
+          />
         )
       ) : (
-        <div className="project-grid">
+        <div className="grid grid-cols-[repeat(auto-fill,minmax(248px,1fr))] gap-5">
           {projects.map((project) => (
-            <div
-              className="project-card"
+            <ProjectCard
               key={project.id}
-              role="button"
-              tabIndex={0}
-              aria-label={`进入项目 ${project.name}`}
-              onClick={() => onEnter(project)}
-              onKeyDown={(event) => {
-                if (event.key === "Enter" || event.key === " ") {
-                  event.preventDefault();
-                  onEnter(project);
-                }
-              }}
-            >
-              <div className="project-card-cover">
-                {project.thumbnails?.length ? (
-                  <div className={`project-cover-collage cells-${Math.min(project.thumbnails.length, 4)}`}>
-                    {project.thumbnails.slice(0, 4).map((url) => <img key={url} src={url} alt="" loading="lazy" />)}
-                  </div>
-                ) : <span className="project-cover-empty"><Archive size={30} /></span>}
-                <div className="project-card-actions">
-                  <button type="button" onClick={(event) => { event.stopPropagation(); onRename(project); }}><Pencil size={13} />重命名</button>
-                  <button type="button" onClick={(event) => { event.stopPropagation(); onDelete(project); }}><Trash2 size={13} />删除</button>
-                </div>
-              </div>
-              <div className="project-card-body">
-                <strong>{project.name}</strong>
-                {project.description ? <p>{project.description}</p> : null}
-                <span className="project-card-meta">{project.assetCount} 个素材 · {project.dimensionCount} 个维度</span>
-              </div>
-            </div>
+              project={project}
+              onEnter={() => onEnter(project)}
+              onRename={() => onRename(project)}
+              onDelete={() => onDelete(project)}
+            />
           ))}
         </div>
       )}

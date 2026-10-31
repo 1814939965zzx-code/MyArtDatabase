@@ -1,9 +1,19 @@
 "use client";
 
-import { LoaderCircle, ShieldCheck, UserPlus, Users, X } from "lucide-react";
+import { ShieldCheck, UserPlus, Users } from "lucide-react";
 import { FormEvent, useCallback, useEffect, useState } from "react";
 import { apiFetch } from "./api";
-import { PasswordInput } from "./PasswordInput";
+import {
+  Button,
+  EmptyState,
+  Field,
+  InlineMessage,
+  Input,
+  Modal,
+  PasswordInput,
+  Tabs,
+  cn,
+} from "./ui";
 
 export type ManagedUser = {
   id: string;
@@ -142,81 +152,152 @@ export function UserManagerModal({ meId, onClose, onChanged }: { meId: string; o
   }
 
   return (
-    <div className="modal-backdrop">
-      <section className="modal-card user-manager-card" role="dialog" aria-modal="true" aria-labelledby="user-manager-title">
-        <div className="modal-heading">
-          <div>
-            <p className="eyebrow">ACCOUNT ADMIN</p>
-            <h2 id="user-manager-title">成员管理</h2>
-            <p>创建、停用或删除成员；停用会立即踢下线，删除后素材保留。</p>
-          </div>
-          <button className="icon-button" type="button" onClick={onClose} aria-label="关闭"><X size={18} /></button>
-        </div>
-        <div className="user-manager-tabs" role="tablist">
-          <button type="button" role="tab" aria-selected={tab === "users"} className={tab === "users" ? "active" : ""} onClick={() => setTab("users")}><Users size={14} />成员列表</button>
-          <button type="button" role="tab" aria-selected={tab === "logs"} className={tab === "logs" ? "active" : ""} onClick={() => setTab("logs")}><ShieldCheck size={14} />登录记录</button>
-        </div>
-        {message ? <div className={`user-manager-message ${message.kind === "error" ? "error" : ""}`}>{message.text}</div> : null}
+    <Modal
+      open
+      onClose={onClose}
+      eyebrow="ACCOUNT ADMIN"
+      title="成员管理"
+      description="创建、停用或删除成员；停用会立即踢下线，删除后素材保留。"
+      size="md"
+      className="flex max-h-[calc(100dvh-40px)] max-w-[680px] flex-col"
+      bodyClassName="min-h-0 gap-3 overflow-y-auto"
+    >
+      <Tabs
+        value={tab}
+        onChange={setTab}
+        ariaLabel="成员管理视图"
+        items={[
+          { value: "users", label: "成员列表", icon: <Users size={14} aria-hidden /> },
+          { value: "logs", label: "登录记录", icon: <ShieldCheck size={14} aria-hidden /> },
+        ]}
+      />
 
-        {tab === "users" ? (
-          <div className="user-manager-body">
-            <div className="user-manager-list" role="list">
-              {users.map((user) => (
-                <div className="user-manager-row" role="listitem" key={user.id}>
-                  <div className="user-manager-main">
-                    <strong>{user.displayName || user.username}</strong>
-                    <span>{user.username} · {user.role === "admin" ? "管理员" : "成员"}{user.active ? "" : " · 已停用"}</span>
-                    <small>{user.assetCount} 个素材{user.lastLoginAt ? ` · 最近登录 ${new Date(user.lastLoginAt).toLocaleString("zh-CN")}` : " · 从未登录"}</small>
-                  </div>
-                  <div className="user-manager-actions">
-                    <button type="button" disabled={busy || user.id === meId} onClick={() => void patchUser(user.id, { active: !user.active })} title={user.id === meId ? "不能停用自己的账号" : user.active ? "停用" : "启用"}>
-                      {user.active ? "停用" : "启用"}
-                    </button>
-                    <button type="button" disabled={busy} onClick={() => void patchUser(user.id, { role: user.role === "admin" ? "member" : "admin" })} title="切换角色">
-                      {user.role === "admin" ? "降为成员" : "设为管理员"}
-                    </button>
-                    <button className="danger" type="button" disabled={busy} onClick={() => void resetPassword(user)} title="重置密码">重置密码</button>
-                    <button className="danger" type="button" disabled={busy || user.id === meId} onClick={() => void removeUser(user)} title={user.id === meId ? "不能删除自己的账号" : "删除成员"}>删除</button>
-                  </div>
+      {message ? <InlineMessage tone={message.kind === "error" ? "error" : "success"}>{message.text}</InlineMessage> : null}
+
+      {tab === "users" ? (
+        <div className="flex flex-col gap-3">
+          <div role="list" className="flex flex-col">
+            {users.map((user) => (
+              <div
+                className="flex min-h-[54px] items-center justify-between gap-3 border-b border-line-soft px-2.5 py-2"
+                role="listitem"
+                key={user.id}
+              >
+                <div className="flex min-w-0 flex-col gap-0.5">
+                  <strong className="truncate text-base font-semibold text-ink">{user.displayName || user.username}</strong>
+                  <span className="truncate text-sm text-muted">
+                    {user.username} · {user.role === "admin" ? "管理员" : "成员"}
+                    {user.active ? "" : " · 已停用"}
+                  </span>
+                  <small className="truncate text-xs text-faint">
+                    {user.assetCount} 个素材{user.lastLoginAt ? ` · 最近登录 ${new Date(user.lastLoginAt).toLocaleString("zh-CN")}` : " · 从未登录"}
+                  </small>
                 </div>
-              ))}
-            </div>
-            {creating ? (
-              <form className="user-create-form" onSubmit={(event) => void createUser(event)}>
-                <div className="user-create-fields">
-                  <label>用户名<input name="username" required maxLength={50} placeholder="字母、数字、点、下划线、连字符" /></label>
-                  <label>显示名<input name="displayName" maxLength={50} placeholder="可选" /></label>
-                  <label>密码<PasswordInput name="password" required minLength={8} placeholder="至少 8 位" /></label>
-                  <label className="user-role-select">角色
-                    <select name="role" defaultValue="member">
-                      <option value="member">成员</option>
-                      <option value="admin">管理员</option>
-                    </select>
-                  </label>
+                <div className="flex flex-none items-center gap-1">
+                  <Button
+                    size="xs"
+                    disabled={busy || user.id === meId}
+                    onClick={() => void patchUser(user.id, { active: !user.active })}
+                    title={user.id === meId ? "不能停用自己的账号" : user.active ? "停用" : "启用"}
+                  >
+                    {user.active ? "停用" : "启用"}
+                  </Button>
+                  <Button
+                    size="xs"
+                    disabled={busy}
+                    onClick={() => void patchUser(user.id, { role: user.role === "admin" ? "member" : "admin" })}
+                    title="切换角色"
+                  >
+                    {user.role === "admin" ? "降为成员" : "设为管理员"}
+                  </Button>
+                  <Button
+                    size="xs"
+                    variant="ghost"
+                    className="text-danger"
+                    disabled={busy}
+                    onClick={() => void resetPassword(user)}
+                    title="重置密码"
+                  >
+                    重置密码
+                  </Button>
+                  <Button
+                    size="xs"
+                    variant="ghost"
+                    className="text-danger"
+                    disabled={busy || user.id === meId}
+                    onClick={() => void removeUser(user)}
+                    title={user.id === meId ? "不能删除自己的账号" : "删除成员"}
+                  >
+                    删除
+                  </Button>
                 </div>
-                <div className="user-create-actions">
-                  <button className="secondary-button" type="button" onClick={() => setCreating(false)}>取消</button>
-                  <button className="primary-button" type="submit" disabled={busy}>{busy ? "创建中…" : "创建成员"}</button>
-                </div>
-              </form>
-            ) : (
-              <button className="user-create-button" type="button" onClick={() => setCreating(true)}><UserPlus size={14} />新建成员</button>
-            )}
+              </div>
+            ))}
+            {!users.length ? <EmptyState compact title="还没有成员" /> : null}
           </div>
-        ) : (
-          <div className="user-manager-body">
-            <div className="login-log-list" role="list">
-              {logs.length ? logs.map((log) => (
-                <div className={`login-log-row ${log.success ? "ok" : "fail"}`} role="listitem" key={log.id}>
-                  <strong>{log.username || "（未知用户）"}</strong>
-                  <span>{log.success ? "成功" : "失败"} · {log.message}</span>
-                  <small>{new Date(log.createdAt).toLocaleString("zh-CN")} · IP {log.ip || "未知"}</small>
-                </div>
-              )) : <div className="user-manager-empty">还没有登录记录</div>}
-            </div>
-          </div>
-        )}
-      </section>
-    </div>
+
+          {creating ? (
+            <form
+              className="flex flex-col gap-2.5 rounded-md border border-warning-border bg-warning-soft p-3"
+              onSubmit={(event) => void createUser(event)}
+            >
+              <div className="grid gap-2.5 sm:grid-cols-2">
+                <Field label="用户名" htmlFor="um-username">
+                  <Input id="um-username" name="username" required maxLength={50} placeholder="字母、数字、点、下划线、连字符" />
+                </Field>
+                <Field label="显示名" htmlFor="um-display-name">
+                  <Input id="um-display-name" name="displayName" maxLength={50} placeholder="可选" />
+                </Field>
+                <Field label="密码" htmlFor="um-password">
+                  <PasswordInput id="um-password" name="password" required minLength={8} placeholder="至少 8 位" />
+                </Field>
+                <Field label="角色" htmlFor="um-role">
+                  <select
+                    id="um-role"
+                    name="role"
+                    defaultValue="member"
+                    className="h-9.5 w-full rounded-sm border border-line-strong bg-white px-2.5 text-sm text-ink focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+                  >
+                    <option value="member">成员</option>
+                    <option value="admin">管理员</option>
+                  </select>
+                </Field>
+              </div>
+              <div className="flex justify-end gap-2">
+                <Button type="button" onClick={() => setCreating(false)}>取消</Button>
+                <Button type="submit" variant="primary" loading={busy}>{busy ? "创建中…" : "创建成员"}</Button>
+              </div>
+            </form>
+          ) : (
+            <Button variant="secondary" className="self-start" icon={<UserPlus size={14} aria-hidden />} onClick={() => setCreating(true)}>
+              新建成员
+            </Button>
+          )}
+        </div>
+      ) : (
+        <div role="list" className="flex flex-col">
+          {logs.length ? (
+            logs.map((log) => (
+              <div
+                className={cn(
+                  "flex min-h-[46px] items-center gap-2.5 border-b border-l-2 border-line-soft border-l-transparent px-2.5 py-2",
+                  !log.success && "border-l-danger",
+                )}
+                role="listitem"
+                key={log.id}
+              >
+                <strong className="truncate text-sm text-ink">{log.username || "（未知用户）"}</strong>
+                <span className="truncate text-sm text-muted">{log.success ? "成功" : "失败"} · {log.message}</span>
+                <small className="ml-auto flex-none text-xs text-faint">
+                  {new Date(log.createdAt).toLocaleString("zh-CN")} · IP {log.ip || "未知"}
+                </small>
+              </div>
+            ))
+          ) : (
+            <EmptyState compact title="还没有登录记录" />
+          )}
+        </div>
+      )}
+    </Modal>
   );
 }

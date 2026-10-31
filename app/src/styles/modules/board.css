@@ -1,0 +1,308 @@
+/*
+ * 自由画板：外壳、视口、Frame、画布元素与缩放手柄。
+ * 坐标、吸附、命中与事件逻辑在 BoardView.tsx；这里只保留场景样式。
+ */
+
+@layer components {
+  .board-shell {
+    margin: 22px 42px 0;
+    min-height: 650px;
+    border: 1px solid var(--color-line);
+    background: var(--color-surface);
+  }
+
+  .board-shell.focus-mode {
+    margin: 0;
+    position: fixed;
+    inset: 0;
+    z-index: var(--z-focus);
+    border: 0;
+    background: var(--color-surface);
+  }
+
+  .board-body {
+    height: 610px;
+    display: grid;
+    grid-template-columns: 180px minmax(0, 1fr);
+    position: relative;
+    overflow: hidden;
+  }
+
+  .board-viewport {
+    min-width: 0;
+    min-height: 0;
+    overflow: hidden;
+    position: relative;
+    background-color: var(--color-board-canvas);
+    background-image: radial-gradient(circle, color-mix(in srgb, var(--color-board-dot) 17%, transparent) 1px, transparent 1px);
+    background-size: 18px 18px;
+    cursor: default;
+    touch-action: none;
+    user-select: none;
+    -webkit-user-select: none;
+  }
+
+  .board-viewport.frame-mode { cursor: crosshair; }
+  .board-viewport.space-held { cursor: grab; }
+  .board-viewport.panning { cursor: grabbing; }
+
+  .board-page {
+    width: 1px;
+    height: 1px;
+    position: absolute;
+    left: 0;
+    top: 0;
+    transform-origin: top left;
+    touch-action: none;
+  }
+
+  .board-frame-draft {
+    position: absolute;
+    z-index: 10006;
+    border: 1px dashed var(--color-accent);
+    background: color-mix(in srgb, var(--color-accent) 8%, transparent);
+    pointer-events: none;
+  }
+
+  .board-selection-marquee {
+    position: absolute;
+    z-index: 10008;
+    border: 1px solid var(--color-selection);
+    background: color-mix(in srgb, var(--color-selection) 12%, transparent);
+    pointer-events: none;
+  }
+
+  .board-snap-guide {
+    position: absolute;
+    z-index: 10005;
+    display: block;
+    background: var(--color-guide);
+    pointer-events: none;
+  }
+
+  .board-snap-guide.vertical {
+    width: 1px;
+    height: 200000px;
+    top: -100000px;
+  }
+
+  .board-snap-guide.horizontal {
+    width: 200000px;
+    height: 1px;
+    left: -100000px;
+  }
+
+  .board-frame {
+    position: absolute;
+    background: var(--color-surface);
+    border: 1px solid var(--color-line-strong);
+    touch-action: none;
+  }
+
+  .board-frame.selected {
+    border-color: var(--color-selection);
+    box-shadow: 0 0 0 1px var(--color-selection);
+  }
+
+  .board-grid {
+    position: absolute;
+    inset: 0;
+    border: 1px solid color-mix(in srgb, var(--color-ink-soft) 8%, transparent);
+    pointer-events: none;
+  }
+
+  .board-frame-title {
+    height: 25px;
+    position: absolute;
+    left: -1px;
+    bottom: calc(100% + 5px);
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    color: var(--color-ink-soft);
+    white-space: nowrap;
+    transform-origin: left bottom;
+    cursor: grab;
+  }
+
+  .board-frame-title:active { cursor: grabbing; }
+
+  .board-frame-title button {
+    max-width: 260px;
+    height: 25px;
+    padding: 0 5px;
+    overflow: hidden;
+    border: 0;
+    background: color-mix(in srgb, var(--color-paper) 94%, transparent);
+    color: inherit;
+    font: inherit;
+    font-size: 12px;
+    font-weight: 600;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    cursor: text;
+  }
+
+  .board-frame-title input {
+    width: 150px;
+    height: 25px;
+    padding: 0 5px;
+    border: 1px solid var(--color-accent);
+    outline: 0;
+    background: var(--color-white);
+    color: var(--color-ink);
+    font: inherit;
+    font-size: 12px;
+  }
+
+  .board-frame-title span {
+    font-size: 10px;
+    color: var(--color-muted);
+  }
+
+  .frame-selection-handle {
+    padding: 0;
+    position: absolute;
+    z-index: 10001;
+    border: 1px solid var(--color-selection);
+    border-radius: 1px;
+    background: var(--color-white);
+    box-shadow: var(--shadow-sm);
+    transform: translate(-50%, -50%);
+    touch-action: none;
+  }
+
+  .frame-handle-nw { left: 0; top: 0; cursor: nwse-resize; }
+  .frame-handle-n { left: 50%; top: 0; cursor: ns-resize; }
+  .frame-handle-ne { left: 100%; top: 0; cursor: nesw-resize; }
+  .frame-handle-e { left: 100%; top: 50%; cursor: ew-resize; }
+  .frame-handle-se { left: 100%; top: 100%; cursor: nwse-resize; }
+  .frame-handle-s { left: 50%; top: 100%; cursor: ns-resize; }
+  .frame-handle-sw { left: 0; top: 100%; cursor: nesw-resize; }
+  .frame-handle-w { left: 0; top: 50%; cursor: ew-resize; }
+
+  .canvas-item {
+    position: absolute;
+    border: 2px solid transparent;
+    background: var(--color-canvas-item);
+    user-select: none;
+    touch-action: none;
+    cursor: grab;
+  }
+
+  .canvas-item:active { cursor: grabbing; }
+  .canvas-item.selected { border-color: var(--color-accent); }
+
+  .canvas-item img {
+    width: 100%;
+    height: 100%;
+    display: block;
+    object-fit: cover;
+    pointer-events: none;
+  }
+
+  .canvas-item-empty {
+    width: 100%;
+    height: 100%;
+    display: grid;
+    place-items: center;
+    color: var(--color-muted);
+    font-size: 12px;
+  }
+
+  .resize-handle {
+    width: 15px;
+    height: 15px;
+    padding: 0;
+    position: absolute;
+    right: -8px;
+    bottom: -8px;
+    border: 2px solid var(--color-white);
+    border-radius: 50%;
+    background: var(--color-accent);
+    cursor: nwse-resize;
+    touch-action: none;
+  }
+
+  .resize-handle.handle-n { right: auto; left: 50%; top: -8px; bottom: auto; transform: translateX(-50%); cursor: ns-resize; }
+  .resize-handle.handle-s { right: auto; left: 50%; bottom: -8px; transform: translateX(-50%); cursor: ns-resize; }
+  .resize-handle.handle-e { right: -8px; top: 50%; bottom: auto; transform: translateY(-50%); cursor: ew-resize; }
+  .resize-handle.handle-w { left: -8px; top: 50%; right: auto; bottom: auto; transform: translateY(-50%); cursor: ew-resize; }
+  .resize-handle.handle-ne { right: -8px; top: -8px; bottom: auto; cursor: nesw-resize; }
+  .resize-handle.handle-nw { left: -8px; top: -8px; right: auto; bottom: auto; cursor: nwse-resize; }
+  .resize-handle.handle-se { right: -8px; bottom: -8px; cursor: nwse-resize; }
+  .resize-handle.handle-sw { left: -8px; bottom: -8px; right: auto; cursor: nesw-resize; }
+
+  .canvas-item .resize-handle { display: none; }
+
+  .canvas-item:hover .resize-handle,
+  .canvas-item.selected .resize-handle {
+    display: block;
+  }
+
+  .annotation-item {
+    border-color: transparent;
+    background: transparent;
+    box-shadow: none;
+    cursor: grab;
+  }
+
+  .annotation-item:active { cursor: grabbing; }
+  .annotation-item.selected { border-color: var(--color-accent); }
+
+  .annotation-text {
+    min-width: 20px;
+    height: 100%;
+    display: flex;
+    flex-direction: column;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    cursor: grab;
+  }
+
+  .annotation-text > span {
+    width: max-content;
+    max-width: 100%;
+  }
+
+  .annotation-text-editor {
+    min-height: 20px;
+    outline: 1px dashed var(--color-accent);
+    white-space: pre-wrap;
+    word-break: break-word;
+    overflow-wrap: anywhere;
+    user-select: text;
+    -webkit-user-select: text;
+    cursor: text;
+  }
+
+  .annotation-shape {
+    display: block;
+    width: 100%;
+    height: 100%;
+    overflow: visible;
+  }
+
+  .annotation-preview {
+    position: absolute;
+    pointer-events: none;
+  }
+
+  .board-viewport.tool-active .board-page > .canvas-item,
+  .board-viewport.tool-active .board-page > .board-frame {
+    pointer-events: none;
+  }
+
+  @media (max-width: 1180px) {
+    .board-shell {
+      margin-left: 24px;
+      margin-right: 24px;
+    }
+  }
+
+  @media (max-width: 620px) {
+    .board-body {
+      grid-template-columns: 120px minmax(0, 1fr);
+    }
+  }
+}

@@ -1,8 +1,10 @@
 "use client";
 
-import { LoaderCircle, X } from "lucide-react";
 import { useEffect, useState } from "react";
 import { apiFetch } from "./api";
+import { AnnouncementFields } from "./components/account/AnnouncementFields";
+import type { AnnouncementFieldsMessage } from "./components/account/AnnouncementFields";
+import { Button, Modal, Spinner } from "./ui";
 
 const ANNOUNCEMENT_TEXT_MAX = 2000;
 
@@ -11,7 +13,7 @@ export function AnnouncementModal({ onClose }: { onClose: () => void }) {
   const [enabled, setEnabled] = useState(false);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
-  const [message, setMessage] = useState<{ kind: "ok" | "error"; text: string } | null>(null);
+  const [message, setMessage] = useState<AnnouncementFieldsMessage>(null);
 
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect
@@ -41,45 +43,40 @@ export function AnnouncementModal({ onClose }: { onClose: () => void }) {
   }
 
   return (
-    <div className="modal-backdrop">
-      <section className="modal-card" role="dialog" aria-modal="true" aria-labelledby="announcement-title">
-        <div className="modal-heading">
-          <div>
-            <p className="eyebrow">ANNOUNCEMENT</p>
-            <h2 id="announcement-title">登录页公告</h2>
-            <p>公告会展示在登录页，团队成员登录前即可看到。</p>
-          </div>
-          <button className="icon-button" type="button" onClick={onClose} aria-label="关闭"><X size={18} /></button>
+    <Modal
+      open
+      onClose={onClose}
+      eyebrow="ANNOUNCEMENT"
+      title="登录页公告"
+      description="公告会展示在登录页，团队成员登录前即可看到。"
+      footer={
+        loading ? undefined : (
+          <>
+            <Button onClick={onClose} disabled={busy}>
+              取消
+            </Button>
+            <Button variant="primary" onClick={() => void save()} loading={busy}>
+              保存公告
+            </Button>
+          </>
+        )
+      }
+    >
+      {loading ? (
+        <div className="flex min-h-[120px] items-center justify-center gap-2 text-md text-muted">
+          <Spinner size={18} />
+          正在加载公告…
         </div>
-        {message ? <div className={`user-manager-message ${message.kind === "error" ? "error" : ""}`}>{message.text}</div> : null}
-        {loading ? (
-          <div className="loading-state"><LoaderCircle className="spin" size={18} /> 正在加载公告…</div>
-        ) : (
-          <form className="modal-form" onSubmit={(event) => { event.preventDefault(); void save(); }}>
-            <label>公告内容
-              <textarea
-                className="announcement-textarea"
-                value={text}
-                onChange={(event) => setText(event.target.value)}
-                maxLength={ANNOUNCEMENT_TEXT_MAX}
-                rows={6}
-                placeholder="例如：本周五 18:00 素材库停机维护，请提前保存工作。"
-              />
-              <span className="form-hint">{text.length} / {ANNOUNCEMENT_TEXT_MAX}，支持多行</span>
-            </label>
-            <label className="announcement-toggle">
-              <input type="checkbox" checked={enabled} onChange={(event) => setEnabled(event.target.checked)} />
-              启用（在登录页显示公告）
-            </label>
-            <div className="modal-actions">
-              <button className="secondary-button" type="button" onClick={onClose}>取消</button>
-              <button className="primary-button" type="submit" disabled={busy}>
-                {busy ? <LoaderCircle className="spin" size={14} /> : "保存公告"}
-              </button>
-            </div>
-          </form>
-        )}
-      </section>
-    </div>
+      ) : (
+        <AnnouncementFields
+          text={text}
+          onTextChange={setText}
+          enabled={enabled}
+          onEnabledChange={setEnabled}
+          maxLength={ANNOUNCEMENT_TEXT_MAX}
+          message={message}
+        />
+      )}
+    </Modal>
   );
 }

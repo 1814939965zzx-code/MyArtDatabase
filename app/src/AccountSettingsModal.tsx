@@ -1,10 +1,12 @@
 "use client";
 
-import { LoaderCircle, UserRound, X } from "lucide-react";
-import { FormEvent, useState } from "react";
+import { useState } from "react";
+import type { FormEvent } from "react";
 import { apiFetch } from "./api";
 import type { SessionUser } from "./AuthGate";
-import { PasswordInput } from "./PasswordInput";
+import { AccountSettingsFields } from "./components/account/AccountSettingsFields";
+import type { AccountSettingsMessage } from "./components/account/AccountSettingsFields";
+import { Button, Modal } from "./ui";
 
 export function AccountSettingsModal({
   user,
@@ -16,7 +18,7 @@ export function AccountSettingsModal({
   onUserChange: (user: SessionUser) => void;
 }) {
   const [busy, setBusy] = useState(false);
-  const [message, setMessage] = useState<{ kind: "ok" | "error"; text: string } | null>(null);
+  const [message, setMessage] = useState<AccountSettingsMessage>(null);
 
   async function save(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -60,39 +62,26 @@ export function AccountSettingsModal({
   }
 
   return (
-    <div className="modal-backdrop">
-      <section className="modal-card account-settings-card" role="dialog" aria-modal="true" aria-labelledby="account-settings-title">
-        <div className="modal-heading">
-          <div>
-            <p className="eyebrow">ACCOUNT</p>
-            <h2 id="account-settings-title">账号设置</h2>
-            <p>修改显示名或登录密码。</p>
-          </div>
-          <button className="icon-button" type="button" onClick={onClose} aria-label="关闭"><X size={18} /></button>
-        </div>
-        {message ? <div className={`user-manager-message ${message.kind === "error" ? "error" : ""}`}>{message.text}</div> : null}
-        <form className="modal-form" onSubmit={(event) => void save(event)}>
-          <label>用户名
-            <input value={user.username} disabled />
-          </label>
-          <label>显示名
-            <span className="auth-input"><UserRound size={15} /><input name="displayName" maxLength={50} defaultValue={user.displayName} placeholder="显示名（可留空不修改）" /></span>
-          </label>
-          <label>当前密码
-            <PasswordInput name="currentPassword" autoComplete="current-password" placeholder="修改密码时需要" />
-          </label>
-          <label>新密码
-            <PasswordInput name="newPassword" minLength={8} autoComplete="new-password" placeholder="留空表示不修改密码" />
-          </label>
-          <label>确认新密码
-            <PasswordInput name="confirmPassword" minLength={8} autoComplete="new-password" placeholder="再次输入新密码" />
-          </label>
-          <div className="modal-actions">
-            <button className="secondary-button" type="button" onClick={onClose}>取消</button>
-            <button className="primary-button" type="submit" disabled={busy}>{busy ? <LoaderCircle className="spin" size={14} /> : "保存"}</button>
-          </div>
-        </form>
-      </section>
-    </div>
+    <Modal
+      open
+      onClose={onClose}
+      eyebrow="ACCOUNT"
+      title="账号设置"
+      description="修改显示名或登录密码。"
+      footer={
+        <>
+          <Button onClick={onClose} disabled={busy}>
+            取消
+          </Button>
+          <Button type="submit" form="account-settings-form" variant="primary" loading={busy}>
+            保存
+          </Button>
+        </>
+      }
+    >
+      <form id="account-settings-form" className="flex flex-col gap-4" onSubmit={(event) => void save(event)}>
+        <AccountSettingsFields username={user.username} displayName={user.displayName} message={message} />
+      </form>
+    </Modal>
   );
 }

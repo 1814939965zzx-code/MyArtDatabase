@@ -1,10 +1,11 @@
 "use client";
 
-import { LoaderCircle, LogIn, Megaphone, ShieldCheck, Sparkles, UserRound } from "lucide-react";
-import { FormEvent, useEffect, useState } from "react";
+import { useEffect, useState } from "react";
 import { apiFetch, notifyUnauthorized } from "./api";
 import { ArtDatabaseApp } from "./ArtDatabaseApp";
-import { PasswordInput } from "./PasswordInput";
+import { AuthCard, AuthScreen, LoginForm, SetupForm } from "./components/auth/AuthCard";
+import type { LoginPayload, SetupPayload } from "./components/auth/AuthCard";
+import { Spinner } from "./ui";
 
 export type SessionUser = {
   id: string;
@@ -58,13 +59,35 @@ export function AuthGate() {
     setUser(null);
   }
 
+  async function login(payload: LoginPayload) {
+    setMessage(null);
+    try {
+      const data = await apiFetch<{ user: SessionUser }>("/api/auth/login", { method: "POST", body: JSON.stringify(payload) });
+      setUser(data.user);
+    } catch (reason) {
+      setMessage(reason instanceof Error ? reason.message : "登录失败");
+    }
+  }
+
+  async function setup(payload: SetupPayload) {
+    setMessage(null);
+    try {
+      const data = await apiFetch<{ user: SessionUser }>("/api/auth/setup", { method: "POST", body: JSON.stringify(payload) });
+      setUser(data.user);
+    } catch (reason) {
+      setMessage(reason instanceof Error ? reason.message : "初始化失败");
+    }
+  }
+
   if (booting) {
     return (
-      <div className="auth-screen">
-        <div className="auth-card">
-          <div className="brand-mark auth-brand"><Sparkles size={20} /></div>
-          <div className="loading-state"><LoaderCircle className="spin" size={20} /> 正在连接素材库…</div>
-        </div>
+      <div className="flex min-h-dvh items-center justify-center bg-paper p-6">
+        <AuthCard>
+          <div className="flex items-center justify-center gap-2.5 py-2 text-md text-muted">
+            <Spinner size={20} />
+            正在连接素材库…
+          </div>
+        </AuthCard>
       </div>
     );
   }
@@ -73,120 +96,17 @@ export function AuthGate() {
     return <ArtDatabaseApp user={user} onLogout={() => void logout()} />;
   }
 
-  return (
-    <div className="auth-screen">
-      {announcement && announcement.enabled && announcement.text.trim() ? (
-        <div className="auth-announcement" role="note">
-          <strong><Megaphone size={13} />公告</strong>
-          <p>{announcement.text}</p>
-        </div>
-      ) : null}
-      <div className="auth-card">
-        <div className="auth-heading">
-          <div className="brand-mark auth-brand"><Sparkles size={20} /></div>
-          <p className="eyebrow">ART DATABASE</p>
-          <h1>{needsSetup ? "初始化管理员账号" : "登录素材库"}</h1>
-          <p>{needsSetup ? "首次使用需要创建管理员账号，用于管理成员与系统设置。" : "请输入账号密码访问团队素材库。"}</p>
-        </div>
-        {message ? <div className="auth-error" role="alert">{message}</div> : null}
-        {needsSetup ? <SetupForm onDone={setUser} onMessage={setMessage} /> : <LoginForm onDone={setUser} onMessage={setMessage} />}
-      </div>
-    </div>
-  );
-}
-
-function LoginForm({ onDone, onMessage }: { onDone: (user: SessionUser) => void; onMessage: (message: string | null) => void }) {
-  const [busy, setBusy] = useState(false);
-
-  async function submit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    const form = new FormData(event.currentTarget);
-    setBusy(true);
-    onMessage(null);
-    try {
-      const data = await apiFetch<{ user: SessionUser }>("/api/auth/login", {
-        method: "POST",
-        body: JSON.stringify({
-          username: String(form.get("username") || "").trim(),
-          password: String(form.get("password") || ""),
-          remember: form.get("remember") === "on",
-        }),
-      });
-      onDone(data.user);
-    } catch (reason) {
-      onMessage(reason instanceof Error ? reason.message : "登录失败");
-    } finally {
-      setBusy(false);
-    }
-  }
+  const announcementText = announcement?.enabled ? announcement.text.trim() : "";
 
   return (
-    <form className="auth-form" onSubmit={(event) => void submit(event)}>
-      <label>用户名
-        <span className="auth-input"><UserRound size={15} /><input name="username" required autoComplete="username" maxLength={50} placeholder="用户名" /></span>
-      </label>
-      <label>密码
-        <PasswordInput name="password" required autoComplete="current-password" placeholder="密码" />
-      </label>
-      <label className="auth-remember"><input name="remember" type="checkbox" />记住我（30 天内免登录）</label>
-      <button className="primary-button auth-submit" type="submit" disabled={busy}>
-        {busy ? <LoaderCircle className="spin" size={15} /> : <LogIn size={15} />}
-        {busy ? "登录中…" : "登录"}
-      </button>
-    </form>
-  );
-}
-
-function SetupForm({ onDone, onMessage }: { onDone: (user: SessionUser) => void; onMessage: (message: string | null) => void }) {
-  const [busy, setBusy] = useState(false);
-
-  async function submit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    const form = new FormData(event.currentTarget);
-    const password = String(form.get("password") || "");
-    const confirm = String(form.get("confirm") || "");
-    if (password !== confirm) {
-      onMessage("两次输入的密码不一致");
-      return;
-    }
-    setBusy(true);
-    onMessage(null);
-    try {
-      const data = await apiFetch<{ user: SessionUser }>("/api/auth/setup", {
-        method: "POST",
-        body: JSON.stringify({
-          username: String(form.get("username") || "").trim(),
-          displayName: String(form.get("displayName") || "").trim(),
-          password,
-        }),
-      });
-      onDone(data.user);
-    } catch (reason) {
-      onMessage(reason instanceof Error ? reason.message : "初始化失败");
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  return (
-    <form className="auth-form" onSubmit={(event) => void submit(event)}>
-      <label>用户名
-        <span className="auth-input"><UserRound size={15} /><input name="username" required autoComplete="username" maxLength={50} placeholder="登录用户名（字母、数字、点、下划线、连字符）" /></span>
-      </label>
-      <label>显示名
-        <span className="auth-input"><ShieldCheck size={15} /><input name="displayName" maxLength={50} placeholder="如：张三（可留空，默认同用户名）" /></span>
-      </label>
-      <label>密码
-        <PasswordInput name="password" required minLength={8} autoComplete="new-password" placeholder="至少 8 位" />
-      </label>
-      <label>确认密码
-        <PasswordInput name="confirm" required minLength={8} autoComplete="new-password" placeholder="再次输入密码" />
-      </label>
-      <button className="primary-button auth-submit" type="submit" disabled={busy}>
-        {busy ? <LoaderCircle className="spin" size={15} /> : <ShieldCheck size={15} />}
-        {busy ? "创建中…" : "创建管理员并进入"}
-      </button>
-    </form>
+    <AuthScreen
+      announcement={announcementText || null}
+      title={needsSetup ? "初始化管理员账号" : "登录素材库"}
+      description={needsSetup ? "首次使用需要创建管理员账号，用于管理成员与系统设置。" : "请输入账号密码访问团队素材库。"}
+      error={message}
+    >
+      {needsSetup ? <SetupForm onSubmit={setup} onError={setMessage} /> : <LoginForm onSubmit={login} />}
+    </AuthScreen>
   );
 }
 

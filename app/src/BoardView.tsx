@@ -2,10 +2,23 @@
 
 /* eslint-disable react-hooks/exhaustive-deps, react-hooks/set-state-in-effect */
 
-import { AlignCenter, AlignLeft, AlignRight, ArrowDownToLine, ArrowUpToLine, Bold, Check, ChevronDown, Circle, Eye, EyeOff, Frame, ImagePlus, Italic, LoaderCircle, Maximize2, Minimize2, Minus, MousePointer2, MoveHorizontal, MoveVertical, MoveUpRight, Pencil, Plus, Search, Square, Strikethrough, Tag, Trash2, Type, Underline } from "lucide-react";
+import { AlignCenter, AlignLeft, AlignRight, ArrowDownToLine, ArrowUpToLine, Bold, Check, ChevronDown, Circle, Eye, EyeOff, Frame, ImagePlus, Italic, Maximize2, Minimize2, Minus, MousePointer2, MoveHorizontal, MoveVertical, MoveUpRight, Pencil, Plus, Square, Strikethrough, Tag as TagIcon, Trash2, Type, Underline } from "lucide-react";
 import { DragEvent, KeyboardEvent, MouseEvent, PointerEvent, useEffect, useRef, useState, type CSSProperties } from "react";
 import { notifyUnauthorized } from "./api";
 import { useViewportGestures } from "./useViewportGestures";
+import {
+  Badge,
+  Button,
+  ConfirmDialog,
+  EmptyState,
+  IconButton,
+  Input,
+  MenuItem,
+  SearchInput,
+  Spinner,
+  Tag as TagChip,
+  cn,
+} from "./ui";
 
 type Asset = { id: string; name: string; thumbnailUrl: string | null; tags: string[]; width: number; height: number };
 type CanvasSummary = { id: string; projectId: string; name: string; revision: number; itemCount: number };
@@ -114,12 +127,12 @@ async function json<T>(url: string, init?: RequestInit): Promise<T> {
 
 /** 顶部浮层（素材详情、弹窗、确认框）打开时，Esc 优先关闭浮层，不退出专注模式。 */
 function hasOpenOverlay() {
-  return Boolean(document.querySelector(".modal-backdrop, .dimension-editor-backdrop, .asset-drawer, .frame-delete-backdrop"));
+  return Boolean(document.querySelector('.modal-backdrop, .dimension-editor-backdrop, .asset-drawer, .frame-delete-backdrop, [role="dialog"]'));
 }
 
 /** 弹窗/确认框打开时把撤销快捷键让给浮层（素材详情抽屉不阻塞撤销）。 */
 function hasBlockingOverlay() {
-  return Boolean(document.querySelector(".modal-backdrop, .dimension-editor-backdrop, .frame-delete-backdrop"));
+  return Boolean(document.querySelector('.modal-backdrop, .dimension-editor-backdrop, .frame-delete-backdrop, [role="dialog"]'));
 }
 
 function defaultFrame(canvasId: string): PageFrame {
@@ -1524,39 +1537,230 @@ export function BoardView({ projectId, assets, onMessage, onSelectAsset }: { pro
 
   return (
     <section className={`board-shell ${focusMode ? "focus-mode" : ""}`}>
-      <div className="board-toolbar">
-        <div className="board-pages" aria-label="Pages">
-          <span className="board-pages-label">Pages</span>
-          <div className="board-tabs">{canvases.map((entry) => editingPageId === entry.id ? (
-            <input key={entry.id} className="board-page-name-input" value={pageNameDraft} maxLength={50} autoFocus aria-label="修改 Page 名称" onChange={(event) => setPageNameDraft(event.target.value)} onBlur={() => void renameCanvas(entry.id, entry.name, pageNameDraft)} onKeyDown={(event) => handlePageNameKeyDown(event, entry)} />
-          ) : <button type="button" className={entry.id === canvasId ? "active" : ""} key={entry.id} onClick={() => setCanvasId(entry.id)} onDoubleClick={() => startPageRename(entry)} title="双击修改 Page 名称">{entry.name}<span>{entry.itemCount}</span></button>)}<button className="board-add" type="button" onClick={() => void createCanvas()}><Plus size={14} />新建 Page</button></div>
+      <div className="flex min-h-[52px] flex-wrap items-center justify-between gap-2.5 border-b border-line px-[13px] py-[9px]">
+        <div className="flex min-w-0 items-center gap-2.5" aria-label="Pages">
+          <span className="text-2xs font-semibold uppercase tracking-[.08em] text-faint">Pages</span>
+          <div className="flex min-w-0 items-center gap-1 overflow-x-auto">
+            {canvases.map((entry) => editingPageId === entry.id ? (
+              <Input
+                key={entry.id}
+                size="sm"
+                className="h-[30px] w-[120px] border-accent px-2 text-sm"
+                value={pageNameDraft}
+                maxLength={50}
+                autoFocus
+                aria-label="修改 Page 名称"
+                onChange={(event) => setPageNameDraft(event.target.value)}
+                onBlur={() => void renameCanvas(entry.id, entry.name, pageNameDraft)}
+                onKeyDown={(event) => handlePageNameKeyDown(event, entry)}
+              />
+            ) : (
+              <button
+                type="button"
+                className={cn(
+                  "flex h-[30px] items-center gap-1.5 whitespace-nowrap rounded-sm border px-2.5 text-sm transition-colors",
+                  entry.id === canvasId ? "border-line bg-white text-ink" : "border-transparent text-muted hover:text-ink",
+                )}
+                key={entry.id}
+                onClick={() => setCanvasId(entry.id)}
+                onDoubleClick={() => startPageRename(entry)}
+                title="双击修改 Page 名称"
+              >
+                {entry.name}
+                <span className="text-2xs text-muted">{entry.itemCount}</span>
+              </button>
+            ))}
+            <Button variant="ghost" size="xs" className="border border-dashed border-line-strong text-muted" icon={<Plus size={14} aria-hidden />} onClick={() => void createCanvas()}>
+              新建 Page
+            </Button>
+          </div>
         </div>
-        <div className="board-actions">{canvas ? <><span className="sync-state"><Check size={13} />素材布局已同步</span><button type="button" onClick={() => void deleteCanvas()} aria-label="删除 Page"><Trash2 size={15} /></button></> : null}<button className="fullscreen-button" type="button" onClick={() => setFocusMode((active) => !active)} aria-label={focusMode ? "退出专注模式" : "专注显示视图"} title={focusMode ? "退出专注模式" : "专注显示视图"}>{focusMode ? <Minimize2 size={15} /> : <Maximize2 size={15} />}</button></div>
-      </div>
-      <div className="board-toolbar board-annotate-toolbar">
-        <div className="annotate-tools" role="toolbar" aria-label="标记工具">
-          {TOOLS.slice(0, 1).map((entry) => { const Icon = entry.icon; return <button key={entry.id} type="button" title={entry.shortcut ? `${entry.label}（${entry.shortcut}）` : entry.label} className={tool === entry.id ? "active" : ""} onClick={() => { setTool(entry.id); setFrameMode(false); setFrameDraft(null); if (entry.id !== "pointer") setMarkupHidden(false); }}><Icon size={15} /></button>; })}
-          {canvas ? <button type="button" className={frameMode ? "active" : ""} title={frameMode ? "取消创建 Frame" : "新建 Frame：点击后按住左键拖动自定义大小"} aria-label="新建 Frame（按住拖动自定义大小）" onClick={startFrameCreateMode}><Frame size={15} /></button> : null}
-          {TOOLS.slice(1).map((entry) => { const Icon = entry.icon; return <button key={entry.id} type="button" title={entry.shortcut ? `${entry.label}（${entry.shortcut}）` : entry.label} className={tool === entry.id ? "active" : ""} onClick={() => { setTool(entry.id); setFrameMode(false); setFrameDraft(null); if (entry.id !== "pointer") setMarkupHidden(false); }}><Icon size={15} /></button>; })}
+        <div className="flex items-center gap-1">
+          {canvas ? (
+            <>
+              <span className="mr-1 flex items-center gap-1 text-2xs text-sage-deep">
+                <Check size={13} aria-hidden />
+                素材布局已同步
+              </span>
+              <IconButton size="sm" label="删除 Page" onClick={() => void deleteCanvas()}>
+                <Trash2 size={15} aria-hidden />
+              </IconButton>
+            </>
+          ) : null}
+          <IconButton
+            size="sm"
+            label={focusMode ? "退出专注模式" : "专注显示视图"}
+            title={focusMode ? "退出专注模式" : "专注显示视图"}
+            onClick={() => setFocusMode((active) => !active)}
+          >
+            {focusMode ? <Minimize2 size={15} aria-hidden /> : <Maximize2 size={15} aria-hidden />}
+          </IconButton>
         </div>
-        <label className="annotate-color" title="描边颜色"><input type="color" value={strokeColor} onChange={(event) => setStrokeColor(event.target.value)} /></label>
-        <label className="annotate-width" title="描边粗细"><input type="range" min={1} max={12} value={strokeWidth} onChange={(event) => setStrokeWidth(Number(event.target.value))} /></label>
-        <label className="annotate-fontsize" title="字号（选中文本时调整当前文本，否则作为新建文本默认字号）"><Type size={13} /><input type="number" min={8} max={120} value={fontSize} onChange={(event) => handleFontSizeChange(Number(event.target.value))} aria-label="字号" /></label>
-        <button type="button" className={`annotate-hide-toggle ${markupHidden ? "on" : ""}`} onClick={() => setMarkupHidden((hidden) => !hidden)} title={markupHidden ? "显示标记" : "隐藏全部标记"}>
-          {markupHidden ? <EyeOff size={14} /> : <Eye size={14} />}{markupHidden ? "标记已隐藏" : "隐藏标记"}
-        </button>
       </div>
-      {loading ? <div className="loading-state"><LoaderCircle className="spin" size={20} />载入 Page…</div> : canvas ? (
+      <div className="flex min-h-[44px] flex-wrap items-center gap-2.5 border-b border-line px-[13px] py-1.5">
+        <div className="flex items-center gap-0.5 rounded-md border border-line bg-surface-muted p-0.5" role="toolbar" aria-label="标记工具">
+          {TOOLS.slice(0, 1).map((entry) => {
+            const Icon = entry.icon;
+            return (
+              <IconButton
+                key={entry.id}
+                size="sm"
+                label={entry.label}
+                active={tool === entry.id}
+                title={entry.shortcut ? `${entry.label}（${entry.shortcut}）` : entry.label}
+                onClick={() => {
+                  setTool(entry.id);
+                  setFrameMode(false);
+                  setFrameDraft(null);
+                  if (entry.id !== "pointer") setMarkupHidden(false);
+                }}
+              >
+                <Icon size={15} aria-hidden />
+              </IconButton>
+            );
+          })}
+          {canvas ? (
+            <IconButton
+              size="sm"
+              label="新建 Frame（按住拖动自定义大小）"
+              active={frameMode}
+              title={frameMode ? "取消创建 Frame" : "新建 Frame：点击后按住左键拖动自定义大小"}
+              onClick={startFrameCreateMode}
+            >
+              <Frame size={15} aria-hidden />
+            </IconButton>
+          ) : null}
+          {TOOLS.slice(1).map((entry) => {
+            const Icon = entry.icon;
+            return (
+              <IconButton
+                key={entry.id}
+                size="sm"
+                label={entry.label}
+                active={tool === entry.id}
+                title={entry.shortcut ? `${entry.label}（${entry.shortcut}）` : entry.label}
+                onClick={() => {
+                  setTool(entry.id);
+                  setFrameMode(false);
+                  setFrameDraft(null);
+                  if (entry.id !== "pointer") setMarkupHidden(false);
+                }}
+              >
+                <Icon size={15} aria-hidden />
+              </IconButton>
+            );
+          })}
+        </div>
+        <label className="flex items-center gap-1 rounded-md border border-line bg-white p-1" title="描边颜色">
+          <input type="color" className="size-6 cursor-pointer border-0 bg-transparent p-0" value={strokeColor} onChange={(event) => setStrokeColor(event.target.value)} />
+        </label>
+        <label className="flex items-center gap-1 rounded-md border border-line bg-white px-1.5 py-1" title="描边粗细">
+          <input type="range" className="w-20 accent-sage" min={1} max={12} value={strokeWidth} onChange={(event) => setStrokeWidth(Number(event.target.value))} />
+        </label>
+        <label className="flex min-h-[30px] items-center gap-1.5 rounded-md border border-line bg-white px-2 text-muted" title="字号（选中文本时调整当前文本，否则作为新建文本默认字号）">
+          <Type size={13} aria-hidden />
+          <Input
+            size="sm"
+            type="number"
+            className="h-6 w-12 border-0 bg-transparent px-0 text-sm text-ink"
+            min={8}
+            max={120}
+            value={fontSize}
+            onChange={(event) => handleFontSizeChange(Number(event.target.value))}
+            aria-label="字号"
+          />
+        </label>
+        <Button
+          size="sm"
+          variant={markupHidden ? "primary" : "secondary"}
+          className="ml-auto"
+          icon={markupHidden ? <EyeOff size={14} aria-hidden /> : <Eye size={14} aria-hidden />}
+          onClick={() => setMarkupHidden((hidden) => !hidden)}
+          title={markupHidden ? "显示标记" : "隐藏全部标记"}
+        >
+          {markupHidden ? "标记已隐藏" : "隐藏标记"}
+        </Button>
+      </div>
+      {loading ? (
+        <div className="flex min-h-[570px] items-center justify-center gap-2 text-md text-muted">
+          <Spinner size={20} />
+          载入 Page…
+        </div>
+      ) : canvas ? (
         <div className="board-body">
-          <aside className={`asset-tray ${assetTrayOpen ? "open" : ""}`}>
-            <button className="asset-tray-toggle" type="button" onClick={() => setAssetTrayOpen((open) => !open)}><ImagePlus size={15} />项目素材<span>{assets.length}</span></button>
-            {assetTrayOpen ? <div className="asset-tray-inner">
-              <div className="asset-tray-search">
-                <Search size={13} /><input value={searchInput} onChange={(event) => setSearchInput(event.target.value)} placeholder="搜索名称或标签" aria-label="搜索项目素材" />
+          <aside className="overflow-y-auto border-r border-line bg-surface-muted">
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-[42px] w-full justify-start rounded-none border-x-0 border-t-0 border-b border-line px-2.5 text-ink"
+              icon={<ImagePlus size={15} aria-hidden />}
+              onClick={() => setAssetTrayOpen((open) => !open)}
+            >
+              项目素材
+              <Badge tone="neutral">{assets.length}</Badge>
+            </Button>
+            {assetTrayOpen ? (
+              <div className="flex flex-col gap-[7px] p-[7px]">
+                <SearchInput
+                  size="sm"
+                  value={searchInput}
+                  onValueChange={setSearchInput}
+                  placeholder="搜索名称或标签"
+                  aria-label="搜索项目素材"
+                />
+                {projectTags.length ? (
+                  <>
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      className="w-full justify-between"
+                      icon={<TagIcon size={13} aria-hidden />}
+                      onClick={() => setTagsExpanded((open) => !open)}
+                    >
+                      标签
+                      <span className="ml-auto flex items-center gap-1">
+                        <Badge tone="neutral">{projectTags.length}</Badge>
+                        <ChevronDown size={13} aria-hidden />
+                      </span>
+                    </Button>
+                    {tagsExpanded || searchInput.trim() !== "" ? (
+                      <div className="flex flex-wrap gap-1">
+                        {projectTags.filter((tag) => !query || tag.toLowerCase().includes(query)).map((tag) => (
+                          <TagChip
+                            key={tag}
+                            active={tagFilter === tag}
+                            draggable
+                            title={`点击筛选 · 拖到画板批量插入该标签全部素材`}
+                            onClick={() => setTagFilter((current) => current === tag ? "" : tag)}
+                            onDragStart={(event) => handleTagDragStart(event, tag)}
+                          >
+                            #{tag}
+                          </TagChip>
+                        ))}
+                      </div>
+                    ) : null}
+                  </>
+                ) : null}
+                <div className="grid grid-cols-2 gap-1.5">
+                  {filteredAssets.map((asset) => (
+                    <button
+                      key={asset.id}
+                      type="button"
+                      draggable
+                      title={asset.name}
+                      onDragStart={(event) => handleAssetDragStart(event, asset)}
+                      className="aspect-square cursor-grab overflow-hidden rounded-sm border border-line-soft bg-white"
+                    >
+                      {asset.thumbnailUrl ? (
+                        <img src={asset.thumbnailUrl} alt="" draggable={false} className="size-full object-cover" />
+                      ) : (
+                        <span className="block size-full bg-surface-sunken" />
+                      )}
+                    </button>
+                  ))}
+                </div>
               </div>
-              {projectTags.length ? <><button type="button" className={`asset-tray-tags-toggle ${tagsExpanded ? "expanded" : ""}`} onClick={() => setTagsExpanded((open) => !open)}><Tag size={13} />标签<span>{projectTags.length}</span><ChevronDown size={13} /></button>{tagsExpanded || searchInput.trim() !== "" ? <div className="asset-tray-tags">{projectTags.filter((tag) => !query || tag.toLowerCase().includes(query)).map((tag) => <button key={tag} type="button" className={tagFilter === tag ? "active" : ""} draggable title={`点击筛选 · 拖到画板批量插入该标签全部素材`} onClick={() => setTagFilter((current) => current === tag ? "" : tag)} onDragStart={(event) => handleTagDragStart(event, tag)}>#{tag}</button>)}</div> : null}</> : null}
-              <div className="asset-tray-grid">{filteredAssets.map((asset) => <button key={asset.id} type="button" draggable title={asset.name} onDragStart={(event) => handleAssetDragStart(event, asset)}>{asset.thumbnailUrl ? <img src={asset.thumbnailUrl} alt="" draggable={false} /> : <span />}</button>)}</div>
-            </div> : null}
+            ) : null}
           </aside>
           <div ref={viewportRef} className={`board-viewport ${panning ? "panning" : ""} ${spaceHeld ? "space-held" : ""} ${frameMode ? "frame-mode" : ""} ${tool !== "pointer" || frameMode ? "tool-active" : ""}`} onPointerDown={(event) => { if (frameMode) { if (isPanGesture(event)) startPan(event); else beginFrameDraw(event); } else if (isPanGesture(event)) startPan(event); else if (tool !== "pointer") beginDraw(event); else startPan(event); }} onPointerMove={(event) => { movePan(event); moveDraw(event); moveFrameDraw(event); }} onPointerUp={(event) => { endPan(event); endDraw(event); endFrameDraw(event); }} onPointerCancel={(event) => { endPan(event); endDraw(event); endFrameDraw(event); }} onAuxClick={(event) => event.preventDefault()} onMouseDown={(event) => { if (event.button === 1) event.preventDefault(); }} onDragOver={(event) => { const types = Array.from(event.dataTransfer.types); if (types.includes("application/x-artdb-asset") || types.includes("application/x-artdb-tag")) { event.preventDefault(); event.dataTransfer.dropEffect = "copy"; setDragHint({ x: event.clientX, y: event.clientY, text: types.includes("application/x-artdb-tag") ? "松开批量插入同标签素材" : "松开放入画板" }); } }} onDragLeave={() => setDragHint(null)} onDrop={(event) => { setDragHint(null); handleDrop(event); }}>
             <div className="board-page" style={{ transform: `translate(${view.x}px, ${view.y}px) scale(${view.zoom})` }}>
@@ -1579,55 +1783,74 @@ export function BoardView({ projectId, assets, onMessage, onSelectAsset }: { pro
               {frameDraft ? <div className="board-frame-draft" style={{ left: Math.min(frameDraft.start.x, frameDraft.current.x), top: Math.min(frameDraft.start.y, frameDraft.current.y), width: Math.abs(frameDraft.current.x - frameDraft.start.x), height: Math.abs(frameDraft.current.y - frameDraft.start.y) }} /> : null}
             </div>
             {marquee ? <div className="board-selection-marquee" style={{ left: Math.min(marquee.startX, marquee.currentX), top: Math.min(marquee.startY, marquee.currentY), width: Math.abs(marquee.currentX - marquee.startX), height: Math.abs(marquee.currentY - marquee.startY) }} /> : null}
-            {dragHint ? <div className="board-drag-hint" style={{ left: dragHint.x + 12, top: dragHint.y + 14 }}>{dragHint.text}</div> : null}
+            {dragHint ? <div className="pointer-events-none fixed z-[30000] rounded-sm bg-ink-popover px-2.5 py-1.5 text-sm text-white shadow-md" style={{ left: dragHint.x + 12, top: dragHint.y + 14 }}>{dragHint.text}</div> : null}
             {textFormatPanelPos && selectedTextItem ? (() => {
               const p = selectedTextItem.payload as TextPayload;
               const align = p.textAlign ?? "left";
               const valign = p.verticalAlign ?? "top";
+              const darkButton = "text-white/75 hover:bg-white/10 hover:text-white";
+              const darkActive = "bg-white/15 text-white";
               return (
-                <div className="text-format-panel" style={{ left: textFormatPanelPos.left, top: textFormatPanelPos.top }} onPointerDown={(event) => event.stopPropagation()} onPointerMove={(event) => event.stopPropagation()} onPointerUp={(event) => event.stopPropagation()} role="toolbar" aria-label="文本格式">
-                  <div className="tfp-group" aria-label="水平对齐">
-                    <button type="button" className={align === "left" ? "active" : ""} title="左对齐" onClick={() => applyTextFormat({ textAlign: "left" })}><AlignLeft size={14} /></button>
-                    <button type="button" className={align === "center" ? "active" : ""} title="居中" onClick={() => applyTextFormat({ textAlign: "center" })}><AlignCenter size={14} /></button>
-                    <button type="button" className={align === "right" ? "active" : ""} title="右对齐" onClick={() => applyTextFormat({ textAlign: "right" })}><AlignRight size={14} /></button>
+                <div className="absolute z-[9000] flex items-center gap-0.5 rounded-lg border border-ink-soft bg-ink-panel p-1.5 shadow-lg" style={{ left: textFormatPanelPos.left, top: textFormatPanelPos.top }} onPointerDown={(event) => event.stopPropagation()} onPointerMove={(event) => event.stopPropagation()} onPointerUp={(event) => event.stopPropagation()} role="toolbar" aria-label="文本格式">
+                  <div className="flex items-center gap-0.5 border-r border-ink-soft pr-1.5" aria-label="水平对齐">
+                    <IconButton size="sm" label="左对齐" title="左对齐" className={cn(darkButton, align === "left" && darkActive)} onClick={() => applyTextFormat({ textAlign: "left" })}><AlignLeft size={14} aria-hidden /></IconButton>
+                    <IconButton size="sm" label="居中" title="居中" className={cn(darkButton, align === "center" && darkActive)} onClick={() => applyTextFormat({ textAlign: "center" })}><AlignCenter size={14} aria-hidden /></IconButton>
+                    <IconButton size="sm" label="右对齐" title="右对齐" className={cn(darkButton, align === "right" && darkActive)} onClick={() => applyTextFormat({ textAlign: "right" })}><AlignRight size={14} aria-hidden /></IconButton>
                   </div>
-                  <div className="tfp-group" aria-label="垂直对齐">
-                    <button type="button" className={valign === "top" ? "active" : ""} title="顶部对齐" onClick={() => applyTextFormat({ verticalAlign: "top" })}><TextVerticalAlignIcon position="top" /></button>
-                    <button type="button" className={valign === "middle" ? "active" : ""} title="垂直居中" onClick={() => applyTextFormat({ verticalAlign: "middle" })}><TextVerticalAlignIcon position="middle" /></button>
-                    <button type="button" className={valign === "bottom" ? "active" : ""} title="底部对齐" onClick={() => applyTextFormat({ verticalAlign: "bottom" })}><TextVerticalAlignIcon position="bottom" /></button>
+                  <div className="flex items-center gap-0.5 border-r border-ink-soft pr-1.5" aria-label="垂直对齐">
+                    <IconButton size="sm" label="顶部对齐" title="顶部对齐" className={cn(darkButton, valign === "top" && darkActive)} onClick={() => applyTextFormat({ verticalAlign: "top" })}><TextVerticalAlignIcon position="top" /></IconButton>
+                    <IconButton size="sm" label="垂直居中" title="垂直居中" className={cn(darkButton, valign === "middle" && darkActive)} onClick={() => applyTextFormat({ verticalAlign: "middle" })}><TextVerticalAlignIcon position="middle" /></IconButton>
+                    <IconButton size="sm" label="底部对齐" title="底部对齐" className={cn(darkButton, valign === "bottom" && darkActive)} onClick={() => applyTextFormat({ verticalAlign: "bottom" })}><TextVerticalAlignIcon position="bottom" /></IconButton>
                   </div>
-                  <div className="tfp-group" aria-label="字体样式">
-                    <button type="button" className={p.bold ? "active" : ""} title="加粗" onClick={() => applyTextFormat({ bold: !p.bold })}><Bold size={14} /></button>
-                    <button type="button" className={p.italic ? "active" : ""} title="斜体" onClick={() => applyTextFormat({ italic: !p.italic })}><Italic size={14} /></button>
-                    <button type="button" className={p.underline ? "active" : ""} title="下划线" onClick={() => applyTextFormat({ underline: !p.underline })}><Underline size={14} /></button>
-                    <button type="button" className={p.strikeThrough ? "active" : ""} title="删除线" onClick={() => applyTextFormat({ strikeThrough: !p.strikeThrough })}><Strikethrough size={14} /></button>
+                  <div className="flex items-center gap-0.5 border-r border-ink-soft pr-1.5" aria-label="字体样式">
+                    <IconButton size="sm" label="加粗" title="加粗" className={cn(darkButton, p.bold && darkActive)} onClick={() => applyTextFormat({ bold: !p.bold })}><Bold size={14} aria-hidden /></IconButton>
+                    <IconButton size="sm" label="斜体" title="斜体" className={cn(darkButton, p.italic && darkActive)} onClick={() => applyTextFormat({ italic: !p.italic })}><Italic size={14} aria-hidden /></IconButton>
+                    <IconButton size="sm" label="下划线" title="下划线" className={cn(darkButton, p.underline && darkActive)} onClick={() => applyTextFormat({ underline: !p.underline })}><Underline size={14} aria-hidden /></IconButton>
+                    <IconButton size="sm" label="删除线" title="删除线" className={cn(darkButton, p.strikeThrough && darkActive)} onClick={() => applyTextFormat({ strikeThrough: !p.strikeThrough })}><Strikethrough size={14} aria-hidden /></IconButton>
                   </div>
-                  <div className="tfp-group" aria-label="字号">
-                    <Type size={13} />
-                    <input className="tfp-fontsize" type="number" min={8} max={120} value={p.fontSize ?? 18} aria-label="字号" onChange={(event) => applyTextFormat({ fontSize: Math.max(8, Math.min(120, Math.round(Number(event.target.value)) || 8)) })} />
+                  <div className="flex items-center gap-1 pl-1.5" aria-label="字号">
+                    <Type size={13} aria-hidden className="text-white/60" />
+                    <Input size="sm" type="number" className="h-7 w-[54px] border-ink-soft bg-surface-muted px-1 text-center text-sm text-ink" min={8} max={120} value={p.fontSize ?? 18} aria-label="字号" onChange={(event) => applyTextFormat({ fontSize: Math.max(8, Math.min(120, Math.round(Number(event.target.value)) || 8)) })} />
                   </div>
-                  <div className="tfp-group" aria-label="尺寸模式">
-                    <button type="button" className={p.autoWidth ? "active" : ""} title="自动宽度：短文本贴合内容，长文本在限宽内自动换行" onClick={toggleTextAutoWidth}><MoveHorizontal size={14} />自动宽度</button>
-                    <button type="button" className={p.autoHeight ? "active" : ""} title="自动高度：框高跟随文字内容" onClick={toggleTextAutoHeight}><MoveVertical size={14} />自动高度</button>
+                  <div className="flex items-center gap-0.5 pl-1.5" aria-label="尺寸模式">
+                    <Button size="xs" variant="ghost" className={cn(darkButton, p.autoWidth && darkActive)} title="自动宽度：短文本贴合内容，长文本在限宽内自动换行" icon={<MoveHorizontal size={14} aria-hidden />} onClick={toggleTextAutoWidth}>自动宽度</Button>
+                    <Button size="xs" variant="ghost" className={cn(darkButton, p.autoHeight && darkActive)} title="自动高度：框高跟随文字内容" icon={<MoveVertical size={14} aria-hidden />} onClick={toggleTextAutoHeight}>自动高度</Button>
                   </div>
                 </div>
               );
             })() : null}
           </div>
-          {selectedItemIds.length && !selectedFrameIds.length ? <div className="canvas-selection-tools"><span className="selection-count">已选 {selectedItemIds.length} 个</span><button type="button" onClick={() => void updateSelected({ zIndex: topZ + 1 })} title="置于顶层"><ArrowUpToLine size={15} /></button><button type="button" onClick={() => void updateSelected({ zIndex: Math.max(0, bottomZ - 1) })} title="置于底层"><ArrowDownToLine size={15} /></button><button className="danger" type="button" onClick={() => void deleteSelected()} title="删除"><Trash2 size={15} /></button></div> : null}
-          {!selectedItemIds.length && selectedFrameIds.length ? <div className="canvas-selection-tools"><span className="selection-count">已选 {selectedFrameIds.length} 个 Frame</span><button className="danger" type="button" onClick={() => deleteSelectedFrames()} title="删除选中的 Frame（Delete/Backspace）"><Trash2 size={15} /></button></div> : null}
-          {selectedItemIds.length && selectedFrameIds.length ? <div className="canvas-selection-tools"><span className="selection-count">已选 {selectedItemIds.length} 个 · {selectedFrameIds.length} 个 Frame</span><button className="danger" type="button" onClick={() => deleteMixedSelection()} title="删除选中的素材与 Frame（Delete/Backspace）"><Trash2 size={15} /></button></div> : null}
-          {frameMenu ? <div className="frame-context-menu" role="menu" style={{ left: frameMenu.x, top: frameMenu.y }} onPointerDown={(event) => event.stopPropagation()}><button type="button" role="menuitem" onClick={() => requestFrameDeletion(frameMenu.frameId)}><Trash2 size={14} />删除 Frame</button></div> : null}
-          {itemMenu ? <div className="frame-context-menu item-context-menu" role="menu" style={{ left: itemMenu.x, top: itemMenu.y }} onPointerDown={(event) => event.stopPropagation()}><button type="button" role="menuitem" onClick={() => void deleteCanvasItems(selectedItemIds.includes(itemMenu.itemId) ? selectedItemIds : [itemMenu.itemId])}><Trash2 size={14} />删除</button></div> : null}
-          <div className="board-navigation-hint">V 选择 · T 文本 · R 矩形 · O 椭圆 · 隐藏标记 · 拖左侧素材到画板放置 · 拖标签批量插入 · 框选 · 空格 / 中键 + 拖动移动 Page · Ctrl+Z 撤销移动 · 双指平移 · 滚轮 / 捏合缩放</div>
+          {selectedItemIds.length && !selectedFrameIds.length ? <div className="absolute bottom-3.5 right-3.5 z-[10020] flex items-center gap-0.5 rounded-md bg-ink-popover p-1 text-white shadow-lg"><span className="px-2 text-2xs text-white/85">已选 {selectedItemIds.length} 个</span><IconButton size="sm" label="置于顶层" title="置于顶层" className="text-white/85 hover:bg-white/10 hover:text-white" onClick={() => void updateSelected({ zIndex: topZ + 1 })}><ArrowUpToLine size={15} aria-hidden /></IconButton><IconButton size="sm" label="置于底层" title="置于底层" className="text-white/85 hover:bg-white/10 hover:text-white" onClick={() => void updateSelected({ zIndex: Math.max(0, bottomZ - 1) })}><ArrowDownToLine size={15} aria-hidden /></IconButton><IconButton size="sm" label="删除" title="删除" className="text-accent-light hover:bg-white/10" onClick={() => void deleteSelected()}><Trash2 size={15} aria-hidden /></IconButton></div> : null}
+          {!selectedItemIds.length && selectedFrameIds.length ? <div className="absolute bottom-3.5 right-3.5 z-[10020] flex items-center gap-0.5 rounded-md bg-ink-popover p-1 text-white shadow-lg"><span className="px-2 text-2xs text-white/85">已选 {selectedFrameIds.length} 个 Frame</span><IconButton size="sm" label="删除选中的 Frame" title="删除选中的 Frame（Delete/Backspace）" className="text-accent-light hover:bg-white/10" onClick={() => deleteSelectedFrames()}><Trash2 size={15} aria-hidden /></IconButton></div> : null}
+          {selectedItemIds.length && selectedFrameIds.length ? <div className="absolute bottom-3.5 right-3.5 z-[10020] flex items-center gap-0.5 rounded-md bg-ink-popover p-1 text-white shadow-lg"><span className="px-2 text-2xs text-white/85">已选 {selectedItemIds.length} 个 · {selectedFrameIds.length} 个 Frame</span><IconButton size="sm" label="删除选中的素材与 Frame" title="删除选中的素材与 Frame（Delete/Backspace）" className="text-accent-light hover:bg-white/10" onClick={() => deleteMixedSelection()}><Trash2 size={15} aria-hidden /></IconButton></div> : null}
+          {frameMenu ? <div className="fixed z-[20000] min-w-[148px] rounded-sm border border-line-strong bg-white p-1 shadow-lg" role="menu" style={{ left: frameMenu.x, top: frameMenu.y }} onPointerDown={(event) => event.stopPropagation()}><MenuItem danger icon={<Trash2 size={14} aria-hidden />} onClick={() => requestFrameDeletion(frameMenu.frameId)}>删除 Frame</MenuItem></div> : null}
+          {itemMenu ? <div className="fixed z-[20000] min-w-[148px] rounded-sm border border-line-strong bg-white p-1 shadow-lg" role="menu" style={{ left: itemMenu.x, top: itemMenu.y }} onPointerDown={(event) => event.stopPropagation()}><MenuItem danger icon={<Trash2 size={14} aria-hidden />} onClick={() => void deleteCanvasItems(selectedItemIds.includes(itemMenu.itemId) ? selectedItemIds : [itemMenu.itemId])}>删除</MenuItem></div> : null}
+          <div className="pointer-events-none absolute bottom-3 left-[calc(180px+50%)] z-[10010] -translate-x-1/2 rounded-sm border border-line bg-surface/90 px-2 py-1.5 text-2xs text-muted">V 选择 · T 文本 · R 矩形 · O 椭圆 · 隐藏标记 · 拖左侧素材到画板放置 · 拖标签批量插入 · 框选 · 空格 / 中键 + 拖动移动 Page · Ctrl+Z 撤销移动 · 双指平移 · 滚轮 / 捏合缩放</div>
           {confirmFrameDeleteIds.length ? (() => {
             const victims = frames.filter((entry) => confirmFrameDeleteIds.includes(entry.id));
             const affected = items.filter((item) => item.parentFrameId && confirmFrameDeleteIds.includes(item.parentFrameId)).length;
             const single = victims.length === 1 ? victims[0] : null;
-            return victims.length ? <div className="frame-delete-backdrop" role="presentation" onPointerDown={() => setConfirmFrameDeleteIds([])}><section className="frame-delete-dialog" role="dialog" aria-modal="true" aria-labelledby="frame-delete-title" onPointerDown={(event) => event.stopPropagation()}><Trash2 size={22} /><h3 id="frame-delete-title">{single ? `删除“${single.name}”？` : `删除选中的 ${victims.length} 个 Frame？`}</h3><p>{single ? `其中 ${affected} 个素材的画板布局会被移除。` : `选中的 Frame 中共有 ${affected} 个素材，其画板布局会一并移除。`}</p><strong>素材原文件不会删除，仍会保留在左侧项目素材中。</strong><div><button type="button" onClick={() => setConfirmFrameDeleteIds([])}>取消</button><button className="danger" type="button" onClick={() => void deleteFrames(confirmFrameDeleteIds)}>确认删除</button></div></section></div> : null;
+            if (!victims.length) return null;
+            return (
+              <ConfirmDialog
+                open
+                onClose={() => setConfirmFrameDeleteIds([])}
+                onConfirm={() => void deleteFrames(confirmFrameDeleteIds)}
+                tone="danger"
+                title={single ? `删除“${single.name}”？` : `删除选中的 ${victims.length} 个 Frame？`}
+                description={
+                  <>
+                    {single ? `其中 ${affected} 个素材的画板布局会被移除。` : `选中的 Frame 中共有 ${affected} 个素材，其画板布局会一并移除。`}
+                    <span className="mt-2 block rounded-sm bg-surface-muted px-2 py-1.5 text-xs text-muted">素材原文件不会删除，仍会保留在左侧项目素材中。</span>
+                  </>
+                }
+                confirmText="确认删除"
+                cancelText="取消"
+              />
+            );
           })() : null}
         </div>
-      ) : <div className="board-empty"><ImagePlus size={29} /><h3>正在创建默认 Page</h3><p>默认 Page 是一块空白无限画布，可从左侧把素材拖入。</p></div>}
+      ) : <EmptyState compact className="min-h-[570px]" icon={<ImagePlus size={29} aria-hidden />} title="正在创建默认 Page" description="默认 Page 是一块空白无限画布，可从左侧把素材拖入。" />}
     </section>
   );
 }

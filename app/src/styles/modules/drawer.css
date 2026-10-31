@@ -1,0 +1,180 @@
+/*
+ * 素材详情抽屉的结构样式：全屏遮罩 + 左侧预览 + 右侧面板。
+ * 内容区的字段、标签、按钮由 React 组件与工具类负责。
+ */
+
+@layer components {
+  .asset-drawer {
+    position: fixed;
+    inset: 0;
+    z-index: var(--z-drawer);
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) min(400px, 44vw);
+    background: var(--color-scrim-strong);
+    backdrop-filter: blur(6px);
+    overscroll-behavior: contain;
+    animation: drawer-fade var(--duration-slow) var(--ease-out-soft);
+  }
+
+  @keyframes drawer-fade {
+    from { opacity: 0; }
+  }
+
+  .asset-detail-stage {
+    min-width: 0;
+    min-height: 0;
+    position: relative;
+    display: grid;
+    place-items: center;
+    overflow: hidden;
+    cursor: zoom-out;
+  }
+
+  .drawer-image-frame {
+    position: absolute;
+    inset: 30px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    pointer-events: none;
+  }
+
+  .drawer-image {
+    width: auto;
+    height: auto;
+    max-width: 100%;
+    max-height: 100%;
+    object-fit: contain;
+    display: block;
+    pointer-events: auto;
+    box-shadow: 0 22px 70px rgb(0 0 0 / 0.5);
+    animation: image-fade-in var(--duration-slow) var(--ease-out-soft);
+  }
+
+  @keyframes image-fade-in {
+    from { opacity: 0; }
+    to { opacity: 1; }
+  }
+
+  .drawer-image-fallback {
+    width: 160px;
+    height: 160px;
+    display: grid;
+    place-items: center;
+    border-radius: var(--radius-xl);
+    background: color-mix(in srgb, var(--color-white) 6%, transparent);
+    color: color-mix(in srgb, var(--color-white) 42%, transparent);
+  }
+
+  .drawer-image-fallback small {
+    color: color-mix(in srgb, var(--color-white) 55%, transparent);
+    font-size: 12px;
+  }
+
+  .drawer-progress {
+    width: 130px;
+    height: 5px;
+    margin-top: 4px;
+    background: color-mix(in srgb, var(--color-white) 16%, transparent);
+    border-radius: 3px;
+    overflow: hidden;
+  }
+
+  .drawer-progress span {
+    display: block;
+    height: 100%;
+    background: var(--color-success);
+    transition: width 0.4s var(--ease-out-soft);
+  }
+
+  .drawer-panel {
+    min-width: 0;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    background: var(--color-surface);
+    border-left: 1px solid color-mix(in srgb, var(--color-white) 10%, transparent);
+  }
+
+  .drawer-scroll {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    padding: 0 22px 22px;
+  }
+
+  .drawer-heading {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    margin-bottom: 0;
+    padding: 22px 22px 16px;
+  }
+
+  .drawer-heading h2 {
+    margin: 0;
+    font-family: var(--font-display);
+    font-size: 24px;
+    font-weight: 500;
+  }
+
+  .drawer-file {
+    padding: 14px 0;
+    border-bottom: 1px solid var(--color-line-soft);
+  }
+
+  .drawer-file small,
+  .drawer-file span {
+    display: block;
+  }
+
+  .drawer-file small {
+    margin-bottom: 5px;
+    color: var(--color-muted);
+    font-size: 10px;
+  }
+
+  .drawer-file span {
+    font-family: var(--font-mono);
+    font-size: 12px;
+  }
+
+  .drawer-facts {
+    padding: 9px 0;
+    display: flex;
+    gap: 5px;
+    flex-wrap: wrap;
+    border-bottom: 1px solid var(--color-line-soft);
+  }
+
+  .drawer-facts span {
+    padding: 3px 6px;
+    background: var(--color-surface-muted);
+    color: var(--color-muted);
+    font-size: 10px;
+  }
+
+  .drawer-description {
+    margin: 11px 0;
+    color: var(--color-muted);
+    font-size: 14px;
+    line-height: 1.55;
+  }
+
+  @media (max-width: 620px) {
+    .asset-drawer {
+      grid-template-columns: 1fr;
+      grid-template-rows: 42vh minmax(0, 1fr);
+    }
+
+    .drawer-image-frame {
+      inset: 14px;
+    }
+
+    .drawer-panel {
+      border-left: 0;
+      border-top: 1px solid color-mix(in srgb, var(--color-white) 10%, transparent);
+    }
+  }
+}
