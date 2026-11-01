@@ -107,6 +107,7 @@ CREATE TABLE IF NOT EXISTS canvases (
   project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
   name TEXT NOT NULL,
   revision INTEGER NOT NULL DEFAULT 0,
+  frames TEXT,
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
@@ -122,7 +123,8 @@ CREATE TABLE IF NOT EXISTS canvas_items (
   height INTEGER NOT NULL,
   z_index INTEGER NOT NULL DEFAULT 0,
   rotation INTEGER NOT NULL DEFAULT 0,
-  payload TEXT
+  payload TEXT,
+  last_rev INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS project_assets_project_idx ON project_assets(project_id);
 CREATE INDEX IF NOT EXISTS dimensions_project_idx ON project_dimensions(project_id);
@@ -301,6 +303,19 @@ function migrateSchema(db) {
   if (version < 8) {
     const columns = db.prepare("PRAGMA table_info(assets)").all().map((column) => column.name);
     if (!columns.includes("transcode_progress")) db.exec("ALTER TABLE assets ADD COLUMN transcode_progress INTEGER NOT NULL DEFAULT 0");
+  }
+  // 画板同步所需的版本字段（幂等补列）：
+  // canvases.frames 把 Frame 从浏览器搬到服务端；canvas_items.last_rev 记录元素最后一次写入的画板版本。
+  {
+    const canvasColumns = db.prepare("PRAGMA table_info(canvases)").all().map((column) => column.name);
+    if (!canvasColumns.includes("frames")) db.exec("ALTER TABLE canvases ADD COLUMN frames TEXT");
+    const itemColumns = db.prepare("PRAGMA table_info(canvas_items)").all().map((column) => column.name);
+    if (!itemColumns.includes("last_rev")) {
+      db.exec("ALTER TABLE canvas_items ADD COLUMN last_rev INTEGER NOT NULL DEFAULT 0");
+      db.exec(`UPDATE canvas_items SET last_rev = (
+        SELECT revision FROM canvases WHERE canvases.id = canvas_items.canvas_id
+      ) WHERE last_rev = 0`);
+    }
   }
   db.exec(`PRAGMA user_version = ${Math.max(version, SCHEMA_VERSION)}`);
 }

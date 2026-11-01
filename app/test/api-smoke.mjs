@@ -315,6 +315,71 @@ const canvasWithNegative = await json(await fetch(`${base}/api/canvas?canvasId=$
 assert.equal(canvasWithNegative.items.find((entry) => entry.id === negativeItem.item.id).x, -120, "画板读取后负 x 坐标应保持");
 assert.equal(canvasWithNegative.items.find((entry) => entry.id === negativeItem.item.id).y, -80, "画板读取后负 y 坐标应保持");
 
+// 9d) 批量提交：一个事务写多元素，revision 只加一次；insert / update / delete 逐条返回结果
+const batchCanvas = await json(await post(`${base}/api/canvases`, { projectId: "project-visual-direction", name: "批量画板" }));
+const seedA = await json(await post(`${base}/api/canvas-items`, { canvasId: batchCanvas.canvas.id, type: "shape", x: 0, y: 0, width: 10, height: 10, zIndex: 1, payload: { kind: "rect", stroke: "#111111", strokeWidth: 1 } }));
+const seedB = await json(await post(`${base}/api/canvas-items`, { canvasId: batchCanvas.canvas.id, type: "shape", x: 20, y: 20, width: 10, height: 10, zIndex: 2, payload: { kind: "rect", stroke: "#222222", strokeWidth: 1 } }));
+const revisionBeforeBatch = seedB.revision;
+const clientGeneratedId = "client-generated-item-1";
+const batchResult = await json(await post(`${base}/api/canvas-items/batch`, {
+  canvasId: batchCanvas.canvas.id,
+  ops: [
+    { op: "update", item: { id: seedA.item.id, x: 100, y: 200, width: 10, height: 10, zIndex: 1, parentFrameId: null, payload: { kind: "rect", stroke: "#111111", strokeWidth: 1 } } },
+    { op: "insert", item: { id: clientGeneratedId, type: "shape", x: 5, y: 5, width: 30, height: 30, zIndex: 3, parentFrameId: null, payload: { kind: "ellipse", stroke: "#333333", strokeWidth: 2 } } },
+    { op: "delete", id: seedB.item.id },
+    { op: "update", item: { id: "missing-item", x: 1, y: 1, width: 1, height: 1, zIndex: 0, parentFrameId: null, payload: null } },
+  ],
+}));
+assert.equal(batchResult.revision, revisionBeforeBatch + 1, "一批写入只让 revision 加一次");
+assert.equal(batchResult.items.length, 2, "批量接口应回传写入后的元素");
+assert.ok(batchResult.items.some((entry) => entry.id === clientGeneratedId && entry.x === 5), "客户端生成 id 的元素应能插入");
+assert.deepEqual(batchResult.deleted, [seedB.item.id], "删除的元素应出现在 deleted");
+assert.equal(batchResult.failed.length, 1, "只有不存在的那条更新应失败");
+assert.equal(batchResult.failed[0].reason, "not_found", "更新不存在元素应返回 not_found");
+const duplicateInsert = await json(await post(`${base}/api/canvas-items/batch`, {
+  canvasId: batchCanvas.canvas.id,
+  ops: [{ op: "insert", item: { id: clientGeneratedId, type: "shape", x: 999, y: 999, width: 1, height: 1, zIndex: 0, parentFrameId: null, payload: null } }],
+}));
+assert.equal(duplicateInsert.failed[0].reason, "already_exists", "重复插入同一 id 应返回 already_exists");
+const batchCanvasAfter = await json(await fetch(`${base}/api/canvas?canvasId=${batchCanvas.canvas.id}`));
+assert.equal(batchCanvasAfter.items.find((entry) => entry.id === clientGeneratedId).x, 5, "重复 insert 不得覆盖已有元素");
+assert.equal(batchCanvasAfter.items.find((entry) => entry.id === seedA.item.id).x, 100, "批量更新应生效");
+assert.ok(!batchCanvasAfter.items.some((entry) => entry.id === seedB.item.id), "批量删除应生效");
+assert.equal((await fetch(`${base}/api/canvas-items/batch`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ canvasId: "missing-canvas", ops: [{ op: "delete", id: "x" }] }) })).status, 404, "画板不存在应 404");
+
+// 9e) 同步字段：lastRev、Frame 上服务端
+const syncCanvas = await json(await post(`${base}/api/canvases`, { projectId: "project-visual-direction", name: "同步画板" }));
+const syncItem = await json(await post(`${base}/api/canvas-items`, { canvasId: syncCanvas.canvas.id, type: "shape", x: 1, y: 2, width: 3, height: 4, zIndex: 1, payload: { kind: "rect", stroke: "#000000", strokeWidth: 1 } }));
+assert.equal(syncItem.item.lastRev, syncItem.revision, "新建元素应带上写入版本");
+const framesPayload = [{ id: "frame-a", name: "Frame A", x: 0, y: 0, width: 800, height: 600 }];
+const framesSaved = await json(await fetch(`${base}/api/canvases`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ id: syncCanvas.canvas.id, frames: framesPayload }) }));
+assert.deepEqual(framesSaved.canvas.frames, framesPayload, "Frame 应整份保存并回传");
+assert.equal(framesSaved.canvas.revision, syncItem.revision, "Frame 写入不改变元素版本号");
+const canvasWithFrames = await json(await fetch(`${base}/api/canvas?canvasId=${syncCanvas.canvas.id}`));
+assert.deepEqual(canvasWithFrames.canvas.frames, framesPayload, "GET 画板应返回 Frame");
+assert.equal(canvasWithFrames.items.find((entry) => entry.id === syncItem.item.id).lastRev, syncItem.revision, "GET 画板应返回 lastRev");
+assert.equal((await fetch(`${base}/api/canvases`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ id: syncCanvas.canvas.id, frames: [{ id: "", x: 0, y: 0, width: 1, height: 1 }] }) })).status, 400, "非法 Frame 应 400");
+const clearedFrames = await json(await fetch(`${base}/api/canvases`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ id: syncCanvas.canvas.id, frames: [] }) }));
+assert.deepEqual(clearedFrames.canvas.frames, [], "空数组表示没有 Frame");
+
+// 9f) 维度坐标批量提交：一次 revision、valueRevs、失败逐条返回
+const previewPageId = previewPages.pages[0].id;
+const previewAssetId = defaultPreview.page.assets[0].assetId;
+const previewDimensionId = defaultPreview.page.dimensions[0].id;
+const previewBefore = await json(await fetch(`${base}/api/preview-page?projectId=project-visual-direction&pageId=${previewPageId}`));
+const previewRevisionBefore = previewBefore.page.revision ?? 0;
+const previewBatch = await json(await fetch(`${base}/api/preview-values`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ projectId: "project-visual-direction", pageId: previewPageId, updates: [{ assetId: previewAssetId, values: { [previewDimensionId]: 640 } }] }) }));
+assert.equal(previewBatch.revision, previewRevisionBefore + 1, "坐标批量提交只让 Page 版本加一次");
+assert.equal(previewBatch.updates[0].values[0].value, 640, "回传应含写入后的坐标");
+assert.equal(previewBatch.updates[0].values[0].lastRev, previewBatch.revision, "回传应含坐标版本");
+const previewAfter = await json(await fetch(`${base}/api/preview-page?projectId=project-visual-direction&pageId=${previewPageId}`));
+const previewAfterAsset = previewAfter.page.assets.find((entry) => entry.assetId === previewAssetId);
+assert.equal(previewAfterAsset.dimensionValues[previewDimensionId], 640, "坐标应持久化");
+assert.equal(previewAfterAsset.valueRevs[previewDimensionId], previewBatch.revision, "读取应带 valueRevs");
+assert.equal(previewAfter.page.revision, previewBatch.revision, "读取应带 revision");
+const previewBad = await json(await fetch(`${base}/api/preview-values`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ projectId: "project-visual-direction", pageId: previewPageId, updates: [{ assetId: "missing-asset", values: { [previewDimensionId]: 100 } }] }) }));
+assert.equal(previewBad.failed[0].reason, "not_in_page", "不存在的素材应逐条返回 not_in_page");
+
 // 10) 替换图片：只更新文件字段，保留素材 ID、Metadata、项目引用、维度值和画板元素
 const beforeReplaceWorkspace = await json(await fetch(`${base}/api/workspace?projectId=project-visual-direction`));
 const beforeReplaceAsset = beforeReplaceWorkspace.assets.find((entry) => entry.id === asset.id);

@@ -5,6 +5,7 @@
 import { AlignCenter, AlignLeft, AlignRight, ArrowDownToLine, ArrowUpToLine, Bold, Check, ChevronDown, Circle, Eye, EyeOff, Frame, ImagePlus, Italic, Maximize2, Minimize2, Minus, MousePointer2, MoveHorizontal, MoveVertical, MoveUpRight, Pencil, Plus, Square, Strikethrough, Tag as TagIcon, Trash2, Type, Underline } from "lucide-react";
 import { DragEvent, KeyboardEvent, MouseEvent, PointerEvent, useEffect, useRef, useState, type CSSProperties } from "react";
 import { notifyUnauthorized } from "./api";
+import { newSyncId, useBoardSync, type SyncFrame, type SyncItem } from "./sync/boardSync";
 import { useViewportGestures } from "./useViewportGestures";
 import {
   Badge,
@@ -16,6 +17,7 @@ import {
   MenuItem,
   SearchInput,
   Spinner,
+  SyncStatusDot,
   Tag as TagChip,
   cn,
 } from "./ui";
@@ -45,9 +47,9 @@ type CanvasItem = {
   id: string; canvasId: string; assetId: string | null; type: "image" | "shape" | "text";
   parentFrameId: string | null; x: number; y: number; width: number; height: number;
   zIndex: number; rotation: number; name: string | null; thumbnailUrl: string | null;
-  payload: ItemPayload | null;
+  payload: ItemPayload | null; lastRev?: number;
 };
-type CanvasData = { canvas: CanvasSummary; items: CanvasItem[] };
+type CanvasData = { canvas: CanvasSummary & { frames?: PageFrame[] }; items: CanvasItem[] };
 type PageFrame = { id: string; name: string; x: number; y: number; width: number; height: number };
 type Tool = "pointer" | "text" | "pen" | "rect" | "ellipse" | "arrow" | "line";
 type Interaction = {
@@ -215,10 +217,42 @@ export function BoardView({ projectId, assets, onMessage, onSelectAsset }: { pro
   const canvasIdRef = useRef(canvasId);
   canvasIdRef.current = canvasId;
 
+  // ---- 本地优先同步：未同步改动进队列，服务器回包只合并非未同步的部分 ----
+  const sync = useBoardSync({
+    canvasId,
+    onApplied: (applied) => {
+      if (!applied.length) return;
+      const byId = new Map(applied.map((entry) => [entry.id, entry]));
+      setItems((current) => current.map((item) => {
+        const server = byId.get(item.id);
+        return server ? ({ ...item, ...server } as CanvasItem) : item;
+      }));
+    },
+    onDrop: (keys) => {
+      const dropped = new Set(keys);
+      setItems((current) => current.filter((item) => !dropped.has(item.id)));
+      setSelectedItemIds((current) => current.filter((id) => !dropped.has(id)));
+    },
+    onRevision: (revision) => {
+      setCanvas((current) => current ? { ...current, revision: Math.max(current.revision, revision) } : current);
+    },
+  });
+
   /** 等待进行中的画板保存全部完成（撤销或下一次撤销前调用）。 */
   async function waitForPendingSaves() {
-    while (savingRef.current > 0) {
-      await new Promise<void>((resolve) => { window.setTimeout(resolve, 20); });
+    await sync.flush();
+  }
+
+  // 请求代际：快照请求与批量写入都可能乱序返回，只认最后一次发出的快照。
+  const fetchSeq = useRef(0);
+
+  /** 把一批元素改动放进待上传队列（插入 / 更新 / 删除），由队列合并、串行提交、失败重试。 */
+  function submitCanvasOps(ops: Array<
+    { op: "insert"; item: CanvasItem } | { op: "update"; item: CanvasItem } | { op: "delete"; id: string }
+  >) {
+    for (const entry of ops) {
+      if (entry.op === "delete") sync.markDelete(entry.id);
+      else sync.markItem(entry.item as SyncItem, entry.op === "insert");
     }
   }
 
@@ -265,14 +299,35 @@ export function BoardView({ projectId, assets, onMessage, onSelectAsset }: { pro
     return best;
   }
 
-  function persistFrames(next: Record<string, PageFrame[]>) {
+  const frameCommitTimer = useRef<number | null>(null);
+
+  /** 把 Frame 数组写进本地（离线兜底）并同步到服务端；拖动过程中的高频改动会合并成一次提交。 */
+  function applyFrames(next: Record<string, PageFrame[]>, commit: boolean) {
     setFramesByCanvas(next);
     try { window.localStorage.setItem(frameStorageKey, JSON.stringify(next)); } catch { /* Local preferences are optional. */ }
+    if (!canvasId) return;
+    if (commit) {
+      if (frameCommitTimer.current !== null) { window.clearTimeout(frameCommitTimer.current); frameCommitTimer.current = null; }
+      sync.markFrames(next[canvasId] ?? []);
+      return;
+    }
+    // 拖动中：本地立即生效，250ms 后把最新结果整体提交一次，避免每个 pointermove 都入队。
+    if (frameCommitTimer.current !== null) window.clearTimeout(frameCommitTimer.current);
+    frameCommitTimer.current = window.setTimeout(() => {
+      frameCommitTimer.current = null;
+      const activeId = canvasIdRef.current;
+      if (!activeId) return;
+      sync.markFrames(framesByCanvasRef.current[activeId] ?? []);
+    }, 250);
+  }
+
+  function persistFrames(next: Record<string, PageFrame[]>) {
+    applyFrames(next, true);
   }
 
   function updateFrame(frameId: string, changes: Partial<PageFrame>) {
     if (!canvasId) return;
-    persistFrames({ ...framesByCanvas, [canvasId]: frames.map((entry) => entry.id === frameId ? { ...entry, ...changes } : entry) });
+    applyFrames({ ...framesByCanvas, [canvasId]: frames.map((entry) => entry.id === frameId ? { ...entry, ...changes } : entry) }, false);
   }
 
   function toCanvas(clientX: number, clientY: number): Point {
@@ -298,10 +353,54 @@ export function BoardView({ projectId, assets, onMessage, onSelectAsset }: { pro
     });
   }
 
+  /** 读取某个画板在 localStorage 里的 Frame（迁移时用作本地旧数据的来源）。 */
+  function readStoredFrames(id: string): PageFrame[] {
+    try {
+      const raw = window.localStorage.getItem(frameStorageKey);
+      if (!raw) return [];
+      const parsed = JSON.parse(raw) as Record<string, PageFrame[]>;
+      return Array.isArray(parsed[id]) ? parsed[id] : [];
+    } catch { return []; }
+  }
+
   async function loadCanvas(id: string, onlyIfNewer = false) {
     if (!id) { setCanvas(null); setItems([]); setLoading(false); return; }
+    const seq = ++fetchSeq.current;
     const data = await json<CanvasData>(`/api/canvas?canvasId=${encodeURIComponent(id)}`);
-    if (!onlyIfNewer || !canvas || data.canvas.revision > canvas.revision) { setCanvas(data.canvas); setItems(data.items); }
+    // 请求发出后已被更新的请求取代，或用户已开始新的交互 / 还有未保存的改动：丢弃这次快照，绝不覆盖本地。
+    if (seq !== fetchSeq.current) return;
+    if (onlyIfNewer && (
+      interaction.current || panRef.current || frameMoveRef.current || frameResizeRef.current
+      || drawRef.current || frameDrawRef.current || batchRef.current || sync.hasPending()
+    )) return;
+    const localRevision = canvasRef.current?.revision ?? 0;
+    const isNewer = !onlyIfNewer || !localRevision || data.canvas.revision > localRevision;
+    if (isNewer) {
+      // 版本号只前进：迟到的旧快照不能把已保存的版本拉回去。
+      setCanvas((current) => current
+        ? { ...data.canvas, revision: Math.max(current.revision, data.canvas.revision) }
+        : data.canvas);
+      // 全量快照按"未同步优先"合并：未同步元素保留本地，快照里没有的非未同步元素视为已删除。
+      setItems(sync.mergeItems(data.items as SyncItem[], itemsRef.current as SyncItem[]) as CanvasItem[]);
+    }
+    // Frame 不参与元素版本号：本地没有未同步的 Frame 改动时以服务端为准。
+    // 改造前 Frame 只存在本机：首次加载若服务端为空且本地有旧 Frame，一次性传上去（按画板记标记）。
+    if (!sync.isPending("frames")) {
+      const serverFrames = (data.canvas.frames ?? []) as PageFrame[];
+      const refFrames = framesByCanvasRef.current[id] ?? [];
+      // 首次加载时 state 里的 Frame 可能还没从 localStorage 恢复，直接读存储兜底，避免把旧 Frame 误判成"空"。
+      const localFrames = refFrames.length ? refFrames : readStoredFrames(id);
+      const migratedKey = `artdatabase:frames-migrated:v1:${id}`;
+      let migrated = false;
+      try { migrated = Boolean(window.localStorage.getItem(migratedKey)); } catch { migrated = false; }
+      if (!migrated && !serverFrames.length && localFrames.length) {
+        sync.markFrames(localFrames);
+        try { window.localStorage.setItem(migratedKey, "1"); } catch { /* ignore */ }
+      } else {
+        setFramesByCanvas((current) => ({ ...current, [id]: sync.mergeFrames(serverFrames, localFrames) as PageFrame[] }));
+        try { window.localStorage.setItem(migratedKey, "1"); } catch { /* ignore */ }
+      }
+    }
     setLoading(false);
   }
 
@@ -359,13 +458,8 @@ export function BoardView({ projectId, assets, onMessage, onSelectAsset }: { pro
     setItems(normalized);
     void (async () => {
       try {
-        let revision = canvas?.revision ?? 0;
         const pending = normalized.filter((item) => changedIds.has(item.id));
-        for (const item of pending) {
-          const data = await json<{ revision: number }>("/api/canvas-items", { method: "PATCH", body: JSON.stringify(item) });
-          revision = data.revision;
-        }
-        setCanvas((current) => current ? { ...current, revision } : current);
+        await submitCanvasOps(pending.map((item) => ({ op: "update" as const, item })));
       } catch { /* 归一化失败可忽略，下次加载仍会重试 */ }
     })();
   }, [canvasId, items.length, frames.length]);
@@ -375,16 +469,39 @@ export function BoardView({ projectId, assets, onMessage, onSelectAsset }: { pro
   useEffect(() => {
     clearFrameSelection(); selectItems([]); setMarkupHidden(false); setEditingTextId(null); setDrawPreview(null); setFrameDraft(null); setFrameMode(false); setFrameDragId(null); frameDrawRef.current = null;
     undoStack.current = []; // 撤销栈只在当前 Page 内有效
+    // 先恢复上次没传完的本地草稿（断网/刷新不丢），再拉服务器快照做合并。
+    const draft = sync.restoreDraft();
+    if (draft.frames) setFramesByCanvas((current) => ({ ...current, [canvasId]: draft.frames as PageFrame[] }));
+    if (draft.items.length || draft.deleted.length) {
+      setItems((current) => {
+        const deleted = new Set(draft.deleted);
+        const byId = new Map(draft.items.map((item) => [item.id, item as unknown as CanvasItem]));
+        const kept = current.filter((item) => !deleted.has(item.id)).map((item) => byId.get(item.id) ?? item);
+        const existing = new Set(kept.map((item) => item.id));
+        return [...kept, ...[...byId.values()].filter((item) => !existing.has(item.id))];
+      });
+    }
+    if (draft.items.length || draft.deleted.length || draft.frames) void sync.flush();
     void loadCanvas(canvasId).catch((error) => onMessage(error instanceof Error ? error.message : "Page 载入失败"));
   }, [canvasId]);
 
+  // 拉取时机：进入页面 / 切回标签 / 窗口聚焦时拉一次，停留期间 30 秒兜底；有未同步改动时不覆盖本地。
   useEffect(() => {
     if (!canvasId) return;
-    const timer = window.setInterval(() => {
-      if (!interaction.current && !panRef.current && !frameMoveRef.current && !frameResizeRef.current && !drawRef.current && !frameDrawRef.current && !batchRef.current) void loadCanvas(canvasId, true).catch(() => undefined);
-    }, 900);
-    return () => window.clearInterval(timer);
-  }, [canvasId, canvas?.revision]);
+    const refresh = () => {
+      if (interaction.current || panRef.current || frameMoveRef.current || frameResizeRef.current || drawRef.current || frameDrawRef.current || batchRef.current || sync.hasPending()) return;
+      void loadCanvas(canvasId, true).catch(() => undefined);
+    };
+    const timer = window.setInterval(refresh, 30000);
+    const onVisibility = () => { if (document.visibilityState === "visible") refresh(); };
+    document.addEventListener("visibilitychange", onVisibility);
+    window.addEventListener("focus", refresh);
+    return () => {
+      window.clearInterval(timer);
+      document.removeEventListener("visibilitychange", onVisibility);
+      window.removeEventListener("focus", refresh);
+    };
+  }, [canvasId]);
 
   useEffect(() => {
     const element = viewportRef.current;
@@ -515,7 +632,7 @@ export function BoardView({ projectId, assets, onMessage, onSelectAsset }: { pro
     const right = Math.round(Math.max(start.x, end.x)); const bottom = Math.round(Math.max(start.y, end.y));
     const width = right - left; const height = bottom - top;
     if (!(width > 0) || !(height > 0)) return;
-    const frame: PageFrame = { id: `frame-${canvasId}-${Date.now()}`, name: `Frame ${frames.length + 1}`, x: left, y: top, width, height };
+    const frame: PageFrame = { id: `frame-${newSyncId()}`, name: `Frame ${frames.length + 1}`, x: left, y: top, width, height };
     persistFrames({ ...framesByCanvas, [canvasId]: [...frames, frame] });
     selectFrames([frame.id], frame.id);
     onMessage(`${frame.name} 已创建，把素材拖进去即可归属该 Frame`);
@@ -643,12 +760,7 @@ export function BoardView({ projectId, assets, onMessage, onSelectAsset }: { pro
     setItems((current) => current.map((item) => set.has(item.id) && item.parentFrameId !== frameId ? { ...item, parentFrameId: frameId } : item));
     savingRef.current += 1;
     try {
-      let revision = canvas.revision;
-      for (const item of toPersist) {
-        const data = await json<{ revision: number }>("/api/canvas-items", { method: "PATCH", body: JSON.stringify(item) });
-        revision = data.revision;
-      }
-      setCanvas((current) => current ? { ...current, revision } : current);
+      await submitCanvasOps(toPersist.map((item) => ({ op: "update" as const, item })));
     } catch (error) { onMessage(error instanceof Error ? error.message : "布局保存失败"); }
     finally { savingRef.current -= 1; }
   }
@@ -661,12 +773,7 @@ export function BoardView({ projectId, assets, onMessage, onSelectAsset }: { pro
     if (!moved.length) return;
     savingRef.current += 1;
     try {
-      let revision = canvas.revision;
-      for (const item of moved) {
-        const data = await json<{ revision: number }>("/api/canvas-items", { method: "PATCH", body: JSON.stringify(item) });
-        revision = data.revision;
-      }
-      setCanvas((current) => current ? { ...current, revision } : current);
+      await submitCanvasOps(moved.map((item) => ({ op: "update" as const, item })));
     } catch (error) { onMessage(error instanceof Error ? error.message : "布局保存失败"); }
     finally { savingRef.current -= 1; }
   }
@@ -794,16 +901,12 @@ export function BoardView({ projectId, assets, onMessage, onSelectAsset }: { pro
     const targetFrames = frames.filter((entry) => set.has(entry.id));
     if (!targetFrames.length) { setConfirmFrameDeleteIds([]); return; }
     const frameItems = items.filter((item) => item.parentFrameId && set.has(item.parentFrameId));
+    savingRef.current += 1;
     try {
-      let latestRevision = canvas.revision;
-      for (const item of frameItems) {
-        const data = await json<{ revision: number }>(`/api/canvas-items?id=${encodeURIComponent(item.id)}&canvasId=${encodeURIComponent(canvas.id)}`, { method: "DELETE" });
-        latestRevision = data.revision;
-      }
+      if (frameItems.length) await submitCanvasOps(frameItems.map((item) => ({ op: "delete" as const, id: item.id })));
       const removedIds = new Set(frameItems.map((item) => item.id));
       persistFrames({ ...framesByCanvas, [canvasId]: frames.filter((entry) => !set.has(entry.id)) });
       setItems((current) => current.filter((item) => !removedIds.has(item.id)));
-      setCanvas((current) => current ? { ...current, revision: latestRevision } : current);
       clearFrameSelection(); selectItems([]); setFrameMenu(null); setConfirmFrameDeleteIds([]);
       undoStack.current = []; // 删除属于破坏性操作，清空移动撤销栈避免撤销到已删除对象
       if (frameItems.length) await loadCanvases(canvasId);
@@ -813,8 +916,7 @@ export function BoardView({ projectId, assets, onMessage, onSelectAsset }: { pro
     } catch (error) {
       setFrameMenu(null); setConfirmFrameDeleteIds([]);
       onMessage(error instanceof Error ? error.message : "删除 Frame 失败");
-      await loadCanvas(canvas.id);
-    }
+    } finally { savingRef.current -= 1; }
   }
   /** 删除当前选中的 Frame（底部工具条按钮） */
   function deleteSelectedFrames() { if (selectedFrameIds.length) requestFrameDeletionMany(selectedFrameIds); }
@@ -919,22 +1021,15 @@ export function BoardView({ projectId, assets, onMessage, onSelectAsset }: { pro
         setItems((current) => current.map((entry) => updatedItems.find((u) => u.id === entry.id) ?? entry));
       }
     }
-    // 落点立即入栈，保证松手后马上按 Ctrl/Cmd+Z 也能撤销；保存失败时再移除该条目
+    // 落点立即入栈，保证松手后马上按 Ctrl/Cmd+Z 也能撤销；保存失败时保留本地值，由同步状态提示，不回滚
     const undoSnapshots = active.mode === "move" ? collectItemUndoSnapshots(active.itemSnapshots) : [];
     const undoEntry: BoardUndoEntry | null = undoSnapshots.length ? { canvasId, frameSnapshots: [], itemSnapshots: undoSnapshots } : null;
     if (undoEntry) pushUndo(undoEntry);
     savingRef.current += 1;
     try {
-      let revision = canvas.revision;
-      for (const item of updatedItems) {
-        const data = await json<{ revision: number }>("/api/canvas-items", { method: "PATCH", body: JSON.stringify(item) });
-        revision = data.revision;
-      }
-      setCanvas((current) => current ? { ...current, revision } : current);
+      await submitCanvasOps(updatedItems.map((item) => ({ op: "update" as const, item })));
     } catch (error) {
-      if (undoEntry) undoStack.current = undoStack.current.filter((entry) => entry !== undoEntry);
       onMessage(error instanceof Error ? error.message : "布局保存失败");
-      await loadCanvas(canvas.id);
     } finally { savingRef.current -= 1; }
   }
 
@@ -961,14 +1056,10 @@ export function BoardView({ projectId, assets, onMessage, onSelectAsset }: { pro
     if (!canvas) return;
     const uniqueIds = [...new Set(itemIds)];
     try {
-      let revision = canvas.revision;
-      for (const itemId of uniqueIds) {
-        const data = await json<{ revision: number }>(`/api/canvas-items?id=${encodeURIComponent(itemId)}&canvasId=${encodeURIComponent(canvas.id)}`, { method: "DELETE" });
-        revision = data.revision;
-      }
+      await submitCanvasOps(uniqueIds.map((id) => ({ op: "delete" as const, id })));
       const removedIds = new Set(uniqueIds);
       setItems((current) => current.filter((item) => !removedIds.has(item.id)));
-      selectItems(selectedItemIds.filter((id) => !removedIds.has(id))); setItemMenu(null); setCanvas((current) => current ? { ...current, revision } : current);
+      selectItems(selectedItemIds.filter((id) => !removedIds.has(id))); setItemMenu(null);
       undoStack.current = []; // 删除属于破坏性操作，清空移动撤销栈避免撤销到已删除对象
       onMessage(uniqueIds.some((id) => annotationItems.some((item) => item.id === id)) ? `已删除 ${uniqueIds.length} 个元素` : `已从画板删除 ${uniqueIds.length} 张图片，素材原文件仍保留在项目素材中`);
     } catch (error) { onMessage(error instanceof Error ? error.message : "删除失败"); }
@@ -1024,28 +1115,25 @@ export function BoardView({ projectId, assets, onMessage, onSelectAsset }: { pro
       const box = bboxOf(active.points);
       points = active.points.map((p) => ({ x: p.x - box.left, y: p.y - box.top }));
       const penW = Math.max(0.1, box.right - box.left); const penH = Math.max(0.1, box.bottom - box.top);
-      frameId = itemFrameId({ x: box.left, y: box.top, width: penW, height: penH, type: "shape", payload: { kind: "freehand", stroke: strokeColor, strokeWidth, points } });
-      try {
-        const data = await json<{ item: CanvasItem; revision: number }>("/api/canvas-items", { method: "POST", body: JSON.stringify({ canvasId: canvas.id, type: "shape", parentFrameId: frameId, x: box.left, y: box.top, width: penW, height: penH, zIndex: items.length + 1, rotation: 0, payload: { kind: "freehand", stroke: strokeColor, strokeWidth, points } }) });
-        addAnnotatedItem(data.item, data.revision);
-      } catch (error) { onMessage(error instanceof Error ? error.message : "绘制失败"); }
+      const payload: ShapePayload = { kind: "freehand", stroke: strokeColor, strokeWidth, points };
+      frameId = itemFrameId({ x: box.left, y: box.top, width: penW, height: penH, type: "shape", payload });
+      addAnnotatedItem({ id: newSyncId(), canvasId: canvas.id, assetId: null, type: "shape", parentFrameId: frameId, x: box.left, y: box.top, width: penW, height: penH, zIndex: items.length + 1, rotation: 0, name: null, thumbnailUrl: null, payload, lastRev: 0 });
       return;
     }
     if (active.tool === "arrow" || active.tool === "line") {
       points = [{ x: start.x - left, y: start.y - top }, { x: current.x - left, y: current.y - top }];
     }
-    frameId = itemFrameId({ x: left, y: top, width: Math.max(0.1, width), height: Math.max(0.1, height), type: "shape", payload: { kind: active.tool as ShapeKind, stroke: strokeColor, strokeWidth, points } });
-    try {
-      const data = await json<{ item: CanvasItem; revision: number }>("/api/canvas-items", { method: "POST", body: JSON.stringify({ canvasId: canvas.id, type: "shape", parentFrameId: frameId, x: left, y: top, width: Math.max(0.1, width), height: Math.max(0.1, height), zIndex: items.length + 1, rotation: 0, payload: { kind: active.tool as ShapeKind, stroke: strokeColor, strokeWidth, points } }) });
-      addAnnotatedItem(data.item, data.revision);
-    } catch (error) { onMessage(error instanceof Error ? error.message : "绘制失败"); }
+    const payload: ShapePayload = { kind: active.tool as ShapeKind, stroke: strokeColor, strokeWidth, points };
+    frameId = itemFrameId({ x: left, y: top, width: Math.max(0.1, width), height: Math.max(0.1, height), type: "shape", payload });
+    addAnnotatedItem({ id: newSyncId(), canvasId: canvas.id, assetId: null, type: "shape", parentFrameId: frameId, x: left, y: top, width: Math.max(0.1, width), height: Math.max(0.1, height), zIndex: items.length + 1, rotation: 0, name: null, thumbnailUrl: null, payload, lastRev: 0 });
   }
 
-  function addAnnotatedItem(item: CanvasItem, revision: number) {
+  /** 新建标记元素：本地立即出现并选中，再进队列补传（离线也能画）。 */
+  function addAnnotatedItem(item: CanvasItem) {
     setItems((current) => [...current, item]);
-    setCanvas((current) => current ? { ...current, revision } : current);
     clearFrameSelection();
     selectItems([item.id], item.id);
+    sync.markItem(item as SyncItem, true);
   }
 
   async function createTextItem(point: Point) {
@@ -1053,15 +1141,16 @@ export function BoardView({ projectId, assets, onMessage, onSelectAsset }: { pro
     const width = 180; const height = 40;
     const defaults: TextPayload = { text: "", color: strokeColor, fontSize, textAlign: "left", verticalAlign: "top", autoWidth: true, autoHeight: true };
     const frameId = itemFrameId({ x: point.x, y: point.y, width, height, type: "text", payload: defaults });
-    try {
-      const data = await json<{ item: CanvasItem; revision: number }>("/api/canvas-items", { method: "POST", body: JSON.stringify({ canvasId: canvas.id, type: "text", parentFrameId: frameId, x: point.x, y: point.y, width, height, zIndex: items.length + 1, rotation: 0, payload: defaults }) });
-      const created = { ...data.item, type: "text" as const };
-      setItems((current) => [...current, created]);
-      setCanvas((current) => current ? { ...current, revision: data.revision } : current);
-      setEditingTextId(created.id);
-      clearFrameSelection();
-      selectItems([created.id], created.id);
-    } catch (error) { onMessage(error instanceof Error ? error.message : "创建文本失败"); }
+    const created: CanvasItem = {
+      id: newSyncId(), canvasId: canvas.id, assetId: null, type: "text", parentFrameId: frameId,
+      x: point.x, y: point.y, width, height, zIndex: items.length + 1, rotation: 0,
+      name: null, thumbnailUrl: null, payload: defaults, lastRev: 0,
+    };
+    setItems((current) => [...current, created]);
+    setEditingTextId(created.id);
+    clearFrameSelection();
+    selectItems([created.id], created.id);
+    sync.markItem(created as SyncItem, true);
   }
 
   function commitText(item: CanvasItem, raw: string) {
@@ -1177,20 +1266,14 @@ export function BoardView({ projectId, assets, onMessage, onSelectAsset }: { pro
     if (updatedItems.some((item, index) => item.parentFrameId !== changedItems[index].parentFrameId)) {
       setItems((current) => current.map((entry) => updatedItems.find((u) => u.id === entry.id) ?? entry));
     }
-    // 落点立即入栈；保存失败时移除该条目
+    // 落点立即入栈；保存失败时保留本地值，由同步状态提示
     const undoSnapshots = active.mode === "move" ? collectItemUndoSnapshots(active.itemSnapshots) : [];
     const undoEntry: BoardUndoEntry | null = undoSnapshots.length ? { canvasId, frameSnapshots: [], itemSnapshots: undoSnapshots } : null;
     if (undoEntry) pushUndo(undoEntry);
     savingRef.current += 1;
     try {
-      let revision = canvas.revision;
-      for (const item of updatedItems) {
-        const data = await json<{ revision: number }>("/api/canvas-items", { method: "PATCH", body: JSON.stringify(item) });
-        revision = data.revision;
-      }
-      setCanvas((current) => current ? { ...current, revision } : current);
+      await submitCanvasOps(updatedItems.map((item) => ({ op: "update" as const, item })));
     } catch (error) {
-      if (undoEntry) undoStack.current = undoStack.current.filter((entry) => entry !== undoEntry);
       onMessage(error instanceof Error ? error.message : "布局保存失败");
     } finally { savingRef.current -= 1; }
   }
@@ -1319,19 +1402,12 @@ export function BoardView({ projectId, assets, onMessage, onSelectAsset }: { pro
         if (!activeCanvas) return;
         savingRef.current += 1;
         try {
-          let revision = activeCanvas.revision;
-          for (const snapshot of itemSnapshots) {
-            const data = await json<{ revision: number }>("/api/canvas-items", { method: "PATCH", body: JSON.stringify(snapshot) });
-            revision = data.revision;
-          }
-          setCanvas((current) => current ? { ...current, revision } : current);
-          canvasRef.current = { ...activeCanvas, revision };
+          await submitCanvasOps(itemSnapshots.map((item) => ({ op: "update" as const, item })));
         } finally { savingRef.current -= 1; }
       }
       onMessage("已撤销移动");
     } catch (error) {
       onMessage(error instanceof Error ? error.message : "撤销失败");
-      if (canvasIdRef.current) await loadCanvas(canvasIdRef.current);
     }
   }
   undoRef.current = () => { void undoLastBoardMove(); };
@@ -1341,14 +1417,16 @@ export function BoardView({ projectId, assets, onMessage, onSelectAsset }: { pro
     const size = aspectSize(asset, 220);
     const x = point.x - size.width / 2; const y = point.y - size.height / 2;
     const frameId = itemFrameId({ x, y, width: size.width, height: size.height, type: "image", payload: null });
-    try {
-      const data = await json<{ item: CanvasItem; revision: number }>("/api/canvas-items", { method: "POST", body: JSON.stringify({ canvasId: canvas.id, assetId: asset.id, type: "image", parentFrameId: frameId, x, y, width: size.width, height: size.height, zIndex: items.length + 1, rotation: 0 }) });
-      const created = { ...data.item, name: asset.name, thumbnailUrl: asset.thumbnailUrl, type: "image" as const };
-      setItems((current) => [...current, created]);
-      setCanvas((current) => current ? { ...current, revision: data.revision } : current);
-      selectItems([created.id], created.id);
-      onMessage(frameId ? `素材已放入 ${frames.find((f) => f.id === frameId)?.name ?? "Frame"}` : "素材已放入画板");
-    } catch (error) { onMessage(error instanceof Error ? error.message : "添加失败"); }
+    // 客户端生成 id：先出现在画板上，再进队列补传（断网也能拖进来）。
+    const created: CanvasItem = {
+      id: newSyncId(), canvasId: canvas.id, assetId: asset.id, type: "image", parentFrameId: frameId,
+      x, y, width: size.width, height: size.height, zIndex: items.length + 1, rotation: 0,
+      name: asset.name, thumbnailUrl: asset.thumbnailUrl, payload: null, lastRev: 0,
+    };
+    setItems((current) => [...current, created]);
+    selectItems([created.id], created.id);
+    sync.markItem(created as SyncItem, true);
+    onMessage(frameId ? `素材已放入 ${frames.find((f) => f.id === frameId)?.name ?? "Frame"}` : "素材已放入画板");
   }
 
   async function insertTagBatch(tag: string, point: Point) {
@@ -1366,20 +1444,18 @@ export function BoardView({ projectId, assets, onMessage, onSelectAsset }: { pro
     const startX = point.x - totalW / 2;
     const startY = point.y - totalH / 2;
     const frameId = itemFrameId({ x: startX, y: startY, width: totalW, height: totalH, type: "image", payload: null });
-    // 批量期间屏蔽轮询同步，且逐条增量更新本地状态，避免中途轮询用部分数据覆盖/重复。
-    batchRef.current = true;
-    try {
-      for (let index = 0; index < sized.length; index++) {
-        const { asset, width: w, height: h } = sized[index];
-        const col = index % cols; const row = Math.floor(index / cols);
-        const data = await json<{ item: CanvasItem; revision: number }>("/api/canvas-items", { method: "POST", body: JSON.stringify({ canvasId: canvas.id, assetId: asset.id, type: "image", parentFrameId: frameId, x: startX + col * colWidth, y: startY + row * (rowH + gap), width: w, height: h, zIndex: items.length + index + 1, rotation: 0 }) });
-        const item: CanvasItem = { ...data.item, name: asset.name, thumbnailUrl: asset.thumbnailUrl, type: "image" };
-        setItems((current) => [...current, item]);
-        setCanvas((current) => current ? { ...current, revision: data.revision } : current);
-      }
-      onMessage(`已把标签“${tag}”的 ${tagAssets.length} 个素材批量放入画板`);
-    } catch (error) { onMessage(error instanceof Error ? error.message : "批量插入失败"); }
-    finally { batchRef.current = false; }
+    const created: CanvasItem[] = sized.map(({ asset, width: w, height: h }, index) => {
+      const col = index % cols; const row = Math.floor(index / cols);
+      return {
+        id: newSyncId(), canvasId: canvas.id, assetId: asset.id, type: "image", parentFrameId: frameId,
+        x: startX + col * colWidth, y: startY + row * (rowH + gap), width: w, height: h,
+        zIndex: items.length + index + 1, rotation: 0,
+        name: asset.name, thumbnailUrl: asset.thumbnailUrl, payload: null, lastRev: 0,
+      };
+    });
+    setItems((current) => [...current, ...created]);
+    for (const item of created) sync.markItem(item as SyncItem, true);
+    onMessage(`已把标签“${tag}”的 ${tagAssets.length} 个素材批量放入画板`);
   }
 
   function handleAssetDragStart(event: DragEvent<HTMLButtonElement>, asset: Asset) {
@@ -1826,6 +1902,9 @@ export function BoardView({ projectId, assets, onMessage, onSelectAsset }: { pro
           {frameMenu ? <div className="fixed z-[20000] min-w-[148px] rounded-sm border border-line-strong bg-white p-1 shadow-lg" role="menu" style={{ left: frameMenu.x, top: frameMenu.y }} onPointerDown={(event) => event.stopPropagation()}><MenuItem danger icon={<Trash2 size={14} aria-hidden />} onClick={() => requestFrameDeletion(frameMenu.frameId)}>删除 Frame</MenuItem></div> : null}
           {itemMenu ? <div className="fixed z-[20000] min-w-[148px] rounded-sm border border-line-strong bg-white p-1 shadow-lg" role="menu" style={{ left: itemMenu.x, top: itemMenu.y }} onPointerDown={(event) => event.stopPropagation()}><MenuItem danger icon={<Trash2 size={14} aria-hidden />} onClick={() => void deleteCanvasItems(selectedItemIds.includes(itemMenu.itemId) ? selectedItemIds : [itemMenu.itemId])}>删除</MenuItem></div> : null}
           <div className="pointer-events-none absolute bottom-3 left-[calc(180px+50%)] z-[10010] -translate-x-1/2 rounded-sm border border-line bg-surface/90 px-2 py-1.5 text-2xs text-muted">V 选择 · T 文本 · R 矩形 · O 椭圆 · 隐藏标记 · 拖左侧素材到画板放置 · 拖标签批量插入 · 框选 · 空格 / 中键 + 拖动移动 Page · Ctrl+Z 撤销移动 · 双指平移 · 滚轮 / 捏合缩放</div>
+          <div className="absolute bottom-3.5 left-3.5 z-[10010] flex h-6 w-6 items-center justify-center rounded-full border border-line bg-surface/90 shadow-sm">
+            <SyncStatusDot status={sync.status} pending={sync.pending} onRetry={sync.retry} />
+          </div>
           {confirmFrameDeleteIds.length ? (() => {
             const victims = frames.filter((entry) => confirmFrameDeleteIds.includes(entry.id));
             const affected = items.filter((item) => item.parentFrameId && confirmFrameDeleteIds.includes(item.parentFrameId)).length;

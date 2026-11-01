@@ -20,6 +20,7 @@ export function migratePreviewPages(db) {
       project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
       name TEXT NOT NULL,
       selected_axes TEXT NOT NULL DEFAULT '[]',
+      revision INTEGER NOT NULL DEFAULT 0,
       created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
       UNIQUE(id, project_id)
     );
@@ -46,11 +47,19 @@ export function migratePreviewPages(db) {
       asset_id TEXT NOT NULL,
       dimension_id TEXT NOT NULL,
       value INTEGER NOT NULL DEFAULT 500 CHECK(value BETWEEN 0 AND 1000),
+      last_rev INTEGER NOT NULL DEFAULT 0,
       PRIMARY KEY(page_id, asset_id, dimension_id),
       FOREIGN KEY(page_id, asset_id) REFERENCES preview_page_assets(page_id, asset_id) ON DELETE CASCADE,
       FOREIGN KEY(page_id, dimension_id) REFERENCES preview_dimensions(page_id, id) ON DELETE CASCADE
     );
   `);
+  // 同步所需的版本字段（幂等补列）：Page 级 revision + 每个坐标的 last_rev。
+  {
+    const pageColumns = db.prepare("PRAGMA table_info(preview_pages)").all().map((column) => column.name);
+    if (!pageColumns.includes("revision")) db.exec("ALTER TABLE preview_pages ADD COLUMN revision INTEGER NOT NULL DEFAULT 0");
+    const valueColumns = db.prepare("PRAGMA table_info(preview_dimension_values)").all().map((column) => column.name);
+    if (!valueColumns.includes("last_rev")) db.exec("ALTER TABLE preview_dimension_values ADD COLUMN last_rev INTEGER NOT NULL DEFAULT 0");
+  }
   if (db.prepare("PRAGMA user_version").get().user_version >= 9) return;
   transaction(db, () => {
     for (const project of db.prepare("SELECT id FROM projects").all()) {
@@ -98,7 +107,7 @@ export async function handlePreviewPages(request, { db }) {
     return Response.json({ page: createPreviewPage(db, projectId, name) }, { status: 201 });
   }
   const pageId = clean(payload.pageId ?? url.searchParams.get("pageId"));
-  const page = db.prepare("SELECT id, project_id AS projectId, name, selected_axes FROM preview_pages WHERE id = ? AND project_id = ?").get(pageId, projectId);
+  const page = db.prepare("SELECT id, project_id AS projectId, name, selected_axes, revision FROM preview_pages WHERE id = ? AND project_id = ?").get(pageId, projectId);
   if (!page) return bad("Page 不存在", 404);
   if (path === "/api/preview-pages" && method === "DELETE") {
     db.prepare("DELETE FROM preview_pages WHERE id = ?").run(pageId);
@@ -121,10 +130,21 @@ export async function handlePreviewPages(request, { db }) {
     const dimensions = db.prepare(`SELECT d.id, p.project_id AS projectId, d.page_id AS pageId, d.left_label AS leftLabel, d.right_label AS rightLabel, d.sort_order AS sortOrder
       FROM preview_dimensions d JOIN preview_pages p ON p.id = d.page_id WHERE d.page_id = ? ORDER BY d.sort_order, d.id`).all(pageId);
     const rows = db.prepare(`SELECT pa.asset_id AS assetId FROM preview_page_assets pa JOIN assets a ON a.id = pa.asset_id WHERE pa.page_id = ? AND a.deleted_at IS NULL`).all(pageId);
-    const values = db.prepare("SELECT asset_id AS assetId, dimension_id AS dimensionId, value FROM preview_dimension_values WHERE page_id = ?").all(pageId);
+    const values = db.prepare("SELECT asset_id AS assetId, dimension_id AS dimensionId, value, last_rev AS lastRev FROM preview_dimension_values WHERE page_id = ?").all(pageId);
     const map = new Map(rows.map(({ assetId }) => [assetId, {}]));
-    for (const v of values) if (map.has(v.assetId)) map.get(v.assetId)[v.dimensionId] = v.value;
-    return Response.json({ page: { id: page.id, projectId, name: page.name, selectedIds: JSON.parse(page.selected_axes).filter((id) => dimensions.some((d) => d.id === id)), dimensions, assets: rows.map(({ assetId }) => ({ assetId, dimensionValues: map.get(assetId) })) } });
+    const revMap = new Map(rows.map(({ assetId }) => [assetId, {}]));
+    for (const v of values) {
+      if (!map.has(v.assetId)) continue;
+      map.get(v.assetId)[v.dimensionId] = v.value;
+      revMap.get(v.assetId)[v.dimensionId] = v.lastRev;
+    }
+    return Response.json({ page: {
+      id: page.id, projectId, name: page.name,
+      selectedIds: JSON.parse(page.selected_axes).filter((id) => dimensions.some((d) => d.id === id)),
+      dimensions,
+      assets: rows.map(({ assetId }) => ({ assetId, dimensionValues: map.get(assetId), valueRevs: revMap.get(assetId) })),
+      revision: page.revision,
+    } });
   }
   if (path === "/api/preview-page-assets" && method === "POST") {
     const ids = payload.assetIds;
@@ -143,6 +163,7 @@ export async function handlePreviewPages(request, { db }) {
   }
   if (path === "/api/preview-page-assets" && method === "DELETE") {
     db.prepare("DELETE FROM preview_page_assets WHERE page_id = ? AND asset_id = ?").run(pageId, clean(url.searchParams.get("assetId")));
+    db.prepare("UPDATE preview_pages SET revision = revision + 1 WHERE id = ?").run(pageId);
     return Response.json({ ok: true });
   }
   if (path === "/api/preview-dimensions" && method === "POST") {
@@ -177,14 +198,67 @@ export async function handlePreviewPages(request, { db }) {
     return Response.json({ ok: true });
   }
   if (path === "/api/preview-values" && method === "PATCH") {
-    const assetId = clean(payload.assetId), values = payload.values;
-    if (!values || typeof values !== "object" || Array.isArray(values) || !Object.keys(values).length || Object.values(values).some((v) => !Number.isInteger(v) || v < 0 || v > 1000)) return bad("维度值必须是 0～1000 的整数");
-    if (!db.prepare(`SELECT pa.asset_id FROM preview_page_assets pa JOIN assets a ON a.id = pa.asset_id WHERE pa.page_id = ? AND pa.asset_id = ? AND a.deleted_at IS NULL`).get(pageId, assetId)) return bad("素材不在当前 Page 中", 404);
-    if (Object.keys(values).some((id) => !db.prepare("SELECT id FROM preview_dimensions WHERE page_id = ? AND id = ?").get(pageId, id))) return bad("维度不在当前 Page 中", 404);
+    const isBatch = Array.isArray(payload.updates);
+    const updates = [];
+    if (isBatch) {
+      if (!payload.updates.length) return bad("没有要提交的坐标");
+      if (payload.updates.length > 200) return bad("单次最多提交 200 条坐标");
+      for (const entry of payload.updates) {
+        if (!entry || typeof entry !== "object" || Array.isArray(entry)) return bad("坐标格式不正确");
+        const assetId = clean(entry.assetId);
+        const values = entry.values;
+        if (!assetId || !values || typeof values !== "object" || Array.isArray(values) || !Object.keys(values).length) return bad("坐标格式不正确");
+        if (Object.values(values).some((v) => !Number.isInteger(v) || v < 0 || v > 1000)) return bad("维度值必须是 0～1000 的整数");
+        updates.push({ assetId, values });
+      }
+    } else {
+      const assetId = clean(payload.assetId), values = payload.values;
+      if (!values || typeof values !== "object" || Array.isArray(values) || !Object.keys(values).length || Object.values(values).some((v) => !Number.isInteger(v) || v < 0 || v > 1000)) return bad("维度值必须是 0～1000 的整数");
+      updates.push({ assetId, values });
+    }
+
+    const failed = [];
+    const accepted = [];
+    const pageAssetStmt = db.prepare(`SELECT pa.asset_id FROM preview_page_assets pa JOIN assets a ON a.id = pa.asset_id WHERE pa.page_id = ? AND pa.asset_id = ? AND a.deleted_at IS NULL`);
+    const dimensionStmt = db.prepare("SELECT id FROM preview_dimensions WHERE page_id = ? AND id = ?");
+    for (const update of updates) {
+      if (!pageAssetStmt.get(pageId, update.assetId)) { failed.push({ assetId: update.assetId, reason: "not_in_page" }); continue; }
+      if (Object.keys(update.values).some((id) => !dimensionStmt.get(pageId, id))) { failed.push({ assetId: update.assetId, reason: "dimension_not_in_page" }); continue; }
+      accepted.push(update);
+    }
+    if (!accepted.length) {
+      // 旧调用方（单条 body）继续用 404 表达"素材/维度不在此 Page"，新批量形态用 failed 逐条返回。
+      if (!isBatch) {
+        const reason = failed[0] && failed[0].reason;
+        if (reason === "not_in_page") return bad("素材不在当前 Page 中", 404);
+        if (reason === "dimension_not_in_page") return bad("维度不在当前 Page 中", 404);
+      }
+      return Response.json({ ok: true, revision: page.revision, updates: [], failed });
+    }
+
+    let revision = page.revision;
     transaction(db, () => {
-      for (const [id, value] of Object.entries(values)) db.prepare("UPDATE preview_dimension_values SET value = ? WHERE page_id = ? AND asset_id = ? AND dimension_id = ?").run(value, pageId, assetId, id);
+      db.prepare("UPDATE preview_pages SET revision = revision + 1 WHERE id = ?").run(pageId);
+      revision = db.prepare("SELECT revision FROM preview_pages WHERE id = ?").get(pageId).revision;
+      const updateStmt = db.prepare("UPDATE preview_dimension_values SET value = ?, last_rev = ? WHERE page_id = ? AND asset_id = ? AND dimension_id = ?");
+      for (const update of accepted) for (const [dimensionId, value] of Object.entries(update.values)) updateStmt.run(value, revision, pageId, update.assetId, dimensionId);
     });
-    return Response.json({ ok: true });
+
+    const assetIds = accepted.map((entry) => entry.assetId);
+    const placeholders = assetIds.map(() => "?").join(", ");
+    const rows = db.prepare(`SELECT asset_id AS assetId, dimension_id AS dimensionId, value, last_rev AS lastRev
+      FROM preview_dimension_values WHERE page_id = ? AND asset_id IN (${placeholders})`).all(pageId, ...assetIds);
+    const grouped = new Map(assetIds.map((assetId) => [assetId, []]));
+    for (const row of rows) {
+      if (!grouped.has(row.assetId)) continue;
+      grouped.get(row.assetId).push({ dimensionId: row.dimensionId, value: row.value, lastRev: row.lastRev });
+    }
+    return Response.json({
+      ok: true,
+      revision,
+      updates: assetIds.map((assetId) => ({ assetId, values: grouped.get(assetId) })),
+      failed,
+    });
   }
   return bad("Not found", 404);
 }

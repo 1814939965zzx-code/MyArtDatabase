@@ -35,6 +35,7 @@ import { DeletionToast } from "./DeletionToast";
 import { DimensionControlsEditor, type DimensionControlsEditorHandle } from "./DimensionControlsEditor";
 import { DimensionEditorModal } from "./DimensionEditorModal";
 import { DimensionPages, type PreviewPage } from "./DimensionPages";
+import { mergePreviewPage, useDimensionSync } from "./sync/dimensionSync";
 import { HomeView } from "./HomeView";
 import { TagFilterBar } from "./TagFilterBar";
 import { TagManager, type TagEntry } from "./TagManager";
@@ -111,6 +112,71 @@ export function ArtDatabaseApp({ user, onLogout }: { user: SessionUser; onLogout
   const [previewPage, setPreviewPage] = useState<PreviewPage | null>(null);
   const [previewRevision, setPreviewRevision] = useState(0);
   const currentPreviewPage = previewPage?.projectId === workspace?.project.id ? previewPage : null;
+
+  // ---- 维度坐标同步：本地先定稿，后台按坐标合并提交；失败保留本地并标红 ----
+  const dimSync = useDimensionSync({
+    projectId: workspace?.project.id ?? "",
+    pageId: currentPreviewPage?.id ?? "",
+    onApplied: (applied) => {
+      if (!applied.length) return;
+      setPreviewPage((current) => {
+        if (!current) return current;
+        const assets = current.assets.map((asset) => {
+          const hits = applied.filter((entry) => entry.assetId === asset.assetId);
+          if (!hits.length) return asset;
+          const dimensionValues = { ...asset.dimensionValues };
+          const valueRevs = { ...(asset.valueRevs ?? {}) };
+          for (const hit of hits) {
+            dimensionValues[hit.dimensionId] = hit.value;
+            if (typeof hit.lastRev === "number") valueRevs[hit.dimensionId] = hit.lastRev;
+          }
+          return { ...asset, dimensionValues, valueRevs };
+        });
+        return { ...current, assets };
+      });
+    },
+    onDrop: (keys) => {
+      if (!keys.length) return;
+      const dropped = new Set(keys);
+      setPreviewPage((current) => {
+        if (!current) return current;
+        const assets = current.assets.map((asset) => {
+          const dimensionValues = { ...asset.dimensionValues };
+          let changed = false;
+          for (const dimensionId of Object.keys(dimensionValues)) {
+            if (dropped.has(`${asset.assetId}|${dimensionId}`)) { delete dimensionValues[dimensionId]; changed = true; }
+          }
+          return changed ? { ...asset, dimensionValues } : asset;
+        });
+        return { ...current, assets };
+      });
+    },
+    onRevision: (revision) => setPreviewPage((current) => current ? { ...current, revision: Math.max(current.revision ?? 0, revision) } : current),
+  });
+
+  /** 服务器返回的预览页：未同步坐标保留本地，其余按版本合并。 */
+  function receivePreviewPage(next: PreviewPage) {
+    setPreviewPage((current) => current && current.id === next.id ? mergePreviewPage(next, current, dimSync.isPending) : next);
+  }
+
+  // 打开 Page 时恢复上次没传完的坐标草稿，并立即补传。
+  useEffect(() => {
+    if (!currentPreviewPage?.id) return;
+    const draft = dimSync.restoreDraft();
+    if (!draft.length) return;
+    setPreviewPage((current) => {
+      if (!current || current.id !== currentPreviewPage.id) return current;
+      const assets = current.assets.map((asset) => {
+        const hits = draft.filter((entry) => entry.assetId === asset.assetId);
+        if (!hits.length) return asset;
+        const dimensionValues = { ...asset.dimensionValues };
+        for (const hit of hits) dimensionValues[hit.dimensionId] = hit.value;
+        return { ...asset, dimensionValues };
+      });
+      return { ...current, assets };
+    });
+    void dimSync.flush();
+  }, [currentPreviewPage?.id]);
   const [selectedAssetId, setSelectedAssetId] = useState<string | null>(null);
   const [search, setSearch] = useState("");
   const [view, setView] = useState<"grid" | "list">("grid");
@@ -517,16 +583,8 @@ export function ArtDatabaseApp({ user, onLogout }: { user: SessionUser; onLogout
 
   async function saveDimensionValue(assetId: string, dimensionId: string, value: number) {
     if (!workspace || !currentPreviewPage) return;
-    try {
-      await apiFetch("/api/preview-values", {
-        method: "PATCH",
-        body: JSON.stringify({ projectId: workspace.project.id, pageId: currentPreviewPage.id, assetId, values: { [dimensionId]: value } }),
-      });
-      setMessage("维度位置已保存");
-    } catch (error) {
-      setMessage(error instanceof Error ? error.message : "维度位置保存失败");
-      setPreviewRevision((v) => v + 1);
-    }
+    // 本地已经通过 onChangeValue 更新过了：这里只入队，由同步器合并提交、失败重试。
+    dimSync.setValue(assetId, dimensionId, value);
   }
 
   async function applyDimensionLabels(updates: Array<{ id: string; leftLabel: string; rightLabel: string }>) {
@@ -562,18 +620,9 @@ export function ArtDatabaseApp({ user, onLogout }: { user: SessionUser; onLogout
         ? { ...asset, dimensionValues: { ...asset.dimensionValues, ...values } }
         : asset),
     } : current);
-    try {
-      await apiFetch("/api/preview-values", {
-        method: "PATCH",
-        body: JSON.stringify({ projectId: workspace.project.id, pageId: currentPreviewPage.id, assetId, values }),
-      });
-      setMessage("图片坐标与维度值已保存");
-      return true;
-    } catch (error) {
-      setMessage(error instanceof Error ? error.message : "维度位置保存失败");
-      setPreviewRevision((v) => v + 1);
-      return false;
-    }
+    // 乐观合并后立即返回：坐标进队列，由同步器合并提交、失败重试，不再回滚整页。
+    for (const [dimensionId, value] of Object.entries(values)) dimSync.setValue(assetId, dimensionId, value);
+    return true;
   }
 
   function acceptUpload(file?: File) {
@@ -1014,7 +1063,7 @@ export function ArtDatabaseApp({ user, onLogout }: { user: SessionUser; onLogout
                   </Button>
                 }
               />
-            )}</> : surface === "preview" ? <DimensionPages key={workspace.project.id} projectId={workspace.project.id} assets={workspace.assets} page={currentPreviewPage} onPageChange={setPreviewPage} revision={previewRevision} onMessage={setMessage} onSelectAsset={setSelectedAssetId} onUpdateAssetDimensions={savePreviewDimensionValues} onAddDimension={() => setDimensionOpen(true)} onEditDimension={(dimension) => setEditingDimensionId(dimension.id)} /> : <BoardView key={workspace.project.id} projectId={workspace.project.id} assets={workspace.assets} onMessage={setMessage} onSelectAsset={setSelectedAssetId} />}
+            )}</> : surface === "preview" ? <DimensionPages key={workspace.project.id} projectId={workspace.project.id} assets={workspace.assets} page={currentPreviewPage} onPageChange={setPreviewPage} onReceivePage={receivePreviewPage} revision={previewRevision} syncStatus={dimSync.status} onRetrySync={dimSync.retry} onMessage={setMessage} onSelectAsset={setSelectedAssetId} onUpdateAssetDimensions={savePreviewDimensionValues} onAddDimension={() => setDimensionOpen(true)} onEditDimension={(dimension) => setEditingDimensionId(dimension.id)} /> : <BoardView key={workspace.project.id} projectId={workspace.project.id} assets={workspace.assets} onMessage={setMessage} onSelectAsset={setSelectedAssetId} />}
           </>
         ) : (
           <EmptyState

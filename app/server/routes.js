@@ -750,15 +750,60 @@ async function createCanvas(request, { db }) {
   return Response.json({ canvas: { id, projectId, name, revision, itemCount: 0 } }, { status: 201 });
 }
 
+const MAX_CANVAS_FRAMES = 200;
+
+/** 校验并归一化 Frame 数组（整份替换语义，存进 canvases.frames）。 */
+function normalizeCanvasFrames(value) {
+  if (!Array.isArray(value)) return { error: "frames 必须是数组" };
+  if (value.length > MAX_CANVAS_FRAMES) return { error: "Frame 数量超出上限" };
+  const frames = [];
+  const seen = new Set();
+  for (const raw of value) {
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) return { error: "Frame 格式不正确" };
+    const id = cleanText(raw.id, 80);
+    if (!id) return { error: "Frame 缺少 ID" };
+    if (seen.has(id)) return { error: "Frame ID 不能重复" };
+    seen.add(id);
+    const [x, y, width, height] = [raw.x, raw.y, raw.width, raw.height].map((entry) => Number(entry));
+    if (![x, y, width, height].every((entry) => Number.isFinite(entry))) return { error: "Frame 坐标必须是数字" };
+    frames.push({ id, name: cleanText(raw.name, 80) || "Frame", x, y, width, height });
+  }
+  return { frames };
+}
+
+/** 读取 canvases.frames，解析失败按空数组处理。 */
+function readCanvasFrames(db, canvasId) {
+  const row = db.prepare("SELECT frames FROM canvases WHERE id = ?").get(canvasId);
+  if (!row || !row.frames) return [];
+  try {
+    const parsed = JSON.parse(row.frames);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch { return []; }
+}
+
 async function renameCanvas(request, { db }) {
   const payload = await request.json();
   const id = cleanText(payload.id, 80);
   const name = cleanText(payload.name, 50);
-  if (!id || !name) return Response.json({ error: "参数不完整" }, { status: 400 });
-  const revision = Date.now();
-  const result = db.prepare("UPDATE canvases SET name = ?, revision = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(name, revision, id);
-  if (!result.changes) return Response.json({ error: "画板不存在" }, { status: 404 });
-  return Response.json({ canvas: { id, name, revision } });
+  const hasName = payload.name !== undefined;
+  const hasFrames = payload.frames !== undefined;
+  if (!id || (!hasName && !hasFrames)) return Response.json({ error: "参数不完整" }, { status: 400 });
+  if (hasName && !name) return Response.json({ error: "画板名称不能为空" }, { status: 400 });
+  let frames = null;
+  if (hasFrames) {
+    const parsed = normalizeCanvasFrames(payload.frames);
+    if (parsed.error) return Response.json({ error: parsed.error }, { status: 400 });
+    frames = parsed.frames;
+  }
+  if (!db.prepare("SELECT id FROM canvases WHERE id = ?").get(id)) return Response.json({ error: "画板不存在" }, { status: 404 });
+  if (hasName) {
+    bumpRevision(db, id);
+    db.prepare("UPDATE canvases SET name = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(name, id);
+  }
+  // Frame 不是画板元素：整份替换，不参与元素版本号（跨端一致性靠进入/切回时拉取）。
+  if (frames) db.prepare("UPDATE canvases SET frames = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(JSON.stringify(frames), id);
+  const current = db.prepare("SELECT id, name, revision FROM canvases WHERE id = ?").get(id);
+  return Response.json({ canvas: { id: current.id, name: current.name, revision: current.revision, frames: readCanvasFrames(db, id) } });
 }
 
 function deleteCanvas(request, { db }) {
@@ -772,10 +817,17 @@ function deleteCanvas(request, { db }) {
 function getCanvas(request, { db }) {
   const canvasId = new URL(request.url).searchParams.get("canvasId")?.trim();
   if (!canvasId) return Response.json({ error: "缺少画板 ID" }, { status: 400 });
-  const canvas = db.prepare("SELECT id, project_id AS projectId, name, revision FROM canvases WHERE id = ?").get(canvasId);
+  const canvas = db.prepare("SELECT id, project_id AS projectId, name, revision, frames FROM canvases WHERE id = ?").get(canvasId);
   if (!canvas) return Response.json({ error: "画板不存在" }, { status: 404 });
+  let frames = [];
+  if (canvas.frames) {
+    try {
+      const parsed = JSON.parse(canvas.frames);
+      if (Array.isArray(parsed)) frames = parsed;
+    } catch { frames = []; }
+  }
   const rows = db.prepare(`SELECT ci.id, ci.canvas_id AS canvasId, ci.asset_id AS assetId, ci.type, ci.parent_frame_id AS parentFrameId,
-    ci.x, ci.y, ci.width, ci.height, ci.z_index AS zIndex, ci.rotation, ci.payload,
+    ci.x, ci.y, ci.width, ci.height, ci.z_index AS zIndex, ci.rotation, ci.payload, ci.last_rev AS lastRev,
     a.name, CASE WHEN (a.thumbnail_key IS NOT NULL OR a.storage_key IS NOT NULL) AND (a.transcode_status IS NULL OR a.transcode_status = 'ready')
       THEN '/api/media?id=' || a.id || '&variant=thumbnail&v=' || COALESCE(a.thumbnail_key, a.storage_key) ELSE a.thumbnail_url END AS thumbnailUrl
     FROM canvas_items ci LEFT JOIN assets a ON a.id = ci.asset_id
@@ -788,13 +840,131 @@ function getCanvas(request, { db }) {
     const { payload: _ignored, ...rest } = row;
     return { ...rest, payload };
   });
-  return Response.json({ canvas, items });
+  const { frames: _ignoredFrames, ...canvasRest } = canvas;
+  return Response.json({ canvas: { ...canvasRest, frames }, items });
 }
 
 function bumpRevision(db, canvasId) {
-  const revision = Date.now();
-  db.prepare("UPDATE canvases SET revision = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(revision, canvasId);
-  return revision;
+  db.prepare("UPDATE canvases SET revision = revision + 1, updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(canvasId);
+  return db.prepare("SELECT revision FROM canvases WHERE id = ?").get(canvasId).revision;
+}
+
+/** 画板元素按 id 批量回读（字段与 GET /api/canvas 一致，供批量提交原样回传归一化结果）。 */
+function selectCanvasItems(db, canvasId, ids) {
+  if (!ids.length) return [];
+  const placeholders = ids.map(() => "?").join(", ");
+  const rows = db.prepare(`SELECT ci.id, ci.canvas_id AS canvasId, ci.asset_id AS assetId, ci.type, ci.parent_frame_id AS parentFrameId,
+    ci.x, ci.y, ci.width, ci.height, ci.z_index AS zIndex, ci.rotation, ci.payload, ci.last_rev AS lastRev,
+    a.name, CASE WHEN (a.thumbnail_key IS NOT NULL OR a.storage_key IS NOT NULL) AND (a.transcode_status IS NULL OR a.transcode_status = 'ready')
+      THEN '/api/media?id=' || a.id || '&variant=thumbnail&v=' || COALESCE(a.thumbnail_key, a.storage_key) ELSE a.thumbnail_url END AS thumbnailUrl
+    FROM canvas_items ci LEFT JOIN assets a ON a.id = ci.asset_id
+    WHERE ci.canvas_id = ? AND ci.id IN (${placeholders})`).all(canvasId, ...ids);
+  return rows.map((row) => {
+    let payload = null;
+    if (row.payload) {
+      try { payload = JSON.parse(row.payload); } catch { payload = null; }
+    }
+    const { payload: _ignored, ...rest } = row;
+    return { ...rest, payload };
+  });
+}
+
+const CANVAS_ITEM_TYPES = new Set(["image", "shape", "text"]);
+
+/** 把客户端提交的元素字段归一化（与服务端单条写入保持同一套裁剪规则）。 */
+function canvasItemValues(raw) {
+  const payload = raw && typeof raw === "object" ? raw : {};
+  return {
+    type: cleanText(payload.type, 20) || "image",
+    assetId: cleanId(payload.assetId) || null,
+    parentFrameId: payload.parentFrameId ? cleanText(payload.parentFrameId, 80) : null,
+    x: floatNumber(payload.x, 0, -1_000_000_000, 1_000_000_000),
+    y: floatNumber(payload.y, 0, -1_000_000_000, 1_000_000_000),
+    width: floatNumber(payload.width, 220, 0.1, 100000),
+    height: floatNumber(payload.height, 170, 0.1, 100000),
+    zIndex: number(payload.zIndex, 1, 0, 10000),
+    rotation: number(payload.rotation, 0, -180, 180),
+    payload: payload.payload && typeof payload.payload === "object" ? payload.payload : null,
+    payloadJson: payload.payload && typeof payload.payload === "object" ? JSON.stringify(payload.payload) : null,
+  };
+}
+
+/**
+ * 批量提交画板元素：一次事务内按 insert → update → delete 执行。
+ * 逐条失败进 failed，不影响同批其它改动；有任何成功写入才把 revision +1 一次。
+ */
+async function batchUpdateCanvasItems(request, { db }) {
+  const body = await request.json().catch(() => null);
+  if (!body || typeof body !== "object" || Array.isArray(body)) return Response.json({ error: "请求内容必须是对象" }, { status: 400 });
+  const canvasId = cleanText(body.canvasId, 80);
+  if (!canvasId) return Response.json({ error: "参数不完整" }, { status: 400 });
+  const ops = body.ops;
+  if (!Array.isArray(ops) || !ops.length) return Response.json({ error: "没有要提交的改动" }, { status: 400 });
+  if (ops.length > 200) return Response.json({ error: "单次最多提交 200 项" }, { status: 400 });
+  const canvas = db.prepare("SELECT id, project_id AS projectId, revision FROM canvases WHERE id = ?").get(canvasId);
+  if (!canvas) return Response.json({ error: "画板不存在" }, { status: 404 });
+
+  const failed = [];
+  const deleted = [];
+  const touched = new Set();
+  let wrote = false;
+
+  const existsStmt = db.prepare("SELECT canvas_id AS canvasId FROM canvas_items WHERE id = ?");
+  const membershipStmt = db.prepare(`SELECT 1 FROM canvases c
+    INNER JOIN project_assets pa ON pa.project_id = c.project_id
+    WHERE c.id = ? AND pa.asset_id = ?`);
+  const insertStmt = db.prepare(`INSERT INTO canvas_items (id, canvas_id, asset_id, type, parent_frame_id, x, y, width, height, z_index, rotation, payload)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+  const updateStmt = db.prepare(`UPDATE canvas_items SET x = ?, y = ?, width = ?, height = ?, z_index = ?, rotation = ?, parent_frame_id = ?, payload = ?
+    WHERE id = ? AND canvas_id = ?`);
+  const deleteStmt = db.prepare("DELETE FROM canvas_items WHERE id = ? AND canvas_id = ?");
+
+  transaction(db, () => {
+    for (const raw of ops) {
+      const op = raw && typeof raw === "object" ? cleanText(raw.op, 10) : "";
+      if (op === "insert") {
+        const item = canvasItemValues(raw.item);
+        const id = cleanText(raw.item && raw.item.id, 80);
+        if (!id) { failed.push({ id: "", reason: "invalid_id" }); continue; }
+        if (!CANVAS_ITEM_TYPES.has(item.type)) { failed.push({ id, reason: "invalid_type" }); continue; }
+        if (item.type === "image" && !item.assetId) { failed.push({ id, reason: "missing_asset" }); continue; }
+        if (existsStmt.get(id)) { failed.push({ id, reason: "already_exists" }); continue; }
+        if (item.type === "image" && !membershipStmt.get(canvasId, item.assetId)) { failed.push({ id, reason: "asset_not_in_project" }); continue; }
+        insertStmt.run(id, canvasId, item.type === "image" ? item.assetId : null, item.type, item.parentFrameId,
+          item.x, item.y, item.width, item.height, item.zIndex, item.rotation, item.payloadJson);
+        touched.add(id);
+        wrote = true;
+        continue;
+      }
+      if (op === "update") {
+        const id = cleanText(raw.item && raw.item.id, 80);
+        if (!id) { failed.push({ id: "", reason: "invalid_id" }); continue; }
+        const item = canvasItemValues(raw.item);
+        const result = updateStmt.run(item.x, item.y, item.width, item.height, item.zIndex, item.rotation,
+          item.parentFrameId, item.payloadJson, id, canvasId);
+        if (!result.changes) { failed.push({ id, reason: "not_found" }); continue; }
+        touched.add(id);
+        wrote = true;
+        continue;
+      }
+      if (op === "delete") {
+        const id = cleanText(raw.id, 80);
+        if (!id) { failed.push({ id: "", reason: "invalid_id" }); continue; }
+        const result = deleteStmt.run(id, canvasId);
+        deleted.push(id);
+        if (result.changes) wrote = true;
+        continue;
+      }
+      failed.push({ id: cleanText((raw.item && raw.item.id) ?? raw.id, 80), reason: "invalid_op" });
+    }
+  });
+
+  const revision = wrote ? bumpRevision(db, canvasId) : canvas.revision;
+  if (wrote) {
+    const markStmt = db.prepare("UPDATE canvas_items SET last_rev = ? WHERE canvas_id = ? AND id = ?");
+    for (const id of touched) markStmt.run(revision, canvasId, id);
+  }
+  return Response.json({ revision, items: selectCanvasItems(db, canvasId, [...touched]), deleted, failed });
 }
 
 async function addCanvasItem(request, { db }) {
@@ -827,10 +997,11 @@ async function addCanvasItem(request, { db }) {
     rotation: number(payload.rotation, 0, -180, 180),
     payload: payload.payload && typeof payload.payload === "object" ? payload.payload : null,
   };
-  db.prepare("INSERT INTO canvas_items (id, canvas_id, asset_id, type, parent_frame_id, x, y, width, height, z_index, rotation, payload) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
-    .run(item.id, item.canvasId, item.assetId, item.type, parentFrameId, item.x, item.y, item.width, item.height, item.zIndex, item.rotation, itemPayload);
+  db.prepare("INSERT INTO canvas_items (id, canvas_id, asset_id, type, parent_frame_id, x, y, width, height, z_index, rotation, payload, last_rev) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+    .run(item.id, item.canvasId, item.assetId, item.type, parentFrameId, item.x, item.y, item.width, item.height, item.zIndex, item.rotation, itemPayload, 0);
   const revision = bumpRevision(db, canvasId);
-  return Response.json({ item, revision }, { status: 201 });
+  db.prepare("UPDATE canvas_items SET last_rev = ? WHERE id = ?").run(revision, item.id);
+  return Response.json({ item: { ...item, lastRev: revision }, revision }, { status: 201 });
 }
 
 async function updateCanvasItem(request, { db }) {
@@ -851,6 +1022,7 @@ async function updateCanvasItem(request, { db }) {
     );
   if (!result.changes) return Response.json({ error: "元素不存在" }, { status: 404 });
   const revision = bumpRevision(db, canvasId);
+  db.prepare("UPDATE canvas_items SET last_rev = ? WHERE id = ? AND canvas_id = ?").run(revision, id, canvasId);
   return Response.json({ ok: true, revision });
 }
 
@@ -1386,6 +1558,7 @@ export async function handleApi(request, ctx) {
     if (pathname === "/api/canvases" && method === "DELETE") return deleteCanvas(request, ctx);
 
     if (pathname === "/api/canvas" && method === "GET") return getCanvas(request, ctx);
+    if (pathname === "/api/canvas-items/batch" && method === "POST") return await batchUpdateCanvasItems(request, ctx);
     if (pathname === "/api/canvas-items" && method === "POST") return await addCanvasItem(request, ctx);
     if (pathname === "/api/canvas-items" && method === "PATCH") return await updateCanvasItem(request, ctx);
     if (pathname === "/api/canvas-items" && method === "DELETE") return deleteCanvasItem(request, ctx);

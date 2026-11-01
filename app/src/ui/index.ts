@@ -29,3 +29,5 @@ export { InlineMessage } from "./InlineMessage";
 export type { InlineMessageProps, InlineMessageTone } from "./InlineMessage";
 export { Spinner } from "./Spinner";
 export type { SpinnerProps } from "./Spinner";
+export { SyncStatusDot } from "./SyncStatusDot";
+export type { SyncStatus } from "./SyncStatusDot";

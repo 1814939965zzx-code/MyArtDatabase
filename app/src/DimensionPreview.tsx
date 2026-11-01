@@ -2,7 +2,7 @@
 
 import { Aperture, Box, Bug, Images, Maximize2, Minimize2, Minus, MousePointer2, Pencil, Plus, RotateCcw, X } from "lucide-react";
 import { CSSProperties, PointerEvent, useEffect, useMemo, useRef, useState } from "react";
-import { Button, EmptyState, IconButton, RangeSlider, TagLabel, cn } from "./ui";
+import { Button, EmptyState, IconButton, RangeSlider, SyncStatusDot, TagLabel, cn } from "./ui";
 import { useViewportGestures } from "./useViewportGestures";
 import { displayDimensionValue } from "./dimensionScale";
 import { centeredGridStepFor, gridClusterCell, gridClusterKey, gridMinimumSpacing, gridStepFor, gridTicksFor, PREVIEW_ASSET_WIDTH, previewAssetAspectRatio as aspectRatioFor, usesCenteredGrid, zoomPanAtPointer } from "./previewGrid";
@@ -156,6 +156,8 @@ export function DimensionPreview({
   selectedIds,
   onSelectedIdsChange,
   onMessage,
+  syncStatus = "synced",
+  onRetrySync,
 }: {
   dimensions: Dimension[];
   assets: Asset[];
@@ -166,6 +168,8 @@ export function DimensionPreview({
   selectedIds: string[];
   onSelectedIdsChange: (ids: string[]) => void;
   onMessage?: (message: string) => void;
+  syncStatus?: "synced" | "saving" | "offline";
+  onRetrySync?: () => void;
 }) {
   const [zoom, setZoom] = useState(1);
   const gestureZoomRef = useRef(zoom);
@@ -1230,7 +1234,8 @@ export function DimensionPreview({
     );
     if (Object.keys(changedValues).length) {
       pushDimensionUndo(active.assetId, active.startValues);
-      await onUpdateAssetDimensions(active.assetId, changedValues);
+      // 乐观值已在父组件的 previewPage 里：入队后立即清掉临时覆盖，不再等网络回来。
+      void onUpdateAssetDimensions(active.assetId, changedValues);
     }
     setOverrides((current) => {
       const next = { ...current };
@@ -1395,7 +1400,8 @@ export function DimensionPreview({
     );
     if (Object.keys(changedValues).length) {
       pushDimensionUndo(active.assetId, active.startValues);
-      await onUpdateAssetDimensions(active.assetId, changedValues);
+      // 乐观值已在父组件的 previewPage 里：入队后立即清掉临时覆盖，不再等网络回来。
+      void onUpdateAssetDimensions(active.assetId, changedValues);
     }
     setOverrides((current) => {
       const next = { ...current };
@@ -1887,6 +1893,9 @@ export function DimensionPreview({
                 </span>
               ) : null}
             </div> : null}
+            <div className="absolute bottom-3 right-3 z-[30] flex h-6 w-6 items-center justify-center rounded-full border border-line bg-surface/90 shadow-sm">
+              <SyncStatusDot status={syncStatus} onRetry={onRetrySync} />
+            </div>
           </div>
         ) : (
           <EmptyState

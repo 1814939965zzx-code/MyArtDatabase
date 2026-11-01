@@ -9,13 +9,17 @@ export type PageDimension = { id: string; projectId: string; pageId: string; lef
 export type PreviewPage = {
   id: string; projectId: string; name: string; selectedIds: string[];
   dimensions: PageDimension[];
-  assets: { assetId: string; dimensionValues: Record<string, number> }[];
+  assets: { assetId: string; dimensionValues: Record<string, number>; valueRevs?: Record<string, number> }[];
+  revision?: number;
 };
 type Asset = { id: string; name: string; fileName: string; tags: string[]; thumbnailUrl: string | null; width: number; height: number };
 type Summary = { id: string; name: string; assetCount: number };
 
-export function DimensionPages({ projectId, assets, page, onPageChange, revision, onSelectAsset, onUpdateAssetDimensions, onAddDimension, onEditDimension, onMessage }: {
+export function DimensionPages({ projectId, assets, page, onPageChange, onReceivePage, revision, syncStatus, onRetrySync, onSelectAsset, onUpdateAssetDimensions, onAddDimension, onEditDimension, onMessage }: {
   projectId: string; assets: Asset[]; page: PreviewPage | null; onPageChange: (page: PreviewPage | null) => void; revision: number;
+  onReceivePage: (page: PreviewPage) => void;
+  syncStatus: "synced" | "saving" | "offline";
+  onRetrySync: () => void;
   onSelectAsset: (id: string) => void;
   onUpdateAssetDimensions: (id: string, values: Record<string, number>) => Promise<boolean>;
   onAddDimension: () => void; onEditDimension: (dimension: PageDimension) => void; onMessage: (message: string) => void;
@@ -37,6 +41,10 @@ export function DimensionPages({ projectId, assets, page, onPageChange, revision
   const [reload, setReload] = useState(0);
   const changeRef = useRef(onPageChange);
   changeRef.current = onPageChange;
+  const receiveRef = useRef(onReceivePage);
+  receiveRef.current = onReceivePage;
+  const statusRef = useRef(syncStatus);
+  statusRef.current = syncStatus;
   const pageRef = useRef(page);
   pageRef.current = page;
   const axesQueue = useRef<Promise<unknown>>(Promise.resolve());
@@ -54,13 +62,37 @@ export function DimensionPages({ projectId, assets, page, onPageChange, revision
       if (!id) { changeRef.current(null); setLoading(false); return; }
       const result = await apiFetch<{ page: PreviewPage }>(`/api/preview-page?projectId=${encodeURIComponent(projectId)}&pageId=${encodeURIComponent(id)}`);
       if (active) {
-        changeRef.current(result.page);
+        // 交给 App 合并：未同步的坐标不会被这次拉取覆盖。
+        receiveRef.current(result.page);
         setLoading(false);
         try { localStorage.setItem(`artdatabase:preview-page:${projectId}`, id); } catch { /* optional preference */ }
       }
     })().catch((reason) => { if (active) { setError(reason instanceof Error ? reason.message : "Page 载入失败"); setLoading(false); } });
     return () => { active = false; };
   }, [projectId, pageId, revision, reload]);
+
+  // 拉取时机：切回标签 / 窗口聚焦时拉一次，停留期间 30 秒兜底；有未同步坐标时跳过。
+  useEffect(() => {
+    if (!pageId) return;
+    const refresh = async () => {
+      if (statusRef.current !== "synced") return;
+      if (document.visibilityState !== "visible") return;
+      try {
+        const result = await apiFetch<{ page: PreviewPage }>(`/api/preview-page?projectId=${encodeURIComponent(projectId)}&pageId=${encodeURIComponent(pageId)}`);
+        receiveRef.current(result.page);
+      } catch { /* 兜底刷新失败不打断编辑 */ }
+    };
+    const timer = window.setInterval(() => { void refresh(); }, 30000);
+    const onVisibility = () => { if (document.visibilityState === "visible") void refresh(); };
+    const onFocus = () => { void refresh(); };
+    document.addEventListener("visibilitychange", onVisibility);
+    window.addEventListener("focus", onFocus);
+    return () => {
+      window.clearInterval(timer);
+      document.removeEventListener("visibilitychange", onVisibility);
+      window.removeEventListener("focus", onFocus);
+    };
+  }, [projectId, pageId]);
 
   const current = page?.projectId === projectId && page.id === pageId ? page : null;
   const pageAssets = useMemo(() => {
@@ -240,6 +272,8 @@ export function DimensionPages({ projectId, assets, page, onPageChange, revision
             onSelectedIdsChange={selectAxes}
             onSelectAsset={onSelectAsset}
             onUpdateAssetDimensions={onUpdateAssetDimensions}
+            syncStatus={syncStatus}
+            onRetrySync={onRetrySync}
             onAddDimension={onAddDimension}
             onMessage={onMessage}
             onEditDimension={(dimension) => { const found = current.dimensions.find((d) => d.id === dimension.id); if (found) onEditDimension(found); }}
