@@ -170,7 +170,6 @@
   }
 
   .camera-moving .preview-asset-face::after,
-  .camera-moving .preview-scene-tag::after,
   .camera-moving .preview-stack .stack-card::after {
     transition: opacity 0s;
   }
@@ -453,10 +452,9 @@
 
   /*
    * 景深雾化：越远离焦点的目标，越不透明地叠加一层画布底色（强度由 --dof-fog 提供，0～1）。
-   * 图片、堆与坐标 tag 共用这一层，保证远处的坐标和图片一起融进背景。
+   * 只作用于图片/堆；坐标轴端点与角落坐标 tag 始终清晰、不叠加底色。
    */
-  .preview-asset-face::after,
-  .preview-scene-tag::after {
+  .preview-asset-face::after {
     content: "";
     position: absolute;
     inset: 0;
@@ -471,9 +469,9 @@
     position: relative;
   }
 
-  /* hover 单张时只隐藏被 hover 的原图本体，前方遮挡物保持原位；放大图由屏幕空间前景层显示 */
+  /* hover 单张时源图直接不渲染，避免隐藏的 filter/3D 图层留下重绘残影；放大图由屏幕前景层显示 */
   .preview-asset.hover-foreground-source .preview-asset-face {
-    visibility: hidden;
+    background: transparent;
   }
 
   .preview-asset.octant-hidden .preview-asset-face {
@@ -494,6 +492,10 @@
     position: absolute;
     z-index: 2000;
     pointer-events: none;
+    /* 前景层是屏幕空间图层：不参与 3D 透视/深度排序，避免放大图片被透视切片 */
+    perspective: none;
+    transform-style: flat;
+    isolation: isolate;
   }
 
   .hover-preview .preview-asset-face {
@@ -501,16 +503,68 @@
     --billboard-rx: 0deg;
     --billboard-rz: 0deg;
     --hover-scale: 2.475;
+    transform: none;
+    transform-style: flat;
   }
 
   .hover-preview .preview-asset-face > img,
   .hover-preview .preview-asset-face > i {
-    animation: hover-preview-in var(--preview-hover-duration) ease;
+    /* 用元素自身尺寸放大，而不是 transform: scale，避免缩放合成层产生切片残影 */
+    inset: auto;
+    left: -73.75%;
+    top: -73.75%;
+    width: 247.5%;
+    height: 247.5%;
+    max-width: none;
+    max-height: none;
+    transform: none;
+    animation: hover-preview-grow var(--preview-hover-duration) ease;
   }
 
-  @keyframes hover-preview-in {
-    from { transform: scale3d(1, 1, 1); }
-    to { transform: scale3d(2.475, 2.475, 2.475); }
+  /* 只动画布局尺寸，不使用 transform 缩放；从源图大小长到 2.475 倍 */
+  @keyframes hover-preview-grow {
+    from {
+      left: 0;
+      top: 0;
+      width: 100%;
+      height: 100%;
+    }
+    to {
+      left: -73.75%;
+      top: -73.75%;
+      width: 247.5%;
+      height: 247.5%;
+    }
+  }
+
+  /* 缩回：保留前景层，按尺寸从 2.475 倍收回源图大小，结束后卸载 */
+  .hover-preview.closing .preview-asset-face > img,
+  .hover-preview.closing .preview-asset-face > i {
+    animation: hover-preview-shrink var(--preview-hover-duration) ease forwards;
+  }
+
+  @keyframes hover-preview-shrink {
+    from {
+      left: -73.75%;
+      top: -73.75%;
+      width: 247.5%;
+      height: 247.5%;
+    }
+    to {
+      left: 0;
+      top: 0;
+      width: 100%;
+      height: 100%;
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .hover-preview .preview-asset-face > img,
+    .hover-preview .preview-asset-face > i,
+    .hover-preview.closing .preview-asset-face > img,
+    .hover-preview.closing .preview-asset-face > i {
+      animation: none;
+    }
   }
 
   .hover-preview .preview-value-tags {
@@ -576,6 +630,20 @@
    * 图片上方的坐标 tag 组：与坐标轴端点使用同一款只读 TagLabel，
    * 每个选中维度独立一个 tag，不再使用深色合成气泡。
    */
+  /*
+   * 图片坐标 tag 的独立图层：跟随 face 的透视/朝向，但不继承 face 的模糊与白色叠加。
+   * 只在拖动单张时显示；hover 的坐标 tag 由屏幕前景层负责。
+   */
+  .preview-value-tag-layer {
+    position: absolute;
+    inset: 0;
+    z-index: 6;
+    pointer-events: none;
+    transform: scale3d(var(--persp, 1), var(--persp, 1), var(--persp, 1)) rotateZ(var(--billboard-rz)) rotateX(var(--billboard-rx));
+    transform-origin: center;
+    transform-style: preserve-3d;
+  }
+
   .preview-value-tags {
     position: absolute;
     left: 50%;

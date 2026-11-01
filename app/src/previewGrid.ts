@@ -47,6 +47,34 @@ export function gridMinimumSpacing(assets: readonly AssetSize[], mode: number, a
 }
 
 /**
+ * 收起堆的成员顺序：
+ * - 1D：按唯一维度值升序，小值在前；
+ * - 2D：先按 y 升序成行，行内按 x 升序（由 orderStackGrid 按实际列数切行）；
+ * - 3D：保持页面素材顺序，展开平面仍在打开时按深度排序。
+ */
+export function orderStackMembers<T>(members: readonly T[], mode: number, xOf: (member: T) => number, yOf: (member: T) => number): T[] {
+  if (mode === 1) return [...members].sort((left, right) => xOf(left) - xOf(right));
+  if (mode === 2) return [...members].sort((left, right) => yOf(left) - yOf(right));
+  return [...members];
+}
+
+/**
+ * 2D 网格排序：y 小的在上方行，x 小的在行内左侧。
+ * 先按 y 稳定排序并每 columns 个切成一行，再对行内按 x 升序。
+ */
+export function orderStackGrid<T>(members: readonly T[], columns: number, xOf: (member: T) => number, yOf: (member: T) => number): T[] {
+  if (!(columns > 1) || members.length <= 1) return [...members];
+  const sorted = [...members].sort((left, right) => yOf(left) - yOf(right));
+  const result: T[] = [];
+  for (let index = 0; index < sorted.length; index += columns) {
+    const row = sorted.slice(index, index + columns);
+    row.sort((left, right) => xOf(left) - xOf(right));
+    result.push(...row);
+  }
+  return result;
+}
+
+/**
  * 选择每半轴的等分格数 n：n = 1/2/3/4/5… 按 +1 递增，整轴格数 2n 始终为偶数。
  * 首次按当前像素间距直接取能保持格距不小于 M 的最大 n；之后格距超出 2.4M 时 n+1、
  * 小于 M 时 n-1，保持等分并按单格递增/递减。max n=256（格距 0.390625）。

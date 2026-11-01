@@ -5,7 +5,7 @@ import { CSSProperties, PointerEvent, useEffect, useLayoutEffect, useMemo, useRe
 import { Button, EmptyState, IconButton, RangeSlider, SyncStatusDot, TagLabel, cn } from "./ui";
 import { useViewportGestures } from "./useViewportGestures";
 import { displayDimensionValue } from "./dimensionScale";
-import { gridClusterCell, gridClusterKey, gridDivisionsFor, gridMinimumSpacing, gridTicksFor, orderByViewDepth, PREVIEW_ASSET_WIDTH, previewAssetAspectRatio as aspectRatioFor, stackPreviewMembers, zoomPanAtPointer } from "./previewGrid";
+import { gridClusterCell, gridClusterKey, gridDivisionsFor, gridMinimumSpacing, gridTicksFor, orderByViewDepth, orderStackGrid, orderStackMembers, PREVIEW_ASSET_WIDTH, previewAssetAspectRatio as aspectRatioFor, stackPreviewMembers, zoomPanAtPointer } from "./previewGrid";
 
 type Dimension = { id: string; leftLabel: string; rightLabel: string };
 type Asset = { id: string; name: string; thumbnailUrl: string | null; dimensionValues: Record<string, number>; width?: number; height?: number };
@@ -78,6 +78,7 @@ type HoverPreview = {
   top: number;
   width: number;
   height: number;
+  closing?: boolean;
 };
 // 缩放导致聚堆重组时的 FLIP 快照：按素材记录当前屏幕位置与可见表示
 type FlipLayoutEntry = {
@@ -246,6 +247,7 @@ export function DimensionPreview({
   const dragValues = useRef<Record<string, number>>({});
   const spaceHeldRef = useRef(false);
   const hoveredAssetIdRef = useRef<string | null>(null);
+  const hoverCloseTimer = useRef<number | null>(null);
   // Tab 切换前后遮挡图片焦点：hover 锚点（鼠标实际所指的图片/堆）、按深度排序的循环列表与当前下标
   const hoverAnchorRef = useRef<FocusTarget | null>(null);
   const focusCycleRef = useRef<FocusTarget[]>([]);
@@ -284,7 +286,8 @@ export function DimensionPreview({
   );
   const mode = selected.length;
   // hover 单张/堆期间，其余图片、堆与坐标 tag 统一失焦、压暗，网格与坐标线降透明度
-  const hoverFocusActive = hoverPreview !== null || hoveredAssetId !== null || planeCluster !== null || closingCluster !== null;
+  const hoverFocusActive = (hoverPreview !== null && !hoverPreview.closing) || hoveredAssetId !== null || planeCluster !== null || closingCluster !== null;
+  const effectiveDimensionValue = (asset: Asset, dimensionId: string) => overrides[asset.id]?.[dimensionId] ?? asset.dimensionValues[dimensionId] ?? 500;
   const minimumGridSpacing = useMemo(() => gridMinimumSpacing(
     assets.filter((asset) => assetBelongsToIsolatedOctant(asset.dimensionValues)),
     mode,
@@ -294,6 +297,9 @@ export function DimensionPreview({
   useEffect(() => {
     if (sceneSize > 0) setGridDivisions((previous) => gridDivisionsFor(sceneSize * zoom / 200, minimumGridSpacing, previous));
   }, [sceneSize, zoom, minimumGridSpacing]);
+  useEffect(() => () => {
+    if (hoverCloseTimer.current !== null) window.clearTimeout(hoverCloseTimer.current);
+  }, []);
   const densityGridDivisions = gridDivisions ?? gridDivisionsFor(sceneSize * zoom / 200, minimumGridSpacing);
   // 每个半轴等分：0 始终是格子边界，正负两半各分成 n 格（n 按 +1 序列）。
   const activeGridDivisions = densityGridDivisions;
@@ -427,11 +433,11 @@ export function DimensionPreview({
       const z = mode === 3 ? cells[2].center - 500 : 0;
       const key = `s:axis:${activeGridDivisions}:${cellKey}:${group.map((entry) => entry.asset.id).sort().join(",")}`;
       const projected = projectValuePoint(x, y, z);
+      const ordered = orderStackMembers(group, mode, (entry) => entry.values[0], (entry) => entry.values[1] ?? 500);
       clusters.push({
         key, cellKey,
-        // 成员顺序固定为页面素材列表顺序：旋转视角时深度会连续变化，按深度排序会让收起堆的缩略图跳动。
-        // 展开平面需要「从前往后」时，在打开瞬间单独排序（见 openPlane）。
-        members: group.map((entry) => entry.asset),
+        // 1D/2D 按维度值排成列表/网格；3D 保持页面素材顺序，展开平面再按深度排序
+        members: ordered.map((entry) => entry.asset),
         x, y, z,
         bounds: {
           x: [cells[0].min, cells[0].max],
@@ -485,31 +491,7 @@ export function DimensionPreview({
     });
     return [...new Set([...singleTags, ...mergedTags])];
   })();
-  // 场景内 tag 与图片共用同一套景深：越远越模糊、并叠加越远越不透明的画布底色
-  const tagDofStyle = (xParam: number, yParam: number, zParam: number): CSSProperties => {
-    const worldZ = projectValuePoint(xParam, yParam, zParam)?.worldZ ?? 0;
-    const dofBlurOn = blurEnabled && !isOctantIsolated;
-    const baseBlur = dofBlurOn ? depthBlurStyle(worldZ) : undefined;
-    if (hoverFocusActive) {
-      // hover 聚焦：模糊受总开关控制，白色叠加始终保留
-      const focusBlur = baseBlur ?? (blurEnabled ? { filter: `blur(${HOVER_FOCUS_BLUR}px)` } : undefined);
-      return {
-        ...focusBlur,
-        "--dof-fog": HOVER_FOCUS_SCRIM,
-      } as CSSProperties;
-    }
-    if (isOctantIsolated) return {};
-    return { ...baseBlur, ...depthFogStyle(worldZ) };
-  };
-  // 端点 tag 的取点与渲染位置一致（x/y 用 0～1000 值空间，y=0 在顶部；z 为 -500～500）
-  const axisTagDof = {
-    xStart: tagDofStyle(0, 500, 0),
-    xEnd: tagDofStyle(1000, 500, 0),
-    yStart: tagDofStyle(500, 0, 0),
-    yEnd: tagDofStyle(500, 1000, 0),
-    zStart: tagDofStyle(500, 500, -500),
-    zEnd: tagDofStyle(500, 500, 500),
-  };
+  // 坐标轴端点与角落坐标 tag 不参与景深模糊/白色叠加，也不参与 hover 聚焦滤镜
   // 每个角落按维度拆成独立 tag（两词组合 = 两个 tag，三词组合 = 三个 tag），不合并不同坐标
   const cornerLabels = useMemo(() => {
     if (mode < 2 || !selected.length) return [];
@@ -1129,13 +1111,19 @@ export function DimensionPreview({
     });
   }
 
+  function hoverOverlayRect(): DOMRect | null {
+    const overlay = document.querySelector<HTMLElement>(".hover-preview .preview-asset-face > img, .hover-preview .preview-asset-face > i");
+    const rect = overlay?.getBoundingClientRect();
+    return rect && rect.width > 0 && rect.height > 0 ? rect : null;
+  }
+
   function assetAtPoint(clientX: number, clientY: number, includeBlurred = false) {
     const plane = scenePlaneRef.current;
     if (!plane) return null;
     // 单张 hover 的前景层永远绘制在最前，命中也要优先它，避免放大区域盖住的其它图片抢走点击/拖动
     const hoveredId = hoveredAssetIdRef.current;
     if (hoveredId) {
-      const hoveredRect = visualRectOf(hoveredId);
+      const hoveredRect = hoverOverlayRect() ?? visualRectOf(hoveredId);
       if (hoveredRect && clientX >= hoveredRect.left && clientX <= hoveredRect.right && clientY >= hoveredRect.top && clientY <= hoveredRect.bottom) {
         return { id: hoveredId, stackKey: null, blurred: false };
       }
@@ -1162,6 +1150,11 @@ export function DimensionPreview({
   }
 
   function visualRectOf(targetId: string) {
+    // hover 时源图已从场景中移除，用前景层记录的未放大屏幕矩形参与 Tab 焦点循环
+    if (hoverPreview?.asset.id === targetId) {
+      const viewport = sceneViewportRef.current?.getBoundingClientRect();
+      if (viewport) return new DOMRect(viewport.left + hoverPreview.left, viewport.top + hoverPreview.top, hoverPreview.width, hoverPreview.height);
+    }
     const plane = scenePlaneRef.current;
     if (!plane) return null;
     const target = Array.from(plane.querySelectorAll<HTMLElement>(".preview-asset:not(.octant-hidden)"))
@@ -1213,15 +1206,52 @@ export function DimensionPreview({
     );
   }
 
+  /** 取消 hover 缩回计时。 */
+  function cancelHoverClose() {
+    if (hoverCloseTimer.current !== null) {
+      window.clearTimeout(hoverCloseTimer.current);
+      hoverCloseTimer.current = null;
+    }
+  }
+
+  function dropHoverPreview() {
+    cancelHoverClose();
+    setHoverPreview(null);
+  }
+
+  /** 指针离开单图时保留前景层，按尺寸动画缩回源图大小后再卸载。 */
+  function closeHoverPreview() {
+    if (!hoverPreview || hoverPreview.closing) return;
+    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+      dropHoverPreview();
+      return;
+    }
+    cancelHoverClose();
+    setHoverPreview({ ...hoverPreview, closing: true });
+    hoverCloseTimer.current = window.setTimeout(() => {
+      hoverCloseTimer.current = null;
+      setHoverPreview(null);
+    }, 200);
+  }
+
   /** 将焦点应用到指定图片：在 3D 场景外的前景层展示，遮挡物保持原位、不再隐藏。 */
   function applyFocus(assetId: string) {
+    cancelHoverClose();
+    // 缩回过程中重新进入同一张图：直接恢复为完整前景层，不再重新取源图矩形
+    if (hoverPreview?.asset.id === assetId && hoverPreview.closing) {
+      hoveredAssetIdRef.current = assetId;
+      setHoveredAssetId(assetId);
+      setHoverPreview({ ...hoverPreview, closing: false });
+      return;
+    }
+    if (hoverPreview?.asset.id === assetId) return;
     hoveredAssetIdRef.current = assetId;
     setHoveredAssetId(assetId);
     const asset = assets.find((candidate) => candidate.id === assetId);
     const rect = faceRectOf(assetId);
     const viewport = sceneViewportRef.current?.getBoundingClientRect();
     if (!asset || !rect || !viewport) {
-      setHoverPreview(null);
+      dropHoverPreview();
       return;
     }
     setHoverPreview({
@@ -1263,7 +1293,7 @@ export function DimensionPreview({
     if (target.stack) {
       hoveredAssetIdRef.current = null;
       setHoveredAssetId(null);
-      setHoverPreview(null);
+      dropHoverPreview();
       openPlane(target.id);
       return;
     }
@@ -1280,7 +1310,7 @@ export function DimensionPreview({
     if (!nextAnchor) {
       hoveredAssetIdRef.current = null;
       setHoveredAssetId(null);
-      setHoverPreview(null);
+      closeHoverPreview();
       return;
     }
     const rect = visualRectOf(nextAnchor.id);
@@ -1313,7 +1343,7 @@ export function DimensionPreview({
       });
     }
     setAssetHover(null);
-    setHoverPreview(null);
+    dropHoverPreview();
   }
 
   function closePlane() {
@@ -1339,7 +1369,7 @@ export function DimensionPreview({
       });
     }
     setAssetHover(null);
-    setHoverPreview(null);
+    dropHoverPreview();
     planeCloseTimer.current = window.setTimeout(() => {
       planeCloseTimer.current = null;
       setClosingCluster(null);
@@ -1357,19 +1387,31 @@ export function DimensionPreview({
     if (planeClusterRef.current?.key === key) return;
     const cluster = clusters.find((candidate) => candidate.key === key);
     if (!cluster) return;
-    // 平面在打开瞬间按当前视角从前往后排序；之后展开期间不再重算，避免平面里的卡片跳动。
-    const members = orderByViewDepth(cluster.members, (member) => {
-      const values = { ...member.dimensionValues, ...overrides[member.id] };
-      const x = values[selected[0].id] ?? 500;
-      const y = mode >= 2 ? 1000 - (values[selected[1].id] ?? 500) : 500;
-      const z = mode === 3 ? (values[selected[2].id] ?? 500) - 500 : 0;
-      return projectValuePoint(x, y, z)?.worldZ ?? cluster.meanDepth;
-    });
+    // 3D 在打开瞬间按当前视角从前往后排序；1D 使用按维度值排好的稳定顺序；
+    // 2D 按展开平面的实际列数重新切成 y 行、行内按 x 排序。
+    let members = cluster.members;
+    if (mode === 3) {
+      members = orderByViewDepth(cluster.members, (member) => {
+        const values = { ...member.dimensionValues, ...overrides[member.id] };
+        const x = values[selected[0].id] ?? 500;
+        const y = 1000 - (values[selected[1].id] ?? 500);
+        const z = (values[selected[2].id] ?? 500) - 500;
+        return projectValuePoint(x, y, z)?.worldZ ?? cluster.meanDepth;
+      });
+    } else if (mode === 2) {
+      const columns = planeDimensions(cluster.members.length).columns;
+      members = orderStackGrid(
+        cluster.members,
+        columns,
+        (member) => effectiveDimensionValue(member, selected[0].id),
+        (member) => effectiveDimensionValue(member, selected[1].id),
+      );
+    }
     const ordered = { ...cluster, members };
     planeClusterRef.current = ordered;
     setPlaneCluster(ordered);
     // 堆平面本身就是最前层：只展示平面，不隐藏周围的图片与堆
-    setHoverPreview(null);
+    dropHoverPreview();
   }
 
   function setStackHover(key: string | null) {
@@ -1545,7 +1587,7 @@ export function DimensionPreview({
     if (active.assetId && !active.moved) {
       // 单击打开详情：先撤掉 hover 前景层，避免详情打开后场景里残留一张放大图
       setAssetHover(null);
-      setHoverPreview(null);
+      dropHoverPreview();
       onSelectAsset(active.assetId);
     }
   }
@@ -1836,25 +1878,25 @@ export function DimensionPreview({
                   );
                 }))}
                 <span className={cn("axis-label axis-label-x-start", isOctantIsolated && !isOctantSideVisible(0, -1) && "octant-hidden")}>
-                  <TagLabel className="preview-scene-tag" style={{ ...billboardStyle, ...axisTagDof.xStart }}>{selected[0].leftLabel}</TagLabel>
+                  <TagLabel className="preview-scene-tag" style={billboardStyle}>{selected[0].leftLabel}</TagLabel>
                 </span>
                 <span className={cn("axis-label axis-label-x-end", isOctantIsolated && !isOctantSideVisible(0, 1) && "octant-hidden")}>
-                  <TagLabel className="preview-scene-tag" style={{ ...billboardStyle, ...axisTagDof.xEnd }}>{selected[0].rightLabel}</TagLabel>
+                  <TagLabel className="preview-scene-tag" style={billboardStyle}>{selected[0].rightLabel}</TagLabel>
                 </span>
                 {mode >= 2 ? <>
                   <span className={cn("axis-label axis-label-y-start", isOctantIsolated && !isOctantSideVisible(1, 1) && "octant-hidden")}>
-                    <TagLabel className="preview-scene-tag" style={{ ...billboardStyle, ...axisTagDof.yStart }}>{selected[1].rightLabel}</TagLabel>
+                    <TagLabel className="preview-scene-tag" style={billboardStyle}>{selected[1].rightLabel}</TagLabel>
                   </span>
                   <span className={cn("axis-label axis-label-y-end", isOctantIsolated && !isOctantSideVisible(1, -1) && "octant-hidden")}>
-                    <TagLabel className="preview-scene-tag" style={{ ...billboardStyle, ...axisTagDof.yEnd }}>{selected[1].leftLabel}</TagLabel>
+                    <TagLabel className="preview-scene-tag" style={billboardStyle}>{selected[1].leftLabel}</TagLabel>
                   </span>
                 </> : null}
                 {mode === 3 ? <>
                   <span className={cn("axis-label axis-label-z-start", isOctantIsolated && !isOctantSideVisible(2, -1) && "octant-hidden")}>
-                    <TagLabel className="preview-scene-tag" style={{ ...billboardStyle, ...axisTagDof.zStart }}>{selected[2].leftLabel}</TagLabel>
+                    <TagLabel className="preview-scene-tag" style={billboardStyle}>{selected[2].leftLabel}</TagLabel>
                   </span>
                   <span className={cn("axis-label axis-label-z-end", isOctantIsolated && !isOctantSideVisible(2, 1) && "octant-hidden")}>
-                    <TagLabel className="preview-scene-tag" style={{ ...billboardStyle, ...axisTagDof.zEnd }}>{selected[2].rightLabel}</TagLabel>
+                    <TagLabel className="preview-scene-tag" style={billboardStyle}>{selected[2].rightLabel}</TagLabel>
                   </span>
                 </> : null}
                 {cornerLabels.map((corner) => {
@@ -1877,14 +1919,7 @@ export function DimensionPreview({
                       } as CSSProperties}
                     >
                       {/* 同一角落的多个坐标作为一个整体朝向摄像机，避免各自 billboard 后错位 */}
-                      <span
-                        className="preview-tag-group"
-                        style={tagDofStyle(
-                          corner.x === 1 ? 1000 : corner.x === -1 ? 0 : 500,
-                          corner.y === 1 ? 0 : corner.y === -1 ? 1000 : 500,
-                          corner.z * 500,
-                        )}
-                      >
+                      <span className="preview-tag-group">
                         {corner.labels.map((label, index) => (
                           <TagLabel className="preview-scene-tag" key={`${corner.key}-${index}`}>{label}</TagLabel>
                         ))}
@@ -1932,6 +1967,14 @@ export function DimensionPreview({
                   const stackFocusFog = hoverFocusActive
                     ? ({ "--dof-fog": HOVER_FOCUS_SCRIM } as CSSProperties)
                     : (isOctantIsolated ? undefined : depthFogStyle(stackWorldZ));
+                  const previewMembers = mode === 2
+                    ? stackPreviewMembers(orderStackGrid(
+                      cluster.members,
+                      2,
+                      (member) => effectiveDimensionValue(member, selected[0].id),
+                      (member) => effectiveDimensionValue(member, selected[1].id),
+                    ))
+                    : stackPreviewMembers(cluster.members);
                   const isDropTarget = dropTargetClusterKey === cluster.key;
                   return (
                     <button
@@ -1959,7 +2002,7 @@ export function DimensionPreview({
                       {/* 模糊加在整张脸上：图片与雾化底色一起虚化，避免底色被裁出一个硬边框 */}
                       <span className="preview-asset-face" style={stackBlur}>
                         <span className="stack-grid">
-                          {stackPreviewMembers(cluster.members).map((member) => (
+                          {previewMembers.map((member) => (
                             <span className="stack-card" key={member.id} data-asset-id={member.id}>
                               {member.thumbnailUrl ? <img src={member.thumbnailUrl} alt="" draggable={false} /> : <i>{member.name.slice(0, 1)}</i>}
                             </span>
@@ -1973,6 +2016,7 @@ export function DimensionPreview({
                 {assets.map((asset) => {
                   if (clusterOf.has(asset.id)) return null;
                   const values = { ...asset.dimensionValues, ...overrides[asset.id] };
+                  const isHoverSource = hoverPreview?.asset.id === asset.id;
                   const octantHidden = !assetBelongsToIsolatedOctant(values);
                   const x = values[selected[0].id] ?? 500;
                   const y = mode >= 2 ? 1000 - (values[selected[1].id] ?? 500) : 500;
@@ -1989,16 +2033,18 @@ export function DimensionPreview({
                   const alongY = Math.sin(yaw) * centeredX + Math.cos(yaw) * centeredY;
                   const worldZ = Math.sin(pitch) * alongY + Math.cos(pitch) * centeredZ;
                   const persp = 1 - worldZ / SCENE_PERSPECTIVE;
-                  const assetDofOn = blurEnabled && !isOctantIsolated && hoveredAssetId !== asset.id;
-                  const focusDimmed = hoverFocusActive && hoveredAssetId !== asset.id;
+                  const assetDofOn = blurEnabled && !isOctantIsolated && hoveredAssetId !== asset.id && !isHoverSource;
+                  const focusDimmed = hoverFocusActive && hoveredAssetId !== asset.id && !isHoverSource;
                   // hover 聚焦：模糊受总开关控制，白色叠加始终保留
                   const baseBlur = assetDofOn ? depthBlurStyle(worldZ) : undefined;
                   const blurStyle = focusDimmed
                     ? (baseBlur ?? (blurEnabled ? { filter: `blur(${HOVER_FOCUS_BLUR}px)` } : undefined))
                     : baseBlur;
-                  const fogStyle = focusDimmed
-                    ? ({ "--dof-fog": HOVER_FOCUS_SCRIM } as CSSProperties)
-                    : (isOctantIsolated ? undefined : depthFogStyle(worldZ));
+                  const fogStyle = isHoverSource
+                    ? undefined
+                    : focusDimmed
+                      ? ({ "--dof-fog": HOVER_FOCUS_SCRIM } as CSSProperties)
+                      : (isOctantIsolated ? undefined : depthFogStyle(worldZ));
                   return (
                     <button
                       type="button"
@@ -2023,11 +2069,15 @@ export function DimensionPreview({
                     >
                       {/* 模糊加在整张脸上：图片与雾化底色一起虚化，避免底色被裁出一个硬边框 */}
                       <span className="preview-asset-face" style={blurStyle}>
-                        <span className="preview-art-flip">
-                          {asset.thumbnailUrl ? <img src={asset.thumbnailUrl} alt="" draggable={false} /> : <i>{asset.name.slice(0, 1)}</i>}
-                        </span>
-                        {draggingAssetId === asset.id || hoveredAssetId === asset.id ? valueTagsOf(values) : null}
+                        {isHoverSource ? null : (
+                          <span className="preview-art-flip">
+                            {asset.thumbnailUrl ? <img src={asset.thumbnailUrl} alt="" draggable={false} /> : <i>{asset.name.slice(0, 1)}</i>}
+                          </span>
+                        )}
                       </span>
+                      {draggingAssetId === asset.id ? (
+                        <span className="preview-value-tag-layer">{valueTagsOf(values)}</span>
+                      ) : null}
                     </button>
                   );
                 })}
@@ -2037,7 +2087,7 @@ export function DimensionPreview({
               {hoverPreview ? (
                 // 单张 hover 的前景层：脱离 3D 深度排序，永远显示在最前；遮挡物保持原位
                 <div
-                  className="hover-preview"
+                  className={`hover-preview ${hoverPreview.closing ? "closing" : ""}`}
                   key={hoverPreview.asset.id}
                   style={{
                     left: hoverPreview.left,
@@ -2051,7 +2101,7 @@ export function DimensionPreview({
                     {hoverPreview.asset.thumbnailUrl
                       ? <img src={hoverPreview.asset.thumbnailUrl} alt="" draggable={false} />
                       : <i>{hoverPreview.asset.name.slice(0, 1)}</i>}
-                    {valueTagsOf(hoverPreview.values)}
+                    {hoverPreview.closing ? null : valueTagsOf(hoverPreview.values)}
                   </span>
                 </div>
               ) : null}

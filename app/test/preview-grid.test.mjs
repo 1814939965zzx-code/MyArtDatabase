@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { gridCell, gridCellKey, gridClusterCell, gridClusterKey, gridDivisionsFor, gridMinimumSpacing, gridTicksFor, orderByViewDepth, PREVIEW_STACK_VISIBLE, previewAssetAspectRatio, stackPreviewMembers, zoomPanAtPointer } from "../src/previewGrid.ts";
+import { gridCell, gridCellKey, gridClusterCell, gridClusterKey, gridDivisionsFor, gridMinimumSpacing, gridTicksFor, orderByViewDepth, orderStackGrid, orderStackMembers, PREVIEW_STACK_VISIBLE, previewAssetAspectRatio, stackPreviewMembers, zoomPanAtPointer } from "../src/previewGrid.ts";
 
 test("half-axis divisions start at 1 and grow by +1, so the whole axis always has an even cell count", () => {
   let previous = 1;
@@ -204,6 +204,25 @@ test("collapsed stacks keep a stable thumbnail subset while the camera rotates",
   assert.deepEqual(stackPreviewMembers(members), stackPreviewMembers([...members]));
   assert.deepEqual(stackPreviewMembers(["a", "b"]), ["a", "b"]);
   assert.deepEqual(stackPreviewMembers([]), []);
+});
+
+test("1D stacks sort by value, 2D stacks sort by a y/x grid, 3D keeps page order", () => {
+  const members = [
+    { id: "a", x: 80, y: 90 },
+    { id: "b", x: 20, y: 10 },
+    { id: "c", x: 50, y: 50 },
+    { id: "d", x: 10, y: 80 },
+    { id: "e", x: 90, y: 10 },
+  ];
+  const ids = (ordered) => ordered.map((member) => member.id);
+  assert.deepEqual(ids(orderStackMembers(members, 1, (member) => member.x, (member) => member.y)), ["d", "b", "c", "a", "e"]);
+  // y determines the row (smaller y above); x determines the column (smaller x left).
+  assert.deepEqual(ids(orderStackGrid(members, 2, (member) => member.x, (member) => member.y)), ["b", "e", "d", "c", "a"]);
+  assert.deepEqual(ids(orderStackMembers(members, 2, (member) => member.x, (member) => member.y)), ["b", "e", "c", "d", "a"]);
+  // 3D is unchanged; the expanded plane still orders by view depth when opened.
+  assert.deepEqual(ids(orderStackMembers(members, 3, (member) => member.x, (member) => member.y)), ["a", "b", "c", "d", "e"]);
+  const ties = [{ id: "a", x: 10, y: 10 }, { id: "b", x: 10, y: 10 }];
+  assert.deepEqual(ids(orderStackGrid(ties, 2, (member) => member.x, (member) => member.y)), ["a", "b"]);
 });
 
 test("the expanded plane orders members front-to-back only when it opens", () => {
