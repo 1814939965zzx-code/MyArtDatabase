@@ -10,6 +10,8 @@ export { Tabs } from "./Tabs";
 export type { TabsProps, TabItem } from "./Tabs";
 export { Tag } from "./Tag";
 export type { TagProps } from "./Tag";
+export { TagLabel } from "./TagLabel";
+export type { TagLabelProps, TagLabelTone } from "./TagLabel";
 export { MenuPanel, MenuItem, MenuSeparator } from "./Menu";
 export { Badge } from "./Badge";
 export type { BadgeTone, BadgeSize } from "./Badge";

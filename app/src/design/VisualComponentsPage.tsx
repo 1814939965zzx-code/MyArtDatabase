@@ -600,7 +600,7 @@ export function VisualComponentsPage() {
               </Specimen>
             </div>
 
-            <Specimen title="页签与标签原语" note="Tabs / Tag">
+            <Specimen title="页签与标签原语" note="Tabs / Tag（可点击 chip）/ TagLabel（只读标签）">
               <TagAndTabsSpecimen />
             </Specimen>
 

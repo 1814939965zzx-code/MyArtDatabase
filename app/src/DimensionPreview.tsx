@@ -1,8 +1,8 @@
 "use client";
 
-import { Aperture, Box, Bug, Images, Maximize2, Minimize2, Minus, MousePointer2, Pencil, Plus, RotateCcw } from "lucide-react";
+import { Aperture, Box, Bug, Images, Maximize2, Minimize2, Minus, MousePointer2, Pencil, Plus, RotateCcw, X } from "lucide-react";
 import { CSSProperties, PointerEvent, useEffect, useMemo, useRef, useState } from "react";
-import { Button, EmptyState, IconButton, RangeSlider, cn } from "./ui";
+import { Button, EmptyState, IconButton, RangeSlider, TagLabel, cn } from "./ui";
 import { useViewportGestures } from "./useViewportGestures";
 import { displayDimensionValue } from "./dimensionScale";
 import { centeredGridStepFor, gridClusterCell, gridClusterKey, gridMinimumSpacing, gridStepFor, gridTicksFor, PREVIEW_ASSET_WIDTH, previewAssetAspectRatio as aspectRatioFor, usesCenteredGrid, zoomPanAtPointer } from "./previewGrid";
@@ -14,6 +14,33 @@ type ViewPan = { pointerId: number; startX: number; startY: number; panX: number
 type AxisSign = -1 | 1;
 type Octant = { x: AxisSign; y: AxisSign; z: AxisSign };
 const octantKeyOf = (octant: Octant) => `${octant.x},${octant.y},${octant.z}`;
+type OctantAxis = "x" | "y" | "z";
+const OCTANT_AXES: OctantAxis[] = ["x", "y", "z"];
+/** 选中集合在三维上始终是一个轴对齐的小立方块——1 / 2（棱）/ 4（面）/ 8（整块）格。 */
+type OctantBounds = Record<OctantAxis, [AxisSign, AxisSign]>;
+
+function octantBounds(octants: Octant[]): OctantBounds | null {
+  if (!octants.length) return null;
+  const range = (axis: OctantAxis): [AxisSign, AxisSign] => {
+    const values = octants.map((octant) => octant[axis]);
+    return [Math.min(...values) as AxisSign, Math.max(...values) as AxisSign];
+  };
+  return { x: range("x"), y: range("y"), z: range("z") };
+}
+
+/** 展开成盒子里的全部格子。 */
+function octantsInBounds(bounds: OctantBounds): Octant[] {
+  const signs: AxisSign[] = [-1, 1];
+  const span = (axis: OctantAxis) => (bounds[axis][0] === bounds[axis][1] ? [bounds[axis][0]] : signs);
+  return span("x").flatMap((x) => span("y").flatMap((y) => span("z").map((z) => ({ x, y, z }))));
+}
+
+/** 盒子里与基准格相对的远角（收缩后用它作为新的「当前格」，再点它即可回退）。 */
+function octantFarCorner(bounds: OctantBounds, anchor: Octant): Octant {
+  const pick = (axis: OctantAxis): AxisSign =>
+    bounds[axis][0] !== bounds[axis][1] ? (anchor[axis] === 1 ? -1 : 1) : bounds[axis][0];
+  return { x: pick("x"), y: pick("y"), z: pick("z") };
+}
 /** 选中象限并集的中心：单选=该格中心，选两格=两格中点，选满 8 格=回到原点。 */
 function octantPivotCenter(octants: Octant[], planeSize: number) {
   if (!octants.length || !planeSize) return { x: 0, y: 0, z: 0 };
@@ -72,14 +99,27 @@ function planeDimensions(count: number, cardSize = PLANE_CARD_SIZE) {
   };
 }
 
-// 景深：以原点（0,0,0，即 worldZ=0）为焦点，深度在其之后的图片开始模糊
+// 景深：以原点（0,0,0，即 worldZ=0）为焦点，更远离摄像机的目标同时得到两种表现：
+// 1) 模糊；2) 叠加一层画布底色，深度越大越不透明（远处目标逐渐融进背景）。
 const DOF_MAX_BLUR = 50;
 const DOF_BLUR_DEPTH = 30;
+const DOF_MAX_FOG = 0.55;
+const DOF_FOG_DEPTH = 400;
+function depthDefocus(worldZ: number): { blur: number; fog: number } {
+  if (worldZ >= 0) return { blur: 0, fog: 0 };
+  return {
+    blur: Math.round(Math.min(DOF_MAX_BLUR, -worldZ / DOF_BLUR_DEPTH) * 2) / 2, // 0.5px 步进，减少旋转时的每帧抖动
+    fog: Math.min(DOF_MAX_FOG, Math.round((-worldZ / DOF_FOG_DEPTH) * 100) / 100), // 1% 步进
+  };
+}
 function depthBlurStyle(worldZ: number): CSSProperties | undefined {
-  if (worldZ >= 0) return undefined;
-  const raw = Math.min(DOF_MAX_BLUR, -worldZ / DOF_BLUR_DEPTH);
-  const blur = Math.round(raw * 2) / 2; // 0.5px 步进，减少旋转时的每帧抖动
+  const { blur } = depthDefocus(worldZ);
   return blur > 0 ? { filter: `blur(${blur}px)` } : undefined;
+}
+/** 供 `.preview-asset-face::after` / `.preview-scene-tag::after` 读取的雾化强度。 */
+function depthFogStyle(worldZ: number): CSSProperties | undefined {
+  const { fog } = depthDefocus(worldZ);
+  return fog > 0 ? ({ "--dof-fog": `${fog}` } as CSSProperties) : undefined;
 }
 
 type Cluster = {
@@ -136,7 +176,12 @@ export function DimensionPreview({
   const [viewPanning, setViewPanning] = useState(false);
   const [viewPan, setViewPan] = useState({ x: 0, y: 0 });
   const [isolatedOctants, setIsolatedOctants] = useState<Octant[]>([]);
-  // 立方体选择器：点击任意格子即进入/切换隔离，命中集合即隔离集合；hover 只做高亮预览
+  // 立方体选择器：首次点选的格子作为基准，后续点击与它的连线决定 棱 / 面 / 整块
+  const [octantAnchor, setOctantAnchor] = useState<Octant | null>(null);
+  // 当前盒子的「操作格」：最后一次改变盒子的格子；再点它 = 沿历史回退
+  const [octantHandle, setOctantHandle] = useState<Octant | null>(null);
+  // 每次盒子变化前的快照，用于「沿历史路径回退」
+  const octantHistory = useRef<Array<{ octants: Octant[]; handle: Octant }>>([]);
   const [hoverOctant, setHoverOctant] = useState<Octant | null>(null);
   const [octantTransitioning, setOctantTransitioning] = useState(false);
   const [focusMode, setFocusMode] = useState(false);
@@ -217,6 +262,11 @@ export function DimensionPreview({
   const gridTicks = useMemo(() => gridTicksFor(activeGridStep, centeredGrid), [activeGridStep, centeredGrid]);
   const sceneRotateX = ((rotateX + 180) % 360 + 360) % 360 - 180;
   const sceneRotateZ = ((rotateZ + 180) % 360 + 360) % 360 - 180;
+  // 轴端点与角落组合的 tag 始终朝向摄像机：反向抵消场景旋转
+  const billboardStyle = {
+    "--billboard-rx": `${mode === 3 ? -sceneRotateX : 0}deg`,
+    "--billboard-rz": `${mode === 3 ? -sceneRotateZ : 0}deg`,
+  } as CSSProperties;
   const planeSize = scenePlaneRef.current?.offsetWidth ?? 0;
   const scenePivot = octantPivotCenter(isolatedOctants, planeSize);
 
@@ -356,14 +406,14 @@ export function DimensionPreview({
     }
     return { clusters, clusterOf };
   }, [assets, mode, selected, activeGridStep, centeredGrid, sceneSize, scenePivot.x, scenePivot.y, scenePivot.z, isolatedOctants, overrides, draggingAssetId, draggingPlaneAssetId, rotateX, rotateZ]);
-  function octantName(octant: Octant) {
+  function octantNames(octant: Octant): string[] {
     // 切回 1D/2D 时可能还残留 3D 的选中象限，缺少第三个维度就退回空名，避免读取 undefined
-    if (!selected[0] || !selected[1] || !selected[2]) return "";
+    if (!selected[0] || !selected[1] || !selected[2]) return [];
     return [
       octant.x === 1 ? selected[0].rightLabel : selected[0].leftLabel,
       octant.y === 1 ? selected[1].rightLabel : selected[1].leftLabel,
       octant.z === 1 ? selected[2].rightLabel : selected[2].leftLabel,
-    ].join("、");
+    ];
   }
 
   // 立方体：点击格子即隔离（可多选，取消到空集合即退出隔离）
@@ -371,11 +421,29 @@ export function DimensionPreview({
   const isOctantIsolated = isolatedOctants.length > 0;
   const isOctantSideVisible = (axis: number, side: AxisSign) =>
     isolatedOctants.some((octant) => [octant.x, octant.y, octant.z][axis] === side);
-  const octantLabel = isolatedOctants.map((octant) => octantName(octant)).filter(Boolean).join(" / ") || null;
+  const octantLabel = isolatedOctants.map((octant) => octantNames(octant).join("、")).filter(Boolean).join(" / ") || null;
+  // 立方体下方与三维视图一致用 tag 展示；同名端点名称只保留一个
+  const octantTags = [...new Set(isolatedOctants.flatMap(octantNames))];
+  // 场景内 tag 与图片共用同一套景深：越远越模糊、并叠加越远越不透明的画布底色
+  const tagDofStyle = (xParam: number, yParam: number, zParam: number): CSSProperties => {
+    if (!dofEnabled || isOctantIsolated) return {};
+    const worldZ = projectValuePoint(xParam, yParam, zParam)?.worldZ ?? 0;
+    return { ...depthBlurStyle(worldZ), ...depthFogStyle(worldZ) };
+  };
+  // 端点 tag 的取点与渲染位置一致（x/y 用 0～1000 值空间，y=0 在顶部；z 为 -500～500）
+  const axisTagDof = {
+    xStart: tagDofStyle(0, 500, 0),
+    xEnd: tagDofStyle(1000, 500, 0),
+    yStart: tagDofStyle(500, 0, 0),
+    yEnd: tagDofStyle(500, 1000, 0),
+    zStart: tagDofStyle(500, 500, -500),
+    zEnd: tagDofStyle(500, 500, 500),
+  };
+  // 每个角落按维度拆成独立 tag（两词组合 = 两个 tag，三词组合 = 三个 tag），不合并不同坐标
   const cornerLabels = useMemo(() => {
     if (mode < 2 || !selected.length) return [];
     const signs: AxisSign[] = [-1, 1];
-    const corners: Array<{ key: string; x: number; y: number; z: number; label: string }> = [];
+    const corners: Array<{ key: string; x: number; y: number; z: number; labels: string[] }> = [];
     const pick = (ends: string[], sign: number) => ends[sign === 1 ? 1 : 0];
     const xEnds = [selected[0].leftLabel, selected[0].rightLabel];
     const yEnds = [selected[1].leftLabel, selected[1].rightLabel];
@@ -383,7 +451,7 @@ export function DimensionPreview({
     if (mode === 2) {
       for (const x of signs) {
         for (const y of signs) {
-          corners.push({ key: `xy-${x}${y}`, x, y, z: 0, label: `${pick(xEnds, x)}、${pick(yEnds, y)}` });
+          corners.push({ key: `xy-${x}${y}`, x, y, z: 0, labels: [pick(xEnds, x), pick(yEnds, y)] });
         }
       }
       return corners;
@@ -392,23 +460,23 @@ export function DimensionPreview({
     const zEnds = [selected[2].leftLabel, selected[2].rightLabel];
     for (const x of signs) {
       for (const y of signs) {
-        corners.push({ key: `xy-${x}${y}`, x, y, z: 0, label: `${pick(xEnds, x)}、${pick(yEnds, y)}` });
+        corners.push({ key: `xy-${x}${y}`, x, y, z: 0, labels: [pick(xEnds, x), pick(yEnds, y)] });
       }
     }
     for (const x of signs) {
       for (const z of signs) {
-        corners.push({ key: `xz-${x}${z}`, x, y: 0, z, label: `${pick(xEnds, x)}、${pick(zEnds, z)}` });
+        corners.push({ key: `xz-${x}${z}`, x, y: 0, z, labels: [pick(xEnds, x), pick(zEnds, z)] });
       }
     }
     for (const y of signs) {
       for (const z of signs) {
-        corners.push({ key: `yz-${y}${z}`, x: 0, y, z, label: `${pick(yEnds, y)}、${pick(zEnds, z)}` });
+        corners.push({ key: `yz-${y}${z}`, x: 0, y, z, labels: [pick(yEnds, y), pick(zEnds, z)] });
       }
     }
     for (const x of signs) {
       for (const y of signs) {
         for (const z of signs) {
-          corners.push({ key: `xyz-${x}${y}${z}`, x, y, z, label: `${pick(xEnds, x)}、${pick(yEnds, y)}、${pick(zEnds, z)}` });
+          corners.push({ key: `xyz-${x}${y}${z}`, x, y, z, labels: [pick(xEnds, x), pick(yEnds, y), pick(zEnds, z)] });
         }
       }
     }
@@ -545,7 +613,10 @@ export function DimensionPreview({
   useEffect(() => {
     if (mode === 3 || !isolatedOctants.length) return;
     clearFan();
+    octantHistory.current = [];
     setIsolatedOctants([]);
+    setOctantAnchor(null);
+    setOctantHandle(null);
   }, [mode, isolatedOctants]);
 
   // 退出 3D 时清掉立方体的 hover 预览，避免下次进入残留高亮
@@ -606,14 +677,73 @@ export function DimensionPreview({
   function toggleOctant(octant: Octant) {
     if (mode !== 3) return;
     clearFan();
-    const key = octantKeyOf(octant);
-    // 点击格子即时进入隔离：在隔离集合里增删，取消到空集合就退回全部显示
-    const next = isolatedOctants.some((item) => octantKeyOf(item) === key)
-      ? isolatedOctants.filter((item) => octantKeyOf(item) !== key)
-      : [...isolatedOctants, octant];
-    setOctantTransitioning(true);
-    setIsolatedOctants(next);
     setHoverOctant(octant);
+    // 还没有基准格：第一次点选 = 基准格，选中 1 格
+    if (!octantAnchor) {
+      octantHistory.current = [];
+      setOctantTransitioning(true);
+      setOctantAnchor(octant);
+      setOctantHandle(octant);
+      setIsolatedOctants([octant]);
+      return;
+    }
+    // 点基准格本身 = 直接退出隔离
+    if (octantKeyOf(octant) === octantKeyOf(octantAnchor)) {
+      exitOctantIsolation();
+      return;
+    }
+    // 优先沿历史回退：再点「当前操作格」就退回上一个盒子（1 格时即退出）
+    if (octantHandle && octantKeyOf(octant) === octantKeyOf(octantHandle)) {
+      const previous = octantHistory.current.pop();
+      setOctantTransitioning(true);
+      if (previous) {
+        setIsolatedOctants(previous.octants);
+        setOctantHandle(previous.handle);
+      } else {
+        setIsolatedOctants([octantAnchor]);
+        setOctantHandle(octantAnchor);
+      }
+      return;
+    }
+    const snapshot = { octants: isolatedOctants, handle: octantHandle ?? octantAnchor };
+    const isSelected = isolatedOctants.some((item) => octantKeyOf(item) === octantKeyOf(octant));
+    setOctantTransitioning(true);
+    if (!isSelected) {
+      // 点到盒子外：按「基准格 ↔ 该格」的轴差扩展成 棱 / 面 / 整块
+      octantHistory.current.push(snapshot);
+      setIsolatedOctants(octantsInBounds(octantBounds([octantAnchor, octant])!));
+      setOctantHandle(octant);
+      return;
+    }
+    // 点到盒子内、但不是历史路径上的操作格：逐层收缩一级，保留基准格那一侧
+    const currentBounds = octantBounds([octantAnchor, octantHandle ?? octantAnchor])!;
+    const shrinkable = OCTANT_AXES.filter((axis) => currentBounds[axis][0] !== currentBounds[axis][1]);
+    const axis = shrinkable.find((value) => octant[value] !== octantAnchor[value]) ?? shrinkable[0];
+    if (!axis) {
+      exitOctantIsolation();
+      return;
+    }
+    const keep: [AxisSign, AxisSign] = [octantAnchor[axis], octantAnchor[axis]];
+    const nextBounds: OctantBounds = axis === "x"
+      ? { ...currentBounds, x: keep }
+      : axis === "y"
+        ? { ...currentBounds, y: keep }
+        : { ...currentBounds, z: keep };
+    octantHistory.current.push(snapshot);
+    setIsolatedOctants(octantsInBounds(nextBounds));
+    setOctantHandle(octantFarCorner(nextBounds, octantAnchor));
+  }
+
+  /** 一键退出隔离：清空选中象限，恢复全部图片与全局原点。 */
+  function exitOctantIsolation() {
+    if (!isolatedOctants.length) return;
+    clearFan();
+    octantHistory.current = [];
+    setOctantTransitioning(true);
+    setIsolatedOctants([]);
+    setOctantAnchor(null);
+    setOctantHandle(null);
+    setHoverOctant(null);
   }
 
   function assetBelongsToIsolatedOctant(values: Record<string, number>) {
@@ -1454,10 +1584,28 @@ export function DimensionPreview({
                     </span>
                   );
                 }))}
-                <span className={`axis-label axis-label-x-start ${isOctantIsolated && !isOctantSideVisible(0, -1) ? "octant-hidden" : ""}`}><i style={{ "--billboard-rx": `${mode === 3 ? -sceneRotateX : 0}deg`, "--billboard-rz": `${mode === 3 ? -sceneRotateZ : 0}deg` } as CSSProperties}>{selected[0].leftLabel}</i></span>
-                <span className={`axis-label axis-label-x-end ${isOctantIsolated && !isOctantSideVisible(0, 1) ? "octant-hidden" : ""}`}><i style={{ "--billboard-rx": `${mode === 3 ? -sceneRotateX : 0}deg`, "--billboard-rz": `${mode === 3 ? -sceneRotateZ : 0}deg` } as CSSProperties}>{selected[0].rightLabel}</i></span>
-                {mode >= 2 ? <><span className={`axis-label axis-label-y-start ${isOctantIsolated && !isOctantSideVisible(1, 1) ? "octant-hidden" : ""}`}><i style={{ "--billboard-rx": `${mode === 3 ? -sceneRotateX : 0}deg`, "--billboard-rz": `${mode === 3 ? -sceneRotateZ : 0}deg` } as CSSProperties}>{selected[1].rightLabel}</i></span><span className={`axis-label axis-label-y-end ${isOctantIsolated && !isOctantSideVisible(1, -1) ? "octant-hidden" : ""}`}><i style={{ "--billboard-rx": `${mode === 3 ? -sceneRotateX : 0}deg`, "--billboard-rz": `${mode === 3 ? -sceneRotateZ : 0}deg` } as CSSProperties}>{selected[1].leftLabel}</i></span></> : null}
-                {mode === 3 ? <><span className={`axis-label axis-label-z-start ${isOctantIsolated && !isOctantSideVisible(2, -1) ? "octant-hidden" : ""}`}><i style={{ "--billboard-rx": `${-sceneRotateX}deg`, "--billboard-rz": `${-sceneRotateZ}deg` } as CSSProperties}>{selected[2].leftLabel}</i></span><span className={`axis-label axis-label-z-end ${isOctantIsolated && !isOctantSideVisible(2, 1) ? "octant-hidden" : ""}`}><i style={{ "--billboard-rx": `${-sceneRotateX}deg`, "--billboard-rz": `${-sceneRotateZ}deg` } as CSSProperties}>{selected[2].rightLabel}</i></span></> : null}
+                <span className={cn("axis-label axis-label-x-start", isOctantIsolated && !isOctantSideVisible(0, -1) && "octant-hidden")}>
+                  <TagLabel className="preview-scene-tag" style={{ ...billboardStyle, ...axisTagDof.xStart }}>{selected[0].leftLabel}</TagLabel>
+                </span>
+                <span className={cn("axis-label axis-label-x-end", isOctantIsolated && !isOctantSideVisible(0, 1) && "octant-hidden")}>
+                  <TagLabel className="preview-scene-tag" style={{ ...billboardStyle, ...axisTagDof.xEnd }}>{selected[0].rightLabel}</TagLabel>
+                </span>
+                {mode >= 2 ? <>
+                  <span className={cn("axis-label axis-label-y-start", isOctantIsolated && !isOctantSideVisible(1, 1) && "octant-hidden")}>
+                    <TagLabel className="preview-scene-tag" style={{ ...billboardStyle, ...axisTagDof.yStart }}>{selected[1].rightLabel}</TagLabel>
+                  </span>
+                  <span className={cn("axis-label axis-label-y-end", isOctantIsolated && !isOctantSideVisible(1, -1) && "octant-hidden")}>
+                    <TagLabel className="preview-scene-tag" style={{ ...billboardStyle, ...axisTagDof.yEnd }}>{selected[1].leftLabel}</TagLabel>
+                  </span>
+                </> : null}
+                {mode === 3 ? <>
+                  <span className={cn("axis-label axis-label-z-start", isOctantIsolated && !isOctantSideVisible(2, -1) && "octant-hidden")}>
+                    <TagLabel className="preview-scene-tag" style={{ ...billboardStyle, ...axisTagDof.zStart }}>{selected[2].leftLabel}</TagLabel>
+                  </span>
+                  <span className={cn("axis-label axis-label-z-end", isOctantIsolated && !isOctantSideVisible(2, 1) && "octant-hidden")}>
+                    <TagLabel className="preview-scene-tag" style={{ ...billboardStyle, ...axisTagDof.zEnd }}>{selected[2].rightLabel}</TagLabel>
+                  </span>
+                </> : null}
                 {cornerLabels.map((corner) => {
                   const octantHidden = isOctantIsolated && !isolatedOctants.some((octant) =>
                     (corner.x === 0 || corner.x === octant.x) &&
@@ -1477,7 +1625,19 @@ export function DimensionPreview({
                         "--billboard-rz": `${mode === 3 ? -sceneRotateZ : 0}deg`,
                       } as CSSProperties}
                     >
-                      <i>{corner.label}</i>
+                      {/* 同一角落的多个坐标作为一个整体朝向摄像机，避免各自 billboard 后错位 */}
+                      <span
+                        className="preview-tag-group"
+                        style={tagDofStyle(
+                          corner.x === 1 ? 1000 : corner.x === -1 ? 0 : 500,
+                          corner.y === 1 ? 0 : corner.y === -1 ? 1000 : 500,
+                          corner.z * 500,
+                        )}
+                      >
+                        {corner.labels.map((label, index) => (
+                          <TagLabel className="preview-scene-tag" key={`${corner.key}-${index}`}>{label}</TagLabel>
+                        ))}
+                      </span>
                     </span>
                   );
                 })}
@@ -1512,7 +1672,8 @@ export function DimensionPreview({
                   const planeSize = scenePlaneRef.current?.offsetWidth ?? 0;
                   const stackWorldZ = projectValuePoint(cluster.x, cluster.y, cluster.z)?.worldZ ?? cluster.meanDepth;
                   const stackPersp = 1 - stackWorldZ / SCENE_PERSPECTIVE;
-                  const stackBlur = !dofEnabled || isOctantIsolated ? undefined : depthBlurStyle(stackWorldZ);
+                  const stackDofOn = dofEnabled && !isOctantIsolated;
+                  const stackBlur = stackDofOn ? depthBlurStyle(stackWorldZ) : undefined;
                   const isDropTarget = dropTargetClusterKey === cluster.key;
                   return (
                     <button
@@ -1532,16 +1693,18 @@ export function DimensionPreview({
                         "--persp": stackPersp,
                         "--billboard-rx": `${mode === 3 ? -sceneRotateX : 0}deg`,
                         "--billboard-rz": `${mode === 3 ? -sceneRotateZ : 0}deg`,
+                        ...(stackDofOn ? depthFogStyle(stackWorldZ) : undefined),
                       } as CSSProperties}
                       title={`${cluster.members.length} 张素材 · hover 展开查看`}
                     >
-                      <span className="preview-asset-face">
+                      {/* 模糊加在整张脸上：图片与雾化底色一起虚化，避免底色被裁出一个硬边框 */}
+                      <span className="preview-asset-face" style={stackBlur}>
                         {cluster.members.slice(0, 3).map((member) => (
                           <span className="stack-card" key={member.id}>
-                            {member.thumbnailUrl ? <img src={member.thumbnailUrl} alt="" draggable={false} style={stackBlur} /> : <i style={stackBlur}>{member.name.slice(0, 1)}</i>}
+                            {member.thumbnailUrl ? <img src={member.thumbnailUrl} alt="" draggable={false} /> : <i>{member.name.slice(0, 1)}</i>}
                           </span>
                         ))}
-                        <b className="stack-count" style={stackBlur}>{cluster.members.length}</b>
+                        <b className="stack-count">{cluster.members.length}</b>
                       </span>
                     </button>
                   );
@@ -1565,7 +1728,9 @@ export function DimensionPreview({
                   const alongY = Math.sin(yaw) * centeredX + Math.cos(yaw) * centeredY;
                   const worldZ = Math.sin(pitch) * alongY + Math.cos(pitch) * centeredZ;
                   const persp = 1 - worldZ / SCENE_PERSPECTIVE;
-                  const blurStyle = !dofEnabled || isOctantIsolated || hoveredAssetId === asset.id ? undefined : depthBlurStyle(worldZ);
+                  const assetDofOn = dofEnabled && !isOctantIsolated && hoveredAssetId !== asset.id;
+                  const blurStyle = assetDofOn ? depthBlurStyle(worldZ) : undefined;
+                  const fogStyle = assetDofOn ? depthFogStyle(worldZ) : undefined;
                   return (
                     <button
                       type="button"
@@ -1583,11 +1748,13 @@ export function DimensionPreview({
                         "--persp": persp,
                         "--billboard-rx": `${mode === 3 ? -sceneRotateX : 0}deg`,
                         "--billboard-rz": `${mode === 3 ? -sceneRotateZ : 0}deg`,
+                        ...fogStyle,
                       } as CSSProperties}
                       title={mode === 3 ? `${asset.name} · 点击查看详情 · 拖动旋转视角` : `${asset.name} · 拖动修改维度`}
                     >
-                      <span className="preview-asset-face">
-                        {asset.thumbnailUrl ? <img src={asset.thumbnailUrl} alt="" draggable={false} style={blurStyle} /> : <i style={blurStyle}>{asset.name.slice(0, 1)}</i>}
+                      {/* 模糊加在整张脸上：图片与雾化底色一起虚化，避免底色被裁出一个硬边框 */}
+                      <span className="preview-asset-face" style={blurStyle}>
+                        {asset.thumbnailUrl ? <img src={asset.thumbnailUrl} alt="" draggable={false} /> : <i>{asset.name.slice(0, 1)}</i>}
                         {(draggingAssetId === asset.id || hoveredAssetId === asset.id) ? <em>{selected.map((dimension) => {
                           const value = values[dimension.id] ?? 500;
                           const label = value > 500 ? dimension.rightLabel : dimension.leftLabel;
@@ -1679,30 +1846,46 @@ export function DimensionPreview({
               })() : null}
             </div>
             {mode === 3 ? <div className="octant-isolation-controls">
-              <svg
-                className="octant-cube"
-                viewBox="-48 -48 96 96"
-                role="group"
-                aria-label="空间象限选择：点击任意格子进入隔离，可连续点选多个；再次点击移出，全部取消即退出隔离"
-                onPointerLeave={() => setHoverOctant(null)}
+              <div
+                className="octant-cube-wrap"
+                data-isolated-octants={isolatedOctants.length}
+                data-isolated-keys={isolatedOctants.map(octantKeyOf).join(" ")}
               >
-                <title>点击格子隔离该象限，可多选；再次点击取消，全部取消即退出隔离</title>
-                {octantCubeFacets.map((facet) => {
-                  const facetKey = octantKeyOf(facet.octant);
-                  const isHovered = hoverOctant ? octantKeyOf(hoverOctant) === facetKey : false;
-                  const isIsolated = isolatedOctantKeys.includes(facetKey);
-                  return (
-                    <polygon
-                      key={facet.key}
-                      className={`octant-cube-face${isHovered ? " is-hover" : ""}${isIsolated ? " is-isolated" : ""}`}
-                      points={facet.points}
-                      onPointerEnter={() => setHoverOctant(facet.octant)}
-                      onClick={() => toggleOctant(facet.octant)}
-                    />
-                  );
-                })}
-              </svg>
-              {octantLabel ? <span className="octant-isolation-label" aria-label={`当前隔离象限：${octantLabel}`}>{octantLabel}</span> : null}
+                <svg
+                  className="octant-cube"
+                  viewBox="-48 -48 96 96"
+                  role="group"
+                  aria-label="空间象限选择：首次点选为基准格，再点其它格子按与基准点的轴差选中棱 / 面 / 整块；再点当前操作格沿历史回退，点盒子内其它格逐层收缩，点基准格或右上角叉子退出隔离"
+                  onPointerLeave={() => setHoverOctant(null)}
+                >
+                  <title>首次点选为基准格；再点格子按轴差选中棱 / 面 / 整块；再点当前操作格回退一步，点盒内其它格收缩一层；点基准格或右上角叉子退出</title>
+                  {octantCubeFacets.map((facet) => {
+                    const facetKey = octantKeyOf(facet.octant);
+                    const isHovered = hoverOctant ? octantKeyOf(hoverOctant) === facetKey : false;
+                    const isIsolated = isolatedOctantKeys.includes(facetKey);
+                    return (
+                      <polygon
+                        key={facet.key}
+                        data-octant={facetKey}
+                        className={`octant-cube-face${isHovered ? " is-hover" : ""}${isIsolated ? " is-isolated" : ""}`}
+                        points={facet.points}
+                        onPointerEnter={() => setHoverOctant(facet.octant)}
+                        onClick={() => toggleOctant(facet.octant)}
+                      />
+                    );
+                  })}
+                </svg>
+                {isOctantIsolated ? (
+                  <button type="button" className="octant-exit" onClick={exitOctantIsolation} aria-label="退出象限隔离" title="退出隔离">
+                    <X size={13} aria-hidden />
+                  </button>
+                ) : null}
+              </div>
+              {octantTags.length ? (
+                <span className="octant-isolation-labels" aria-label={`当前隔离象限：${octantLabel}`}>
+                  {octantTags.map((label) => <TagLabel key={label}>{label}</TagLabel>)}
+                </span>
+              ) : null}
             </div> : null}
           </div>
         ) : (

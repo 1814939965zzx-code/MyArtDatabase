@@ -140,7 +140,8 @@
     transition: transform 1s ease-in-out, opacity var(--preview-hover-duration) ease, visibility 0s linear;
   }
 
-  .mode-transitioning .axis-label i {
+  .mode-transitioning .preview-scene-tag,
+  .mode-transitioning .preview-tag-group {
     transition: transform 1s ease-in-out;
   }
 
@@ -152,7 +153,8 @@
     transition: transform 0s, opacity var(--preview-hover-duration) ease, visibility 0s linear;
   }
 
-  .camera-moving .axis-label i {
+  .camera-moving .preview-scene-tag,
+  .camera-moving .preview-tag-group {
     transition: none;
   }
 
@@ -315,6 +317,7 @@
 
   .axis-label {
     position: absolute;
+    display: flex;
     z-index: 4;
     transform-style: preserve-3d;
     pointer-events: none;
@@ -326,16 +329,21 @@
     opacity: 0;
   }
 
-  .axis-label i {
-    display: block;
-    padding: 3px 5px;
-    background: color-mix(in srgb, var(--color-paper) 90%, transparent);
-    color: var(--color-ink-label);
-    font-size: 12px;
-    font-style: normal;
-    white-space: nowrap;
+  /*
+   * 端点名称与角落坐标以只读 tag（ui/TagLabel）呈现：
+   * 底色、描边、圆角与字号由组件负责，这里只负责朝向摄像机的 billboard 旋转。
+   * 角落的多个坐标必须整组一起旋转：各自旋转会让标签之间的间距随视角被透视压缩，看起来错位。
+   */
+  .axis-label .preview-scene-tag,
+  .corner-label .preview-tag-group {
     transform: rotateZ(var(--billboard-rz)) rotateX(var(--billboard-rx));
+    transform-origin: center;
     transition: none;
+  }
+
+  .corner-label .preview-tag-group {
+    display: flex;
+    gap: 3px;
   }
 
   .axis-label-x-start { left: -7px; top: 50%; transform: translate(-100%, -50%); }
@@ -348,6 +356,7 @@
 
   .corner-label {
     position: absolute;
+    display: flex;
     z-index: 4;
     transform-style: preserve-3d;
     pointer-events: none;
@@ -358,19 +367,6 @@
   .corner-label.octant-hidden {
     visibility: hidden;
     opacity: 0;
-  }
-
-  .corner-label i {
-    display: block;
-    padding: 3px 6px;
-    border-radius: 4px;
-    background: color-mix(in srgb, var(--color-paper) 92%, transparent);
-    color: var(--color-ink-label);
-    font-size: 12px;
-    font-style: normal;
-    white-space: nowrap;
-    transform: rotateZ(var(--billboard-rz)) rotateX(var(--billboard-rx));
-    transition: none;
   }
 
   .preview-asset {
@@ -419,6 +415,25 @@
     transform: scale3d(var(--persp, 1), var(--persp, 1), var(--persp, 1)) rotateZ(var(--billboard-rz)) rotateX(var(--billboard-rx));
     transform-style: preserve-3d;
     transition: transform var(--preview-hover-duration) ease, opacity var(--preview-hover-duration) ease, visibility 0s linear;
+  }
+
+  /*
+   * 景深雾化：越远离焦点的目标，越不透明地叠加一层画布底色（强度由 --dof-fog 提供，0～1）。
+   * 图片、堆与坐标 tag 共用这一层，保证远处的坐标和图片一起融进背景。
+   */
+  .preview-asset-face::after,
+  .preview-scene-tag::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    border-radius: inherit;
+    background: var(--color-preview-bg);
+    opacity: var(--dof-fog, 0);
+    pointer-events: none;
+  }
+
+  .preview-scene-tag {
+    position: relative;
   }
 
   .preview-asset.hover-occluder .preview-asset-face {
@@ -681,6 +696,35 @@
     cursor: pointer;
   }
 
+  .octant-cube-wrap {
+    position: relative;
+  }
+
+  /* 一键退出隔离：贴在立方体右上角的小叉子，只在隔离时出现 */
+  .octant-exit {
+    position: absolute;
+    top: -8px;
+    right: -8px;
+    width: 20px;
+    height: 20px;
+    display: grid;
+    place-items: center;
+    padding: 0;
+    border: 1px solid var(--color-line);
+    border-radius: 50%;
+    background: var(--color-surface);
+    color: var(--color-muted);
+    box-shadow: var(--shadow-sm);
+    cursor: pointer;
+    transition: color 0.15s ease, border-color 0.15s ease, background 0.15s ease;
+  }
+
+  .octant-exit:hover {
+    border-color: var(--color-line-strong);
+    background: var(--color-white);
+    color: var(--color-ink);
+  }
+
   .octant-cube-face {
     fill: color-mix(in srgb, var(--color-surface) 90%, transparent);
     stroke: var(--color-sage);
@@ -703,21 +747,12 @@
     stroke: var(--color-sage-deep);
   }
 
-  .octant-isolation-label {
-    min-height: 34px;
-    padding: 0;
-    border: 0;
-    border-radius: 0;
-    background: transparent;
-    color: var(--color-sage-strong);
-    box-shadow: none;
-    display: inline-flex;
-    align-items: center;
+  .octant-isolation-labels {
+    max-width: 260px;
+    display: flex;
+    flex-wrap: wrap;
     justify-content: flex-end;
-    text-align: right;
-    font-size: 11px;
-    font-weight: 600;
-    white-space: nowrap;
+    gap: 3px;
   }
 
   @media (max-width: 1180px) {

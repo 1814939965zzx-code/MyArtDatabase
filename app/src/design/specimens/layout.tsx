@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { Archive, Grid2X2, Plus, Tags, Trash2, Upload } from "lucide-react";
-import { Button, SearchInput, Tag, Tabs } from "../../ui";
+import { Button, SearchInput, Tag, TagLabel, Tabs } from "../../ui";
 import { BrandMark } from "../../components/layout/BrandMark";
 import { SidebarNavItem } from "../../components/layout/SidebarNavItem";
 import { TopbarTabs } from "../../components/layout/TopbarTabs";
@@ -85,7 +85,7 @@ export function UserMenuSpecimen() {
   );
 }
 
-/** B3 · 标签与页签原语：Tag / Tabs 的静态组合。 */
+/** B3 · 标签与页签原语：Tag / TagLabel / Tabs 的静态组合。 */
 export function TagAndTabsSpecimen() {
   const [tab, setTab] = useState("all");
   return (
@@ -97,6 +97,11 @@ export function TagAndTabsSpecimen() {
           </Tag>
         ))}
         <Tag disabled>禁用</Tag>
+      </div>
+      <div className="flex flex-wrap items-center gap-2 rounded-md bg-preview-bg p-3">
+        <TagLabel>古典</TagLabel>
+        <TagLabel>成熟</TagLabel>
+        <TagLabel tone="paper">浅底变体</TagLabel>
       </div>
       <Tabs
         value={tab}
