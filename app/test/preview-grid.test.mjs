@@ -1,92 +1,134 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { centeredGridStepFor, gridCell, gridCellKey, gridClusterCell, gridClusterKey, gridMinimumSpacing, gridStepFor, gridTicksFor, previewAssetAspectRatio, usesCenteredGrid, zoomPanAtPointer } from "../src/previewGrid.ts";
+import { gridCell, gridCellKey, gridClusterCell, gridClusterKey, gridDivisionsFor, gridMinimumSpacing, gridTicksFor, orderByViewDepth, PREVIEW_STACK_VISIBLE, previewAssetAspectRatio, stackPreviewMembers, zoomPanAtPointer } from "../src/previewGrid.ts";
 
-test("negative, zero and positive assets never share a cluster, even in the center cell", () => {
-  for (const centered of [false, true]) {
-    for (const step of [320, 100, 80, 40, 20, 5]) {
-      const keys = [499, 500, 501].map((value) => gridClusterKey([value], step, centered));
-      assert.equal(new Set(keys).size, 3);
-      assert.equal(gridClusterKey([496], step, centered), gridClusterKey([499], step, centered));
-      assert.equal(gridClusterKey([501], step, centered), gridClusterKey([504], step, centered));
+test("half-axis divisions start at 1 and grow by +1, so the whole axis always has an even cell count", () => {
+  let previous = 1;
+  for (let pixels = 1; pixels <= 20; pixels += .05) {
+    const divisions = gridDivisionsFor(pixels, 130, previous);
+    assert.ok(Number.isInteger(divisions));
+    assert.ok(divisions >= 1 && divisions <= 256);
+    assert.ok(divisions >= previous && divisions - previous <= 1);
+    assert.equal(divisions * 2, (divisions * 2 / 2) * 2);
+    previous = divisions;
+  }
+  for (let pixels = 20; pixels >= 1; pixels -= .05) {
+    const divisions = gridDivisionsFor(pixels, 130, previous);
+    assert.ok(divisions <= previous && previous - divisions <= 1);
+    previous = divisions;
+  }
+  assert.equal(gridDivisionsFor(1, 130), 1);
+  assert.equal(gridDivisionsFor(1000, 130, 256), 256);
+});
+
+test("zero is always a grid boundary and every half-axis is divided into n equal cells", () => {
+  for (const divisions of [1, 2, 3, 4, 5, 7, 8, 11, 16, 32, 64, 128, 256]) {
+    const width = 500 / divisions;
+    const ticks = gridTicksFor(divisions);
+    assert.equal(ticks.length, divisions * 2 + 1);
+    assert.ok(Math.abs(ticks[divisions] - 500) < 1e-9);
+    assert.equal(ticks.length - 1, divisions * 2);
+    ticks.forEach((tick, index) => assert.ok(Math.abs(tick - index * width) < 1e-9));
+    ticks.forEach((tick) => assert.ok(ticks.some((other) => Math.abs(other - (1000 - tick)) < 1e-9)));
+    for (let index = 0; index < divisions; index++) {
+      const negative = gridCell(index * width + width / 2, divisions);
+      const positive = gridCell(500 + index * width + width / 2, divisions);
+      const mirrored = gridCell(500 + (divisions - 1 - index) * width + width / 2, divisions);
+      assert.ok(Math.abs((negative.max - negative.min) - width) < 1e-9);
+      assert.ok(Math.abs((positive.max - positive.min) - width) < 1e-9);
+      assert.ok(Math.abs(negative.center - (index + .5) * width) < 1e-9);
+      assert.ok(Math.abs(positive.center - (500 + (index + .5) * width)) < 1e-9);
+      assert.ok(Math.abs(negative.center - (1000 - mirrored.center)) < 1e-9);
+    }
+    for (let value = 0; value <= 1000; value += Math.max(.5, width / 2)) {
+      const cell = gridCell(value, divisions);
+      assert.ok(Math.abs((cell.max - cell.min) - width) < 1e-9);
+      assert.ok(cell.min >= 0 && cell.max <= 1000);
+      if (value < 500) assert.ok(cell.min < 500 && cell.max <= 500);
+      if (value > 500) assert.ok(cell.min >= 500 && cell.max > 500);
     }
   }
 });
 
+test("negative, zero and positive assets never share a cluster; zero stays on the axis", () => {
+  for (const divisions of [1, 2, 3, 5, 8]) {
+    const keys = [499, 500, 501].map((value) => gridClusterKey([value], divisions));
+    assert.equal(new Set(keys).size, 3);
+    assert.equal(gridClusterKey([496], divisions), gridClusterKey([499], divisions));
+    assert.equal(gridClusterKey([501], divisions), gridClusterKey([504], divisions));
+    assert.equal(gridClusterCell(500, divisions).center, 500);
+  }
+});
+
 test("2D quadrants and 3D octants cluster independently along every chosen axis", () => {
-  for (const centered of [false, true]) {
-    for (const mode of [2, 3]) {
-      const values = Array.from({ length: 2 ** mode }, (_, mask) =>
-        Array.from({ length: mode }, (_, axis) => mask & (1 << axis) ? 501 : 499));
-      const keys = values.map((point) => gridClusterKey(point, 100, centered));
-      assert.equal(new Set(keys).size, 2 ** mode);
-      for (let axis = 0; axis < mode; axis++) {
-        const zero = Array(mode).fill(501);
-        zero[axis] = 500;
-        assert.ok(!keys.includes(gridClusterKey(zero, 100, centered)));
-      }
+  for (const mode of [2, 3]) {
+    const values = Array.from({ length: 2 ** mode }, (_, mask) =>
+      Array.from({ length: mode }, (_, axis) => mask & (1 << axis) ? 501 : 499));
+    const keys = values.map((point) => gridClusterKey(point, 3));
+    assert.equal(new Set(keys).size, 2 ** mode);
+    for (let axis = 0; axis < mode; axis++) {
+      const zero = Array(mode).fill(501);
+      zero[axis] = 500;
+      assert.ok(!keys.includes(gridClusterKey(zero, 3)));
     }
   }
 });
 
 test("stack positions and drop-target keys stay on their respective side of zero", () => {
-  assert.equal(gridClusterCell(499, 100, true).center, 375);
-  assert.equal(gridClusterCell(500, 100, true).center, 500);
-  assert.equal(gridClusterCell(501, 100, true).center, 625);
-  assert.equal(gridClusterKey([501, 510], 100, true), gridClusterKey([520, 530], 100, true));
-  assert.notEqual(gridClusterKey([499, 510], 100, true), gridClusterKey([501, 510], 100, true));
-  for (const centered of [false, true]) {
-    for (const step of [320, 100, 80, 40, 20, 5]) {
-      for (let value = 0; value <= 1000; value++) {
-        const cell = gridClusterCell(value, step, centered);
-        assert.ok(cell.min <= value && cell.max >= value);
-        if (value < 500) assert.ok(cell.max <= 500 && cell.center < 500);
-        if (value > 500) assert.ok(cell.min >= 500 && cell.center > 500);
-        if (value === 500) assert.equal(cell.center, 500);
-      }
+  assert.equal(gridClusterCell(499, 1).center, 250);
+  assert.equal(gridClusterCell(500, 1).center, 500);
+  assert.equal(gridClusterCell(501, 1).center, 750);
+  assert.ok(Math.abs(gridClusterCell(499, 3).center - (1000 - gridClusterCell(501, 3).center)) < 1e-9);
+  assert.equal(gridClusterKey([501, 510], 3), gridClusterKey([520, 530], 3));
+  assert.notEqual(gridClusterKey([499, 510], 3), gridClusterKey([501, 510], 3));
+  for (const divisions of [1, 2, 3, 5, 8]) {
+    for (let value = 0; value <= 1000; value++) {
+      const cell = gridClusterCell(value, divisions);
+      assert.ok(cell.min <= value && cell.max >= value);
+      if (value < 500) assert.ok(cell.max <= 500 && cell.center < 500);
+      if (value > 500) assert.ok(cell.min >= 500 && cell.center > 500);
+      if (value === 500) assert.equal(cell.center, 500);
     }
   }
-  assert.deepEqual(gridTicksFor(100, true), [0, 250, 750, 1000]);
+  assert.deepEqual(gridTicksFor(1), [0, 500, 1000]);
+  assert.deepEqual(gridTicksFor(2), [0, 250, 500, 750, 1000]);
 });
 
-test("the actual 55% scene / 135% picture view centers its coarse grid without max sliders", () => {
-  const step = gridStepFor(750 / .55 * .55 / 200, gridMinimumSpacing([], 2, 1.35, .55));
-  assert.equal(step, 80);
-  assert.equal(usesCenteredGrid(step, .55, 1.35), true);
-  assert.deepEqual(gridTicksFor(step, usesCenteredGrid(step, .55, 1.35)), [0, 250, 750, 1000]);
-  assert.equal(usesCenteredGrid(160, .35, .5), true);
-  assert.equal(usesCenteredGrid(40, 1, 1), false);
-  assert.equal(usesCenteredGrid(20, 2.8, 1), true);
-  assert.equal(usesCenteredGrid(40, 1, 2), true);
+test("initial half divisions keep the cell spacing inside the requested band", () => {
+  const cases = [
+    [1.75, 130, 1], [2.5, 130, 1], [5, 130, 3], [5.145, 130, 3],
+    [10, 130, 7], [14.4, 130, 11], [10, 220, 4], [10, 85, 11],
+  ];
+  for (const [pixels, spacing, expected] of cases) {
+    assert.equal(gridDivisionsFor(pixels, spacing), expected);
+    const cell = (100 / expected) * pixels;
+    assert.ok(cell >= spacing);
+    if (expected > 1) assert.ok(cell <= spacing * 2);
+  }
+  assert.equal(gridDivisionsFor(750 / 200 * .55, gridMinimumSpacing([], 2, 1.35, .55)), 1);
 });
 
-test("maximum zoom centers a complete cell on zero with symmetric boundaries", () => {
-  assert.deepEqual(gridTicksFor(40, true), [0, 125, 375, 625, 875, 1000]);
-  for (const step of [320, 160, 80, 40, 20, 10, 5, 2.5]) {
-    const ticks = gridTicksFor(step, true);
-    assert.ok(!ticks.includes(500));
-    assert.deepEqual(ticks, ticks.map((tick) => 1000 - tick).reverse());
-    const centerCell = gridCell(500, step, true);
-    assert.equal(centerCell.center, 500);
-    assert.ok(centerCell.min < 500 && centerCell.max > 500);
+test("half divisions stay equal and axis-aligned at every level", () => {
+  for (const divisions of [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 16, 32, 64, 128, 256]) {
+    const ticks = gridTicksFor(divisions);
+    assert.ok(ticks.some((tick) => Math.abs(tick - 500) < 1e-9));
+    ticks.forEach((tick) => assert.ok(ticks.some((other) => Math.abs(other - (1000 - tick)) < 1e-9)));
     for (let value = 0; value <= 1000; value++) {
-      const cell = gridCell(value, step, true);
-      assert.ok(ticks.includes(cell.min));
-      assert.ok(ticks.includes(cell.max));
+      const cell = gridCell(value, divisions);
+      assert.ok(ticks.some((tick) => Math.abs(tick - cell.min) < 1e-9));
+      assert.ok(ticks.some((tick) => Math.abs(tick - cell.max) < 1e-9));
       assert.ok(value >= cell.min && value <= cell.max);
     }
   }
 });
 
-test("coarse maximum zoom matches the reference center band at -50/+50", () => {
-  assert.equal(centeredGridStepFor(320), 100);
-  assert.equal(centeredGridStepFor(80), 100);
-  assert.deepEqual(gridTicksFor(320, true), [0, 250, 750, 1000]);
-  assert.deepEqual(gridCell(500, 320, true), { index: 0, min: 250, max: 750, center: 500 });
-  assert.deepEqual(gridCell(0, 320, true), { index: -1, min: 0, max: 250, center: 125 });
-  assert.deepEqual(gridCell(1000, 320, true), { index: 1, min: 750, max: 1000, center: 875 });
-  assert.equal(gridCellKey([499], 320, true), gridCellKey([500], 320, true));
-  assert.notEqual(gridCellKey([249], 320, true), gridCellKey([250], 320, true));
+test("the coarsest grid is one cell per half-axis; the finest is 256", () => {
+  assert.deepEqual(gridTicksFor(1), [0, 500, 1000]);
+  assert.deepEqual(gridCell(500, 1), { index: 0, min: 500, max: 1000, center: 750 });
+  assert.deepEqual(gridCell(0, 1), { index: 0, min: 0, max: 500, center: 250 });
+  assert.equal(gridDivisionsFor(1000, 130, 256), 256);
+  assert.equal(gridTicksFor(256).length, 513);
+  assert.ok(Math.abs(gridTicksFor(256)[256] - 500) < 1e-9);
 });
 
 test("pointer zoom preserves the underlying coordinate after panning, in both directions", () => {
@@ -105,30 +147,81 @@ test("pointer zoom preserves the underlying coordinate after panning, in both di
   assert.deepEqual(zoomPanAtPointer({ x: 12, y: -3 }, { x: 200, y: 50 }, 2.8, 2.8), { x: 12, y: -3 });
 });
 
-test("ordinary zoom retains the existing edge-anchored ticks and cell assignments", () => {
-  assert.deepEqual(gridTicksFor(40), [0, 200, 400, 600, 800, 1000]);
-  assert.deepEqual(gridTicksFor(320), [0, 1000]);
-  assert.equal(gridCellKey([499], 320), gridCellKey([500], 320));
+test("ordinary zoom uses the same axis-anchored divisions", () => {
+  assert.deepEqual(gridTicksFor(1), [0, 500, 1000]);
+  assert.deepEqual(gridTicksFor(2), [0, 250, 500, 750, 1000]);
+  assert.notEqual(gridCellKey([499], 1), gridCellKey([500], 1));
+  assert.equal(gridCellKey([249], 1), gridCellKey([300], 1));
 });
 
 test("density adapts to both zoom and viewport size using the image footprint", () => {
-  assert.deepEqual([.35, .5, 1, 2, 2.8].map((zoom) => gridStepFor(1000 * zoom / 200, 130)), [80, 80, 40, 20, 10]);
-  assert.equal(gridStepFor(2000 / 200, 130), gridStepFor(1000 * 2 / 200, 130));
+  let previous = 1;
+  const result = [];
+  for (const zoom of [.35, .5, 1, 2, 2.8]) {
+    previous = gridDivisionsFor(1000 * zoom / 200, 130, previous);
+    result.push(previous);
+  }
+  assert.deepEqual(result, [1, 1, 2, 4, 5]);
+  assert.equal(gridDivisionsFor(1000 / 200, 130, 3), 3);
 });
 
-test("zoom thresholds keep a full image footprint after splitting and have hysteresis", () => {
-  assert.equal(gridStepFor(12, 100, 20), 20);
-  assert.equal(gridStepFor(12.01, 100, 20), 10);
-  assert.equal(gridStepFor(11.99, 100, 10), 10);
-  assert.equal(gridStepFor(10, 100, 10), 10);
-  assert.equal(gridStepFor(9.99, 100, 10), 20);
-  assert.equal(gridStepFor(0, 100, 10), 10);
+test("half divisions move by one level at a time around the spacing thresholds", () => {
+  assert.equal(gridDivisionsFor(5, 100, 5), 5);
+  assert.equal(gridDivisionsFor(5.5, 100, 5), 5);
+  assert.equal(gridDivisionsFor(12.1, 100, 5), 6);
+  assert.equal(gridDivisionsFor(4.9, 100, 5), 4);
+  let previous = 5;
+  for (const pixels of [5, 6, 7, 8, 9, 10, 11, 12]) {
+    const next = gridDivisionsFor(pixels, 100, previous);
+    assert.ok(next >= previous && next - previous <= 1);
+    previous = next;
+  }
 });
 
-test("large resize changes can cross multiple levels at once", () => {
-  const step = gridStepFor(40, 144, 80);
-  assert.equal(step, 5);
-  assert.equal(gridStepFor(.5, 144, step), 320);
+test("large resize changes can move several levels but stay in the equal grid", () => {
+  const divisions = gridDivisionsFor(40, 144, 80);
+  assert.equal(divisions, 27);
+  assert.equal(gridDivisionsFor(.5, 144, divisions), 1);
+  for (const step of [144, 264, 84]) {
+    let previous;
+    for (const pixels of [1, 2, 5, 10, 20, 40, 20, 10, 5, 2, 1]) {
+      const next = gridDivisionsFor(pixels, step, previous);
+      const cell = (100 / next) * pixels;
+      if (next > 1 && next < 256) {
+        assert.ok(cell >= step);
+        assert.ok(cell <= step * 2.4);
+      }
+      previous = next;
+    }
+  }
+});
+
+test("collapsed stacks keep a stable thumbnail subset while the camera rotates", () => {
+  const members = ["a", "b", "c", "d", "e"];
+  assert.equal(PREVIEW_STACK_VISIBLE, 4);
+  assert.deepEqual(stackPreviewMembers(members), ["a", "b", "c", "d"]);
+  // The helper never consults view depth, so repeated calls with the same member order stay identical.
+  assert.deepEqual(stackPreviewMembers(members), stackPreviewMembers([...members]));
+  assert.deepEqual(stackPreviewMembers(["a", "b"]), ["a", "b"]);
+  assert.deepEqual(stackPreviewMembers([]), []);
+});
+
+test("the expanded plane orders members front-to-back only when it opens", () => {
+  const members = [
+    { id: "a", depth: 10 },
+    { id: "b", depth: 30 },
+    { id: "c", depth: 20 },
+    { id: "d", depth: 30 },
+  ];
+  // Stable sort: equal depths keep the member order captured when the plane opened.
+  assert.deepEqual(
+    orderByViewDepth(members, (member) => member.depth).map((member) => member.id),
+    ["b", "d", "c", "a"],
+  );
+  assert.deepEqual(
+    orderByViewDepth(members, () => 0).map((member) => member.id),
+    ["a", "b", "c", "d"],
+  );
 });
 
 test("normal image proportions and stack overhang determine spacing, including scale", () => {
@@ -147,68 +240,44 @@ test("normal image proportions and stack overhang determine spacing, including s
 });
 
 test("larger pictures coarsen the grid and smaller pictures allow finer cells", () => {
-  const portrait = [{ width: 3, height: 4 }];
-  const spacing = (scale) => gridMinimumSpacing(portrait, 2, scale);
-  const normal = gridStepFor(10, spacing(1));
-  const large = gridStepFor(10, spacing(2), normal);
-  const small = gridStepFor(10, spacing(.5), large);
-  assert.equal(normal, 20);
-  assert.equal(large, 40);
-  assert.equal(small, 20);
-  assert.ok(small < large);
-});
-
-test("chosen density respects the footprint throughout resize and slider changes", () => {
-  let previous;
-  for (const minimum of [84, 144, 264, 144, 84]) {
-    for (const pixels of [1, 2, 5, 10, 20, 40, 20, 10, 5, 2, 1]) {
-      const step = gridStepFor(pixels, minimum, previous);
-      assert.ok(step * pixels >= minimum);
-      assert.ok(step * pixels <= minimum * 2.4);
-      previous = step;
-    }
-  }
+  const spacing = (scale) => gridMinimumSpacing([{ width: 3, height: 4 }], 2, scale);
+  const normal = gridDivisionsFor(10, spacing(1));
+  const large = gridDivisionsFor(10, spacing(2), normal);
+  const small = gridDivisionsFor(10, spacing(.5), large);
+  assert.equal(normal, 6);
+  assert.equal(large, 3);
+  assert.ok(small > large);
 });
 
 test("boundaries belong to one cell, with +100 in the final cell", () => {
-  assert.equal(gridCell(99, 20).index, 0);
-  assert.equal(gridCell(100, 20).index, 1);
-  assert.equal(gridCell(1000, 20).index, 9);
-  assert.equal(gridCell(1000, 40).center, 900);
-  const edge = gridCell(1000, 80);
-  assert.deepEqual(edge, { index: 2, min: 800, max: 1000, center: 900 });
-});
-
-test("finer cells never join assets from separate parent cells, in 1D/2D/3D", () => {
-  for (const coarse of [320, 160, 80, 40, 20, 10, 5, 2.5]) {
-    const parents = new Map();
-    for (let value = 0; value <= 1000; value++) {
-      for (const values of [[value], [value, 1000 - value], [value, 1000 - value, (value * 7) % 1001]]) {
-        const child = values.length + ":" + gridCellKey(values, coarse / 2);
-        const parent = gridCellKey(values, coarse);
-        if (parents.has(child)) assert.equal(parents.get(child), parent);
-        parents.set(child, parent);
-      }
-    }
-  }
+  assert.equal(gridCell(499.999, 5).index, 4);
+  assert.equal(gridCell(500, 5).index, 0);
+  assert.equal(gridCell(599.999, 5).index, 0);
+  assert.equal(gridCell(600, 5).index, 1);
+  assert.equal(gridCell(1000, 5).index, 4);
+  assert.equal(gridCell(1000, 5).max, 1000);
+  assert.ok(Math.abs(gridCell(1000, 3).center - 916.6666666666666) < 1e-9);
 });
 
 test("nearby chains cannot bridge separate grid cells; unused axes do not participate", () => {
-  assert.equal(gridCellKey([501], 20), gridCellKey([599], 20));
-  assert.notEqual(gridCellKey([599], 20), gridCellKey([601], 20));
-  assert.notEqual(gridCellKey([550, 599], 20), gridCellKey([550, 601], 20));
-  assert.notEqual(gridCellKey([550, 550, 599], 20), gridCellKey([550, 550, 601], 20));
+  assert.equal(gridCellKey([501], 5), gridCellKey([599], 5));
+  assert.notEqual(gridCellKey([599], 5), gridCellKey([601], 5));
+  assert.notEqual(gridCellKey([550, 599], 5), gridCellKey([550, 601], 5));
+  assert.notEqual(gridCellKey([550, 550, 599], 5), gridCellKey([550, 550, 601], 5));
 });
 
-test("tick boundaries exactly bound every cell, including partial edge cells", () => {
-  for (const step of [320, 160, 80, 40, 20, 10, 5, 2.5, 1.25]) {
-    const ticks = gridTicksFor(step);
+test("tick boundaries exactly bound every cell and every level keeps an even whole-axis count", () => {
+  for (const divisions of [1, 2, 3, 4, 5, 7, 8, 11, 16, 32, 64, 128, 256]) {
+    const ticks = gridTicksFor(divisions);
     assert.equal(ticks[0], 0);
     assert.equal(ticks.at(-1), 1000);
+    assert.equal(ticks.length, divisions * 2 + 1);
+    assert.equal((ticks.length - 1) / 2, divisions);
     for (let value = 0; value <= 1000; value++) {
-      const cell = gridCell(value, step);
-      assert.equal(ticks[cell.index], cell.min);
-      assert.equal(ticks[cell.index + 1], cell.max);
+      const cell = gridCell(value, divisions);
+      const offset = value < 500 ? 0 : divisions;
+      assert.ok(Math.abs(ticks[offset + cell.index] - cell.min) < 1e-9);
+      assert.ok(Math.abs(ticks[offset + cell.index + 1] - cell.max) < 1e-9);
       assert.ok(cell.center >= cell.min && cell.center <= cell.max);
     }
   }

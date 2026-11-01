@@ -88,6 +88,22 @@
     user-select: none;
   }
 
+  /* hover 聚焦：图片/堆及坐标 tag 的模糊与 50% 覆盖在 JS 中按景深状态计算，这里让网格与轴线一起退后 */
+  .dimension-scene.hover-focus .xy-grid-plane,
+  .dimension-scene.hover-focus .axis-bar,
+  .dimension-scene.hover-focus .preview-axis-tick,
+  .dimension-scene.hover-focus .axis-origin {
+    opacity: 0.5;
+  }
+
+  /* hover 聚焦的进入/退出统一 200ms；网格与轴线的透明度也一起过渡 */
+  .xy-grid-plane,
+  .axis-bar,
+  .preview-axis-tick,
+  .axis-origin {
+    transition: opacity 200ms ease;
+  }
+
   .scene-viewport {
     width: 100%;
     min-width: 620px;
@@ -151,6 +167,24 @@
 
   .camera-moving .preview-asset-face {
     transition: transform 0s, opacity var(--preview-hover-duration) ease, visibility 0s linear;
+  }
+
+  .camera-moving .preview-asset-face::after,
+  .camera-moving .preview-scene-tag::after,
+  .camera-moving .preview-stack .stack-card::after {
+    transition: opacity 0s;
+  }
+
+  .camera-moving .axis-label .preview-scene-tag,
+  .camera-moving .corner-label .preview-tag-group {
+    transition: none;
+  }
+
+  .camera-moving .xy-grid-plane,
+  .camera-moving .axis-bar,
+  .camera-moving .preview-axis-tick,
+  .camera-moving .axis-origin {
+    transition: none;
   }
 
   .camera-moving .preview-scene-tag,
@@ -338,7 +372,7 @@
   .corner-label .preview-tag-group {
     transform: rotateZ(var(--billboard-rz)) rotateX(var(--billboard-rx));
     transform-origin: center;
-    transition: none;
+    transition: filter 200ms ease;
   }
 
   .corner-label .preview-tag-group {
@@ -414,7 +448,7 @@
     background: transparent;
     transform: scale3d(var(--persp, 1), var(--persp, 1), var(--persp, 1)) rotateZ(var(--billboard-rz)) rotateX(var(--billboard-rx));
     transform-style: preserve-3d;
-    transition: transform var(--preview-hover-duration) ease, opacity var(--preview-hover-duration) ease, visibility 0s linear;
+    transition: transform var(--preview-hover-duration) ease, opacity var(--preview-hover-duration) ease, visibility 0s linear, filter 200ms ease;
   }
 
   /*
@@ -430,16 +464,16 @@
     background: var(--color-preview-bg);
     opacity: var(--dof-fog, 0);
     pointer-events: none;
+    transition: opacity 200ms ease;
   }
 
   .preview-scene-tag {
     position: relative;
   }
 
-  .preview-asset.hover-occluder .preview-asset-face {
+  /* hover 单张时只隐藏被 hover 的原图本体，前方遮挡物保持原位；放大图由屏幕空间前景层显示 */
+  .preview-asset.hover-foreground-source .preview-asset-face {
     visibility: hidden;
-    opacity: 0;
-    transition: transform var(--preview-hover-duration) ease, opacity var(--preview-hover-duration) ease, visibility 0s linear var(--preview-hover-duration);
   }
 
   .preview-asset.octant-hidden .preview-asset-face {
@@ -450,6 +484,60 @@
 
   .preview-asset.hovered .preview-asset-face {
     --hover-scale: 2.475;
+  }
+
+  /*
+   * 单张 hover 的前景层：脱离 3D 深度排序，永远显示在最前。
+   * 位置和尺寸由 JS 按原图的屏幕矩形写入，遮挡物保持原位，不再淡出或隐藏。
+   */
+  .hover-preview {
+    position: absolute;
+    z-index: 2000;
+    pointer-events: none;
+  }
+
+  .hover-preview .preview-asset-face {
+    --persp: 1;
+    --billboard-rx: 0deg;
+    --billboard-rz: 0deg;
+    --hover-scale: 2.475;
+  }
+
+  .hover-preview .preview-asset-face > img,
+  .hover-preview .preview-asset-face > i {
+    animation: hover-preview-in var(--preview-hover-duration) ease;
+  }
+
+  @keyframes hover-preview-in {
+    from { transform: scale3d(1, 1, 1); }
+    to { transform: scale3d(2.475, 2.475, 2.475); }
+  }
+
+  .hover-preview .preview-value-tags {
+    bottom: calc(100% + 73.75% + 5px);
+  }
+
+  /* 缩放聚堆 FLIP：堆内未展示成员用屏幕幽灵从旧位置滑入新堆 */
+  .flip-ghost-layer {
+    position: absolute;
+    inset: 0;
+    z-index: 1900;
+    pointer-events: none;
+    overflow: hidden;
+  }
+
+  .flip-ghost {
+    position: absolute;
+    object-fit: contain;
+    object-position: center;
+    pointer-events: none;
+    transform-origin: center;
+  }
+
+  .flip-ghost:not(img) {
+    display: grid;
+    place-items: center;
+    font-style: normal;
   }
 
   .preview-asset-face img {
@@ -466,7 +554,14 @@
     transition: transform var(--preview-hover-duration) ease;
   }
 
-  .preview-asset-face > i {
+  /* 单张图片的屏幕空间 FLIP 包装层：堆合并/展开时由 200ms Web Animations 位移 */
+  .preview-art-flip {
+    position: absolute;
+    inset: 0;
+  }
+
+  .preview-asset-face > i,
+  .preview-art-flip > i {
     width: 100%;
     height: 100%;
     display: grid;
@@ -477,30 +572,48 @@
     transition: transform var(--preview-hover-duration) ease;
   }
 
-  .preview-asset-face em {
+  /*
+   * 图片上方的坐标 tag 组：与坐标轴端点使用同一款只读 TagLabel，
+   * 每个选中维度独立一个 tag，不再使用深色合成气泡。
+   */
+  .preview-value-tags {
     position: absolute;
     left: 50%;
     bottom: calc(100% + 5px);
     z-index: 6;
+    display: flex;
+    align-items: center;
+    gap: 3px;
     transform: translateX(-50%);
-    transition: bottom var(--preview-hover-duration) ease;
-    padding: 4px 6px;
-    background: var(--color-ink-deep);
-    color: var(--color-white);
-    font-size: 14px;
-    font-style: normal;
+    pointer-events: none;
     white-space: nowrap;
+    transition: bottom var(--preview-hover-duration) ease;
   }
 
-  .preview-asset.hovered .preview-asset-face em {
+  .preview-asset.hovered .preview-value-tags {
     bottom: calc(100% + 73.75% + 5px);
   }
 
   .preview-asset.preview-stack { cursor: default; }
 
-  .preview-stack .stack-card {
+  .preview-stack .stack-grid {
+    /* 2×2 缩略图矩阵：整块保持单张图片的占位，格内缩略图约为其一半大小，hover 后由平面展开全部成员 */
+    --stack-gap: calc(var(--asset-size, 41px) * 0.05);
+    --stack-thumb-size: calc((var(--asset-size, 41px) - var(--stack-gap)) / 2);
     position: absolute;
-    inset: 0;
+    left: 50%;
+    top: 50%;
+    display: grid;
+    grid-template-columns: repeat(2, var(--stack-thumb-size));
+    grid-auto-rows: var(--stack-thumb-size);
+    gap: var(--stack-gap);
+    transform: translate(-50%, -50%);
+  }
+
+  .preview-stack .stack-card {
+    position: relative;
+    min-width: 0;
+    min-height: 0;
     display: grid;
     place-items: center;
     background: transparent;
@@ -524,8 +637,20 @@
     font-style: normal;
   }
 
-  .preview-stack .stack-card:nth-child(2) { transform: translate(-4px, 3px); }
-  .preview-stack .stack-card:nth-child(3) { transform: translate(-8px, 6px); }
+  /* 堆的可见区域只是缩略图矩阵本身：景深雾化贴到每张缩略图上，不铺满整个命中框 */
+  .preview-stack .preview-asset-face::after {
+    content: none;
+  }
+
+  .preview-stack .stack-card::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background: var(--color-preview-bg);
+    opacity: var(--dof-fog, 0);
+    pointer-events: none;
+    transition: opacity 200ms ease;
+  }
 
   .preview-stack .stack-count {
     position: absolute;
@@ -634,25 +759,14 @@
     transform: scale3d(1.86, 1.86, 1.86);
   }
 
-  .stack-plane-card em {
-    position: absolute;
-    left: 50%;
+  .stack-plane-card .preview-value-tags {
     bottom: calc(100% + 5px);
-    z-index: 6;
-    padding: 4px 6px;
-    background: var(--color-ink-deep);
-    color: var(--color-white);
-    font-size: 14px;
-    font-style: normal;
-    white-space: nowrap;
-    transform: translateX(-50%);
-    pointer-events: none;
     visibility: hidden;
     opacity: 0;
     transition: bottom var(--preview-hover-duration) ease, opacity var(--preview-hover-duration) ease, visibility 0s linear var(--preview-hover-duration);
   }
 
-  .stack-plane-card:hover em {
+  .stack-plane-card:hover .preview-value-tags {
     visibility: visible;
     opacity: 1;
     bottom: calc(100% + 43% + 5px);

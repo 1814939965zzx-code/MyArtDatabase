@@ -1,11 +1,11 @@
 "use client";
 
 import { Aperture, Box, Bug, Images, Maximize2, Minimize2, Minus, MousePointer2, Pencil, Plus, RotateCcw, X } from "lucide-react";
-import { CSSProperties, PointerEvent, useEffect, useMemo, useRef, useState } from "react";
+import { CSSProperties, PointerEvent, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Button, EmptyState, IconButton, RangeSlider, SyncStatusDot, TagLabel, cn } from "./ui";
 import { useViewportGestures } from "./useViewportGestures";
 import { displayDimensionValue } from "./dimensionScale";
-import { centeredGridStepFor, gridClusterCell, gridClusterKey, gridMinimumSpacing, gridStepFor, gridTicksFor, PREVIEW_ASSET_WIDTH, previewAssetAspectRatio as aspectRatioFor, usesCenteredGrid, zoomPanAtPointer } from "./previewGrid";
+import { gridClusterCell, gridClusterKey, gridDivisionsFor, gridMinimumSpacing, gridTicksFor, orderByViewDepth, PREVIEW_ASSET_WIDTH, previewAssetAspectRatio as aspectRatioFor, stackPreviewMembers, zoomPanAtPointer } from "./previewGrid";
 
 type Dimension = { id: string; leftLabel: string; rightLabel: string };
 type Asset = { id: string; name: string; thumbnailUrl: string | null; dimensionValues: Record<string, number>; width?: number; height?: number };
@@ -70,6 +70,30 @@ type AssetDrag = {
 type FocusTarget = { id: string; stack: boolean };
 const sameTarget = (a: FocusTarget | null, b: FocusTarget | null) =>
   a === b || (a !== null && b !== null && a.id === b.id && a.stack === b.stack);
+// hover 单张图片时渲染在 3D 场景之外的前景层：坐标相对 scene-viewport，不参与深度排序
+type HoverPreview = {
+  asset: Asset;
+  values: Record<string, number>;
+  left: number;
+  top: number;
+  width: number;
+  height: number;
+};
+// 缩放导致聚堆重组时的 FLIP 快照：按素材记录当前屏幕位置与可见表示
+type FlipLayoutEntry = {
+  left: number;
+  top: number;
+  width: number;
+  height: number;
+  x: number;
+  y: number;
+  key: string;
+  element: HTMLElement | null;
+  src: string | null;
+  text: string | null;
+};
+type FlipLayout = Map<string, FlipLayoutEntry>;
+const CLUSTER_FLIP_DURATION = 200;
 
 /** 顶部浮层（素材详情、弹窗、确认框）打开时，Esc 优先关闭浮层，不退出专注模式。 */
 function hasOpenOverlay() {
@@ -86,6 +110,9 @@ const wrapRotation = (value: number) => ((value % 360) + 360) % 360;
 const SCENE_PERSPECTIVE = 2200;
 const PLANE_CARD_SIZE = PREVIEW_ASSET_WIDTH;
 const PLANE_CARD_GAP = 12;
+// hover 时其余图层统一退后：没有景深模糊的对象加统一模糊，所有非 hover 对象叠加 50% 画布底色
+const HOVER_FOCUS_BLUR = 4;
+const HOVER_FOCUS_SCRIM = "0.5";
 
 /** 展开平面的网格列数/行数与平面尺寸（与渲染共用）；cardSize 随图片缩放系数调整。 */
 function planeDimensions(count: number, cardSize = PLANE_CARD_SIZE) {
@@ -191,11 +218,11 @@ export function DimensionPreview({
   const [focusMode, setFocusMode] = useState(false);
   const [draggingAssetId, setDraggingAssetId] = useState<string | null>(null);
   const [hoveredAssetId, setHoveredAssetId] = useState<string | null>(null);
-  const [hiddenAssetIds, setHiddenAssetIds] = useState<string[]>([]);
+  const [hoverPreview, setHoverPreview] = useState<HoverPreview | null>(null);
   const [spaceHeld, setSpaceHeld] = useState(false);
   const [overrides, setOverrides] = useState<Record<string, Record<string, number>>>({});
   const [sceneSize, setSceneSize] = useState(0);
-  const [gridStep, setGridStep] = useState<number | undefined>(undefined);
+  const [gridDivisions, setGridDivisions] = useState<number | undefined>(undefined);
   // 图片缩放系数：作用于预览场景内所有图片（单张/堆/展开平面卡片），100% 为默认 90px；localStorage 记住
   const [assetScale, setAssetScale] = useState<number>(() => {
     try {
@@ -210,7 +237,7 @@ export function DimensionPreview({
   // 开发调试开关：绘制聚簇范围（生产构建中该分支被构建期剔除）
   const debugEnabled = import.meta.env.DEV;
   const [showClusterDebug, setShowClusterDebug] = useState(false);
-  const [dofEnabled, setDofEnabled] = useState(true);
+  const [blurEnabled, setBlurEnabled] = useState(true);
   const scenePlaneRef = useRef<HTMLDivElement>(null);
   const sceneViewportRef = useRef<HTMLDivElement>(null);
   const cameraDrag = useRef<CameraDrag | null>(null);
@@ -225,7 +252,13 @@ export function DimensionPreview({
   const focusIndexRef = useRef(0);
   // 鼠标当前是否在预览画布（scene-viewport）内，用于拦截默认 Tab 焦点切换
   const pointerInSceneRef = useRef(false);
-  const hiddenAssetIdsRef = useRef(new Set<string>());
+  // 缩放聚堆 FLIP：屏幕空间幽灵层、上一帧布局与缩放/档位状态
+  const flipGhostLayerRef = useRef<HTMLDivElement>(null);
+  const flipStateRef = useRef<{ map: FlipLayout; at: number } | null>(null);
+  const flipAnimationsRef = useRef(new WeakMap<HTMLElement, Animation>());
+  const lastScaleRef = useRef({ zoom, assetScale });
+  const lastGridDivisionsRef = useRef<number | null>(null);
+  const lastScaleChangeAtRef = useRef(0);
   const [planeCluster, setPlaneCluster] = useState<Cluster | null>(null);
   const [closingCluster, setClosingCluster] = useState<Cluster | null>(null);
   const [draggingPlaneAssetId, setDraggingPlaneAssetId] = useState<string | null>(null);
@@ -250,6 +283,8 @@ export function DimensionPreview({
     [dimensions, selectedIds],
   );
   const mode = selected.length;
+  // hover 单张/堆期间，其余图片、堆与坐标 tag 统一失焦、压暗，网格与坐标线降透明度
+  const hoverFocusActive = hoverPreview !== null || hoveredAssetId !== null || planeCluster !== null || closingCluster !== null;
   const minimumGridSpacing = useMemo(() => gridMinimumSpacing(
     assets.filter((asset) => assetBelongsToIsolatedOctant(asset.dimensionValues)),
     mode,
@@ -257,13 +292,12 @@ export function DimensionPreview({
     zoom,
   ), [assets, mode, assetScale, zoom, selected, isolatedOctants]);
   useEffect(() => {
-    if (sceneSize > 0) setGridStep((previous) => gridStepFor(sceneSize * zoom / 200, minimumGridSpacing, previous));
+    if (sceneSize > 0) setGridDivisions((previous) => gridDivisionsFor(sceneSize * zoom / 200, minimumGridSpacing, previous));
   }, [sceneSize, zoom, minimumGridSpacing]);
-  const densityGridStep = gridStep ?? gridStepFor(sceneSize * zoom / 200, minimumGridSpacing);
-  // Center coarse cells regardless of the zoom percentages shown in the toolbar.
-  const centeredGrid = usesCenteredGrid(densityGridStep, zoom, assetScale);
-  const activeGridStep = centeredGrid ? centeredGridStepFor(densityGridStep) : densityGridStep;
-  const gridTicks = useMemo(() => gridTicksFor(activeGridStep, centeredGrid), [activeGridStep, centeredGrid]);
+  const densityGridDivisions = gridDivisions ?? gridDivisionsFor(sceneSize * zoom / 200, minimumGridSpacing);
+  // 每个半轴等分：0 始终是格子边界，正负两半各分成 n 格（n 按 +1 序列）。
+  const activeGridDivisions = densityGridDivisions;
+  const gridTicks = useMemo(() => gridTicksFor(activeGridDivisions), [activeGridDivisions]);
   const sceneRotateX = ((rotateX + 180) % 360 + 360) % 360 - 180;
   const sceneRotateZ = ((rotateZ + 180) % 360 + 360) % 360 - 180;
   // 轴端点与角落组合的 tag 始终朝向摄像机：反向抵消场景旋转
@@ -373,7 +407,7 @@ export function DimensionPreview({
       const coordinates = selected.map((dimension) => values[dimension.id] ?? 500);
       const projected = projectValuePoint(coordinates[0], mode >= 2 ? 1000 - coordinates[1] : 500, mode === 3 ? coordinates[2] - 500 : 0);
       if (!projected) continue;
-      const cellKey = gridClusterKey(coordinates, activeGridStep, centeredGrid);
+      const cellKey = gridClusterKey(coordinates, activeGridDivisions);
       const group = groups.get(cellKey) ?? [];
       group.push({ asset, worldZ: projected.worldZ, values: coordinates });
       groups.set(cellKey, group);
@@ -382,7 +416,7 @@ export function DimensionPreview({
       if (group.length < 2) continue;
       // 边缘格裁切到定义域；隔离时再按该堆自身所属象限裁切到可见半空间（多选时不同堆属于不同象限）
       const cells = group[0].values.map((value) => {
-        const cell = gridClusterCell(value, activeGridStep, centeredGrid);
+        const cell = gridClusterCell(value, activeGridDivisions);
         const sign = isolatedOctants.length ? (value > 500 ? 1 : value < 500 ? -1 : 0) : null;
         const min = sign === 1 ? Math.max(500, cell.min) : cell.min;
         const max = sign === -1 ? Math.min(500, cell.max) : cell.max;
@@ -391,11 +425,13 @@ export function DimensionPreview({
       const x = cells[0].center;
       const y = mode >= 2 ? 1000 - cells[1].center : 500;
       const z = mode === 3 ? cells[2].center - 500 : 0;
-      const key = `s:${centeredGrid ? "center" : "edge"}:${activeGridStep}:${cellKey}:${group.map((entry) => entry.asset.id).sort().join(",")}`;
+      const key = `s:axis:${activeGridDivisions}:${cellKey}:${group.map((entry) => entry.asset.id).sort().join(",")}`;
       const projected = projectValuePoint(x, y, z);
       clusters.push({
         key, cellKey,
-        members: group.slice().sort((a, b) => b.worldZ - a.worldZ).map((entry) => entry.asset),
+        // 成员顺序固定为页面素材列表顺序：旋转视角时深度会连续变化，按深度排序会让收起堆的缩略图跳动。
+        // 展开平面需要「从前往后」时，在打开瞬间单独排序（见 openPlane）。
+        members: group.map((entry) => entry.asset),
         x, y, z,
         bounds: {
           x: [cells[0].min, cells[0].max],
@@ -409,7 +445,7 @@ export function DimensionPreview({
       for (const entry of group) clusterOf.set(entry.asset.id, key);
     }
     return { clusters, clusterOf };
-  }, [assets, mode, selected, activeGridStep, centeredGrid, sceneSize, scenePivot.x, scenePivot.y, scenePivot.z, isolatedOctants, overrides, draggingAssetId, draggingPlaneAssetId, rotateX, rotateZ]);
+  }, [assets, mode, selected, activeGridDivisions, sceneSize, scenePivot.x, scenePivot.y, scenePivot.z, isolatedOctants, overrides, draggingAssetId, draggingPlaneAssetId, rotateX, rotateZ]);
   function octantNames(octant: Octant): string[] {
     // 切回 1D/2D 时可能还残留 3D 的选中象限，缺少第三个维度就退回空名，避免读取 undefined
     if (!selected[0] || !selected[1] || !selected[2]) return [];
@@ -426,13 +462,44 @@ export function DimensionPreview({
   const isOctantSideVisible = (axis: number, side: AxisSign) =>
     isolatedOctants.some((octant) => [octant.x, octant.y, octant.z][axis] === side);
   const octantLabel = isolatedOctants.map((octant) => octantNames(octant).join("、")).filter(Boolean).join(" / ") || null;
-  // 立方体下方与三维视图一致用 tag 展示；同名端点名称只保留一个
-  const octantTags = [...new Set(isolatedOctants.flatMap(octantNames))];
+  // 立方体下方与三维视图一致用 tag 展示；同一维度同时包含左右两端时合并为一个「左 ↔ 右」标签
+  // 单一端点 tag 在前，合并 tag 在后
+  const octantTags = (() => {
+    if (!isolatedOctants.length) return [];
+    const singleTags: string[] = [];
+    const mergedTags: string[] = [];
+    selected.forEach((dimension, axis) => {
+      let hasLeft = false;
+      let hasRight = false;
+      for (const octant of isolatedOctants) {
+        if ([octant.x, octant.y, octant.z][axis] === 1) hasRight = true;
+        else hasLeft = true;
+      }
+      if (hasLeft && hasRight) {
+        const label = `${dimension.leftLabel} ↔ ${dimension.rightLabel}`;
+        if (!mergedTags.includes(label)) mergedTags.push(label);
+        return;
+      }
+      const label = hasRight ? dimension.rightLabel : hasLeft ? dimension.leftLabel : null;
+      if (label && !singleTags.includes(label)) singleTags.push(label);
+    });
+    return [...new Set([...singleTags, ...mergedTags])];
+  })();
   // 场景内 tag 与图片共用同一套景深：越远越模糊、并叠加越远越不透明的画布底色
   const tagDofStyle = (xParam: number, yParam: number, zParam: number): CSSProperties => {
-    if (!dofEnabled || isOctantIsolated) return {};
     const worldZ = projectValuePoint(xParam, yParam, zParam)?.worldZ ?? 0;
-    return { ...depthBlurStyle(worldZ), ...depthFogStyle(worldZ) };
+    const dofBlurOn = blurEnabled && !isOctantIsolated;
+    const baseBlur = dofBlurOn ? depthBlurStyle(worldZ) : undefined;
+    if (hoverFocusActive) {
+      // hover 聚焦：模糊受总开关控制，白色叠加始终保留
+      const focusBlur = baseBlur ?? (blurEnabled ? { filter: `blur(${HOVER_FOCUS_BLUR}px)` } : undefined);
+      return {
+        ...focusBlur,
+        "--dof-fog": HOVER_FOCUS_SCRIM,
+      } as CSSProperties;
+    }
+    if (isOctantIsolated) return {};
+    return { ...baseBlur, ...depthFogStyle(worldZ) };
   };
   // 端点 tag 的取点与渲染位置一致（x/y 用 0～1000 值空间，y=0 在顶部；z 为 -500～500）
   const axisTagDof = {
@@ -566,6 +633,7 @@ export function DimensionPreview({
         && !hasOpenOverlay()) {
         event.preventDefault();
         event.stopPropagation();
+        clearFan();
         setFocusMode(false);
         return;
       }
@@ -646,12 +714,58 @@ export function DimensionPreview({
     if (planeCloseTimer.current !== null) window.clearTimeout(planeCloseTimer.current);
   }, []);
 
+  // 窗口尺寸变化时场景矩形会变；hover 前景层按屏幕坐标定位，直接清掉避免残留错位
+  useEffect(() => {
+    const clearOnResize = () => clearFan();
+    window.addEventListener("resize", clearOnResize);
+    return () => window.removeEventListener("resize", clearOnResize);
+  }, []);
+
+  // 缩放视图或图片缩放系数变化导致聚堆重组时，用 200ms FLIP 让素材滑入/滑出堆；
+  // 旋转、平移、拖动改维度不会触发。
+  useLayoutEffect(() => {
+    if (lastGridDivisionsRef.current === null) {
+      lastGridDivisionsRef.current = activeGridDivisions;
+      return;
+    }
+    const now = performance.now();
+    const scaleChanged = zoom !== lastScaleRef.current.zoom || assetScale !== lastScaleRef.current.assetScale;
+    const divisionsChanged = activeGridDivisions !== lastGridDivisionsRef.current;
+    if (scaleChanged) {
+      lastScaleRef.current = { zoom, assetScale };
+      lastScaleChangeAtRef.current = now;
+      const predictedDivisions = sceneSize > 0
+        ? gridDivisionsFor(sceneSize * zoom / 200, minimumGridSpacing, gridDivisions)
+        : gridDivisions;
+      const predictedActive = predictedDivisions ?? activeGridDivisions;
+      if (predictedActive !== activeGridDivisions || divisionsChanged) {
+        const previous = flipStateRef.current;
+        const next = captureFlipLayout();
+        if (divisionsChanged && previous && now - previous.at < 500) animateFlipLayout(previous.map, next);
+        flipStateRef.current = { map: next, at: now };
+      }
+      lastGridDivisionsRef.current = activeGridDivisions;
+      return;
+    }
+    if (divisionsChanged) {
+      const previous = flipStateRef.current;
+      const next = captureFlipLayout();
+      if (previous && now - lastScaleChangeAtRef.current < 600 && now - previous.at < 600) {
+        animateFlipLayout(previous.map, next);
+      }
+      flipStateRef.current = { map: next, at: now };
+      lastGridDivisionsRef.current = activeGridDivisions;
+    }
+  });
+
   function toggleDimension(id: string) {
+    clearFan();
     if (selectedIds.includes(id)) onSelectedIdsChange(selectedIds.filter((value) => value !== id));
     else if (selectedIds.length < 3) onSelectedIdsChange([...selectedIds, id]);
   }
 
   function toggleFocusMode() {
+    clearFan();
     setFocusMode((active) => !active);
   }
 
@@ -872,51 +986,179 @@ export function DimensionPreview({
     setRotateX(Math.max(0, Math.min(180, active.rotateX - dy * .24)));
   }
 
-  function assetAtPoint(clientX: number, clientY: number) {
+  /** 图片的实际可见矩形：堆按整块 2×2 缩略图矩阵命中，单张按 hover 放大后的图片矩形命中。 */
+  function assetVisualElement(asset: HTMLElement): HTMLElement | null {
+    if (asset.dataset.stackKey) {
+      return asset.querySelector<HTMLElement>(".stack-grid") ?? asset.querySelector<HTMLElement>(".preview-asset-face");
+    }
+    return asset.querySelector<HTMLElement>(".preview-asset-face img, .preview-art-flip > i, .preview-asset-face > i")
+      ?? asset.querySelector<HTMLElement>(".preview-asset-face");
+  }
+
+  /** 单张图片未放大的 face 矩形，用作前景层的屏幕定位基准。 */
+  function faceRectOf(targetId: string): DOMRect | null {
     const plane = scenePlaneRef.current;
     if (!plane) return null;
+    const target = Array.from(plane.querySelectorAll<HTMLElement>(".preview-asset:not([data-stack-key])"))
+      .find((asset) => asset.dataset.assetId === targetId);
+    return target?.querySelector<HTMLElement>(".preview-asset-face")?.getBoundingClientRect() ?? null;
+  }
+
+  /** 记录所有可见素材表示的屏幕位置；堆内未展示的成员回落到堆网格中心。 */
+  function captureFlipLayout(): FlipLayout {
+    const plane = scenePlaneRef.current;
+    const viewport = sceneViewportRef.current;
+    const layout: FlipLayout = new Map();
+    if (!plane || !viewport) return layout;
+    const viewportRect = viewport.getBoundingClientRect();
+    const measure = (rect: DOMRect) => ({
+      left: rect.left - viewportRect.left,
+      top: rect.top - viewportRect.top,
+      width: rect.width,
+      height: rect.height,
+      x: rect.left - viewportRect.left + rect.width / 2,
+      y: rect.top - viewportRect.top + rect.height / 2,
+    });
+    plane.querySelectorAll<HTMLElement>(".preview-asset").forEach((element) => {
+      if (element.classList.contains("octant-hidden")) return;
+      const stackKey = element.dataset.stackKey;
+      if (!stackKey) {
+        const id = element.dataset.assetId;
+        const wrapper = element.querySelector<HTMLElement>(".preview-art-flip");
+        if (!id || !wrapper) return;
+        const measureRect = measure(wrapper.getBoundingClientRect());
+        layout.set(id, {
+          ...measureRect,
+          key: `single:${id}`,
+          element: wrapper,
+          src: wrapper.querySelector("img")?.getAttribute("src") ?? null,
+          text: wrapper.querySelector("i")?.textContent ?? null,
+        });
+        return;
+      }
+      const grid = element.querySelector<HTMLElement>(".stack-grid") ?? element.querySelector<HTMLElement>(".preview-asset-face");
+      if (!grid) return;
+      const fallback = measure(grid.getBoundingClientRect());
+      const members = (element.dataset.memberIds ?? "").split(/\s+/).filter(Boolean);
+      const cards = new Map<string, HTMLElement>();
+      element.querySelectorAll<HTMLElement>(".stack-card[data-asset-id]").forEach((card) => {
+        const id = card.dataset.assetId;
+        if (id) cards.set(id, card);
+      });
+      members.forEach((memberId) => {
+        const card = cards.get(memberId) ?? null;
+        const measureRect = card ? measure(card.getBoundingClientRect()) : fallback;
+        layout.set(memberId, {
+          ...measureRect,
+          key: `stack:${stackKey}`,
+          element: card,
+          src: card?.querySelector("img")?.getAttribute("src") ?? null,
+          text: card?.querySelector("i")?.textContent ?? null,
+        });
+      });
+    });
+    return layout;
+  }
+
+  function createFlipGhost(source: FlipLayoutEntry): HTMLElement | null {
+    if (!source.src && !source.text) return null;
+    let ghost: HTMLElement;
+    if (source.src) {
+      const image = document.createElement("img");
+      image.src = source.src;
+      image.alt = "";
+      ghost = image;
+    } else {
+      const text = document.createElement("span");
+      text.textContent = source.text;
+      ghost = text;
+    }
+    ghost.className = "flip-ghost";
+    ghost.style.left = `${source.left}px`;
+    ghost.style.top = `${source.top}px`;
+    ghost.style.width = `${source.width}px`;
+    ghost.style.height = `${source.height}px`;
+    return ghost;
+  }
+
+  /** 新布局素材从旧屏幕位置滑到新位置；堆内第 5 张之后的隐藏成员用幽灵滑入新堆中心。 */
+  function animateFlipLayout(previous: FlipLayout, next: FlipLayout) {
+    if (typeof window.matchMedia === "function" && window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+    const ghostLayer = flipGhostLayerRef.current;
+    next.forEach((target, assetId) => {
+      const source = previous.get(assetId);
+      if (!source) return;
+      const element = target.element;
+      if (element) {
+        if (source.key === target.key) return;
+        const dx = source.x - target.x;
+        const dy = source.y - target.y;
+        if (Math.hypot(dx, dy) < 0.5) return;
+        flipAnimationsRef.current.get(element)?.cancel();
+        element.getAnimations().forEach((animation) => animation.cancel());
+        element.style.transform = `translate(${dx}px, ${dy}px)`;
+        const animation = element.animate(
+          [{ transform: `translate(${dx}px, ${dy}px)` }, { transform: "translate(0, 0)" }],
+          { duration: CLUSTER_FLIP_DURATION, easing: "ease" },
+        );
+        flipAnimationsRef.current.set(element, animation);
+        void animation.finished.then(() => {
+          if (flipAnimationsRef.current.get(element) === animation) {
+            element.style.transform = "";
+            flipAnimationsRef.current.delete(element);
+          }
+        }).catch(() => { /* 被下一段动画接管 */ });
+        return;
+      }
+      // 新表示是堆里未展示的成员：从旧位置滑向新堆中心
+      if (!ghostLayer || !source.element) return;
+      const ghost = createFlipGhost(source);
+      if (!ghost) return;
+      ghostLayer.append(ghost);
+      const dx = target.x - source.x;
+      const dy = target.y - source.y;
+      const animation = ghost.animate(
+        [
+          { transform: "translate(0, 0)", opacity: 1 },
+          { transform: `translate(${dx}px, ${dy}px)`, opacity: 1, offset: 0.7 },
+          { transform: `translate(${dx}px, ${dy}px)`, opacity: 0 },
+        ],
+        { duration: CLUSTER_FLIP_DURATION, easing: "ease-out" },
+      );
+      void animation.finished.then(() => ghost.remove()).catch(() => ghost.remove());
+    });
+  }
+
+  function assetAtPoint(clientX: number, clientY: number, includeBlurred = false) {
+    const plane = scenePlaneRef.current;
+    if (!plane) return null;
+    // 单张 hover 的前景层永远绘制在最前，命中也要优先它，避免放大区域盖住的其它图片抢走点击/拖动
+    const hoveredId = hoveredAssetIdRef.current;
+    if (hoveredId) {
+      const hoveredRect = visualRectOf(hoveredId);
+      if (hoveredRect && clientX >= hoveredRect.left && clientX <= hoveredRect.right && clientY >= hoveredRect.top && clientY <= hoveredRect.bottom) {
+        return { id: hoveredId, stackKey: null, blurred: false };
+      }
+    }
     const candidates = Array.from(plane.querySelectorAll<HTMLElement>(".preview-asset:not(.octant-hidden)"))
       .map((asset, order) => {
-        if (hiddenAssetIdsRef.current.has(asset.dataset.assetId ?? "")) return null;
-        const face = asset.querySelector<HTMLElement>(".preview-asset-face");
+        const blurred = asset.dataset.hoverDisabled === "true";
+        if (!includeBlurred && blurred) return null;
         // 命中检测跟随图片实际视觉大小：hover 放大时用放大后的 img/占位符 rect，平时用原始 rect
-        const visual = asset.querySelector<HTMLElement>(".preview-asset-face img, .preview-asset-face > i");
-        const rect = (visual ?? face)?.getBoundingClientRect();
+        const rect = assetVisualElement(asset)?.getBoundingClientRect();
         if (!rect || clientX < rect.left || clientX > rect.right || clientY < rect.top || clientY > rect.bottom) return null;
         return {
           id: asset.dataset.assetId ?? null,
           stackKey: asset.dataset.stackKey ?? null,
           depth: Number(asset.dataset.screenDepth ?? 0),
           order,
+          blurred,
         };
       })
-      .filter((candidate): candidate is { id: string | null; stackKey: string | null; depth: number; order: number } => Boolean(candidate?.id || candidate?.stackKey))
+      .filter((candidate): candidate is { id: string | null; stackKey: string | null; depth: number; order: number; blurred: boolean } => Boolean(candidate?.id || candidate?.stackKey))
       .sort((a, b) => b.depth - a.depth || b.order - a.order);
     const top = candidates[0];
-    return top ? { id: top.id, stackKey: top.stackKey } : null;
-  }
-
-  function computeOccluders(targetId: string, expanded: { left: number; right: number; top: number; bottom: number }): string[] {
-    const plane = scenePlaneRef.current;
-    if (!plane) return [];
-    const candidates = Array.from(plane.querySelectorAll<HTMLElement>(".preview-asset:not(.octant-hidden)"));
-    const target = candidates.find((asset) => asset.dataset.assetId === targetId);
-    if (!target) return [];
-    const targetOrder = candidates.indexOf(target);
-    const targetDepth = Number(target.dataset.screenDepth ?? 0);
-    return candidates
-      .filter((candidate, candidateOrder) => {
-        const candidateDepth = Number(candidate.dataset.screenDepth ?? 0);
-        const isInFront = candidateDepth > targetDepth
-          || (Math.abs(candidateDepth - targetDepth) < .001 && candidateOrder > targetOrder);
-        if (candidate === target || !isInFront) return false;
-        const face = candidate.querySelector<HTMLElement>(".preview-asset-face");
-        const visual = candidate.querySelector<HTMLElement>(".preview-asset-face img, .preview-asset-face > i");
-        const rect = (visual ?? face)?.getBoundingClientRect();
-        return Boolean(rect && expanded.left < rect.right && expanded.right > rect.left && expanded.top < rect.bottom && expanded.bottom > rect.top);
-      })
-      .map((candidate) => candidate.dataset.assetId)
-      .filter((id): id is string => Boolean(id));
+    return top ? { id: top.id, stackKey: top.stackKey, blurred: top.blurred } : null;
   }
 
   function visualRectOf(targetId: string) {
@@ -925,9 +1167,7 @@ export function DimensionPreview({
     const target = Array.from(plane.querySelectorAll<HTMLElement>(".preview-asset:not(.octant-hidden)"))
       .find((asset) => asset.dataset.assetId === targetId);
     if (!target) return null;
-    const face = target.querySelector<HTMLElement>(".preview-asset-face");
-    const visual = target.querySelector<HTMLElement>(".preview-asset-face img, .preview-asset-face > i");
-    return (visual ?? face)?.getBoundingClientRect() ?? null;
+    return assetVisualElement(target)?.getBoundingClientRect() ?? null;
   }
 
   /** 计算以 anchorId 为中心的焦点循环列表：所有与放大区域屏幕重叠的图片（单张 + 堆），按投影深度从前往后排序。 */
@@ -948,9 +1188,7 @@ export function DimensionPreview({
       const id = candidate.dataset.assetId;
       if (!id) return;
       const stack = Boolean(candidate.dataset.stackKey);
-      const face = candidate.querySelector<HTMLElement>(".preview-asset-face");
-      const visual = candidate.querySelector<HTMLElement>(".preview-asset-face img, .preview-asset-face > i");
-      const candidateRect = (visual ?? face)?.getBoundingClientRect();
+      const candidateRect = assetVisualElement(candidate)?.getBoundingClientRect();
       if (!candidateRect) return;
       const overlaps = expanded.left < candidateRect.right && expanded.right > candidateRect.left
         && expanded.top < candidateRect.bottom && expanded.bottom > candidateRect.top;
@@ -962,25 +1200,38 @@ export function DimensionPreview({
     return cycle.some((target) => sameTarget(target, anchor)) ? cycle : [anchor, ...cycle];
   }
 
-  /** 将焦点应用到指定图片：放大并淡出它自己的遮挡者（与鼠标 hover 完全一致）。 */
+  /** 图片上方的坐标 tag：与坐标轴端点 tag 同款，每个选中维度独立一个。 */
+  function valueTagsOf(values: Record<string, number>) {
+    return (
+      <span className="preview-value-tags">
+        {selected.map((dimension) => {
+          const value = values[dimension.id] ?? 500;
+          const label = value > 500 ? dimension.rightLabel : dimension.leftLabel;
+          return <TagLabel key={dimension.id}>{`${label} ${Math.abs(displayDimensionValue(value))}`}</TagLabel>;
+        })}
+      </span>
+    );
+  }
+
+  /** 将焦点应用到指定图片：在 3D 场景外的前景层展示，遮挡物保持原位、不再隐藏。 */
   function applyFocus(assetId: string) {
     hoveredAssetIdRef.current = assetId;
-    let hiddenIds: string[] = [];
-    const rect = visualRectOf(assetId);
-    if (rect) {
-      const hoverScale = 2.475;
-      const centerX = rect.left + rect.width / 2;
-      const centerY = rect.top + rect.height / 2;
-      hiddenIds = computeOccluders(assetId, {
-        left: centerX - (rect.width * hoverScale) / 2,
-        right: centerX + (rect.width * hoverScale) / 2,
-        top: centerY - (rect.height * hoverScale) / 2,
-        bottom: centerY + (rect.height * hoverScale) / 2,
-      });
-    }
-    hiddenAssetIdsRef.current = new Set(hiddenIds);
-    setHiddenAssetIds(hiddenIds);
     setHoveredAssetId(assetId);
+    const asset = assets.find((candidate) => candidate.id === assetId);
+    const rect = faceRectOf(assetId);
+    const viewport = sceneViewportRef.current?.getBoundingClientRect();
+    if (!asset || !rect || !viewport) {
+      setHoverPreview(null);
+      return;
+    }
+    setHoverPreview({
+      asset,
+      values: { ...asset.dimensionValues, ...overrides[asset.id] },
+      left: rect.left - viewport.left,
+      top: rect.top - viewport.top,
+      width: rect.width,
+      height: rect.height,
+    });
   }
 
   /** 立即收起可能展开的堆平面，但不重置 hover 锚点与焦点循环（供 Tab 切换复用）。 */
@@ -1012,6 +1263,7 @@ export function DimensionPreview({
     if (target.stack) {
       hoveredAssetIdRef.current = null;
       setHoveredAssetId(null);
+      setHoverPreview(null);
       openPlane(target.id);
       return;
     }
@@ -1027,9 +1279,8 @@ export function DimensionPreview({
     focusIndexRef.current = 0;
     if (!nextAnchor) {
       hoveredAssetIdRef.current = null;
-      hiddenAssetIdsRef.current = new Set();
-      setHiddenAssetIds([]);
       setHoveredAssetId(null);
+      setHoverPreview(null);
       return;
     }
     const rect = visualRectOf(nextAnchor.id);
@@ -1037,27 +1288,6 @@ export function DimensionPreview({
     focusCycleRef.current = cycle;
     focusIndexRef.current = Math.max(0, cycle.findIndex((target) => !target.stack && target.id === nextAnchor.id));
     applyFocus(nextAnchor.id);
-  }
-
-  function setStackOccluders(key: string) {
-    const rect = visualRectOf(key);
-    const count = planeClusterRef.current?.members.length ?? 0;
-    if (!rect) {
-      hiddenAssetIdsRef.current = new Set();
-      setHiddenAssetIds([]);
-      return;
-    }
-    const { width: planeWidth, height: planeHeight } = planeDimensions(count, PLANE_CARD_SIZE * assetScale);
-    const centerX = rect.left + rect.width / 2;
-    const centerY = rect.top + rect.height / 2;
-    const hiddenIds = computeOccluders(key, {
-      left: centerX - planeWidth / 2,
-      right: centerX + planeWidth / 2,
-      top: centerY - planeHeight / 2,
-      bottom: centerY + planeHeight / 2,
-    });
-    hiddenAssetIdsRef.current = new Set(hiddenIds);
-    setHiddenAssetIds(hiddenIds);
   }
 
   function clearFan() {
@@ -1082,9 +1312,8 @@ export function DimensionPreview({
         return next;
       });
     }
-    hiddenAssetIdsRef.current = new Set();
-    setHiddenAssetIds([]);
     setAssetHover(null);
+    setHoverPreview(null);
   }
 
   function closePlane() {
@@ -1109,9 +1338,8 @@ export function DimensionPreview({
         return next;
       });
     }
-    hiddenAssetIdsRef.current = new Set();
-    setHiddenAssetIds([]);
     setAssetHover(null);
+    setHoverPreview(null);
     planeCloseTimer.current = window.setTimeout(() => {
       planeCloseTimer.current = null;
       setClosingCluster(null);
@@ -1120,7 +1348,7 @@ export function DimensionPreview({
 
   function computeDropTarget(values: Record<string, number>): string | null {
     if (!mode || !selected.length) return null;
-    const cellKey = gridClusterKey(selected.map((dimension) => values[dimension.id] ?? 500), activeGridStep, centeredGrid);
+    const cellKey = gridClusterKey(selected.map((dimension) => values[dimension.id] ?? 500), activeGridDivisions);
     return clusters.find((cluster) => cluster.cellKey === cellKey)?.key ?? null;
   }
 
@@ -1129,9 +1357,19 @@ export function DimensionPreview({
     if (planeClusterRef.current?.key === key) return;
     const cluster = clusters.find((candidate) => candidate.key === key);
     if (!cluster) return;
-    planeClusterRef.current = cluster;
-    setPlaneCluster(cluster);
-    setStackOccluders(key);
+    // 平面在打开瞬间按当前视角从前往后排序；之后展开期间不再重算，避免平面里的卡片跳动。
+    const members = orderByViewDepth(cluster.members, (member) => {
+      const values = { ...member.dimensionValues, ...overrides[member.id] };
+      const x = values[selected[0].id] ?? 500;
+      const y = mode >= 2 ? 1000 - (values[selected[1].id] ?? 500) : 500;
+      const z = mode === 3 ? (values[selected[2].id] ?? 500) - 500 : 0;
+      return projectValuePoint(x, y, z)?.worldZ ?? cluster.meanDepth;
+    });
+    const ordered = { ...cluster, members };
+    planeClusterRef.current = ordered;
+    setPlaneCluster(ordered);
+    // 堆平面本身就是最前层：只展示平面，不隐藏周围的图片与堆
+    setHoverPreview(null);
   }
 
   function setStackHover(key: string | null) {
@@ -1159,7 +1397,9 @@ export function DimensionPreview({
       setStackHover(null);
       return;
     }
-    const hit = assetAtPoint(event.clientX, event.clientY);
+    const hit = assetAtPoint(event.clientX, event.clientY, true);
+    // 模糊对象不参与 hover：既不会成为新目标，也不会清除当前 hover；指针移到空白处才结束
+    if (hit?.blurred) return;
     if (hit?.stackKey) {
       setAssetHover(null);
       setStackHover(hit.stackKey);
@@ -1251,7 +1491,7 @@ export function DimensionPreview({
       return;
     }
     if (event.button !== 0) return;
-    const hit = assetAtPoint(event.clientX, event.clientY);
+    const hit = assetAtPoint(event.clientX, event.clientY, true);
     const assetId = hit && !hit.stackKey ? hit.id : null;
     const asset = assetId ? assets.find((candidate) => candidate.id === assetId) : null;
     if (asset) {
@@ -1302,7 +1542,12 @@ export function DimensionPreview({
     if (active?.pointerId !== event.pointerId) return;
     cameraDrag.current = null;
     setCameraMoving(false);
-    if (active.assetId && !active.moved) onSelectAsset(active.assetId);
+    if (active.assetId && !active.moved) {
+      // 单击打开详情：先撤掉 hover 前景层，避免详情打开后场景里残留一张放大图
+      setAssetHover(null);
+      setHoverPreview(null);
+      onSelectAsset(active.assetId);
+    }
   }
 
   function resetView() {
@@ -1508,11 +1753,11 @@ export function DimensionPreview({
             <IconButton
               size="sm"
               variant="solid"
-              active={dofEnabled}
-              label={dofEnabled ? "关闭景深" : "开启景深"}
-              title={dofEnabled ? "关闭景深" : "开启景深"}
+              active={blurEnabled}
+              label={blurEnabled ? "关闭模糊" : "开启模糊"}
+              title={blurEnabled ? "关闭模糊" : "开启模糊"}
               className="size-[31px]"
-              onClick={() => setDofEnabled((active) => !active)}
+              onClick={() => setBlurEnabled((active) => !active)}
             >
               <Aperture size={15} aria-hidden />
             </IconButton>
@@ -1532,7 +1777,7 @@ export function DimensionPreview({
           </div>
         </div>
         {mode ? (
-          <div className={`dimension-scene mode-${mode} ${cameraMoving ? "camera-moving" : ""} ${viewPanning ? "view-panning" : ""} ${draggingAssetId ? "asset-dragging" : ""} ${hoveredAssetId ? "asset-hovered" : ""} ${planeCluster ? "stack-hovered" : ""} ${modeTransitioning ? "mode-transitioning" : ""} ${octantTransitioning ? "octant-transitioning" : ""} ${isOctantIsolated ? "octant-isolated" : ""} ${spaceHeld ? "space-held" : ""}`}>
+          <div className={`dimension-scene mode-${mode} ${cameraMoving ? "camera-moving" : ""} ${viewPanning ? "view-panning" : ""} ${draggingAssetId ? "asset-dragging" : ""} ${hoveredAssetId ? "asset-hovered" : ""} ${planeCluster ? "stack-hovered" : ""} ${hoverFocusActive ? "hover-focus" : ""} ${modeTransitioning ? "mode-transitioning" : ""} ${octantTransitioning ? "octant-transitioning" : ""} ${isOctantIsolated ? "octant-isolated" : ""} ${spaceHeld ? "space-held" : ""}`}>
             <div
               ref={sceneViewportRef}
               className="scene-viewport"
@@ -1678,18 +1923,26 @@ export function DimensionPreview({
                   const planeSize = scenePlaneRef.current?.offsetWidth ?? 0;
                   const stackWorldZ = projectValuePoint(cluster.x, cluster.y, cluster.z)?.worldZ ?? cluster.meanDepth;
                   const stackPersp = 1 - stackWorldZ / SCENE_PERSPECTIVE;
-                  const stackDofOn = dofEnabled && !isOctantIsolated;
-                  const stackBlur = stackDofOn ? depthBlurStyle(stackWorldZ) : undefined;
+                  const stackDofOn = blurEnabled && !isOctantIsolated;
+                  // hover 聚焦：模糊受总开关控制，白色叠加始终保留
+                  const stackBaseBlur = stackDofOn ? depthBlurStyle(stackWorldZ) : undefined;
+                  const stackBlur = hoverFocusActive
+                    ? (stackBaseBlur ?? (blurEnabled ? { filter: `blur(${HOVER_FOCUS_BLUR}px)` } : undefined))
+                    : stackBaseBlur;
+                  const stackFocusFog = hoverFocusActive
+                    ? ({ "--dof-fog": HOVER_FOCUS_SCRIM } as CSSProperties)
+                    : (isOctantIsolated ? undefined : depthFogStyle(stackWorldZ));
                   const isDropTarget = dropTargetClusterKey === cluster.key;
                   return (
                     <button
                       type="button"
-                      className={`preview-asset preview-stack ${isDropTarget ? "drop-target" : ""} ${hiddenAssetIds.includes(cluster.key) ? "hover-occluder" : ""}`}
+                      className={`preview-asset preview-stack ${isDropTarget ? "drop-target" : ""}`}
                       key={cluster.key}
                       data-asset-id={cluster.key}
                       data-stack-key={cluster.key}
+                      data-member-ids={cluster.members.map((member) => member.id).join(" ")}
                       data-screen-depth={stackWorldZ}
-                      aria-hidden={hiddenAssetIds.includes(cluster.key)}
+                      data-hover-disabled={stackBlur ? "true" : undefined}
                       style={{
                         left: `${cluster.x / 10}%`,
                         top: `${cluster.y / 10}%`,
@@ -1699,18 +1952,20 @@ export function DimensionPreview({
                         "--persp": stackPersp,
                         "--billboard-rx": `${mode === 3 ? -sceneRotateX : 0}deg`,
                         "--billboard-rz": `${mode === 3 ? -sceneRotateZ : 0}deg`,
-                        ...(stackDofOn ? depthFogStyle(stackWorldZ) : undefined),
+                        ...stackFocusFog,
                       } as CSSProperties}
                       title={`${cluster.members.length} 张素材 · hover 展开查看`}
                     >
                       {/* 模糊加在整张脸上：图片与雾化底色一起虚化，避免底色被裁出一个硬边框 */}
                       <span className="preview-asset-face" style={stackBlur}>
-                        {cluster.members.slice(0, 3).map((member) => (
-                          <span className="stack-card" key={member.id}>
-                            {member.thumbnailUrl ? <img src={member.thumbnailUrl} alt="" draggable={false} /> : <i>{member.name.slice(0, 1)}</i>}
-                          </span>
-                        ))}
-                        <b className="stack-count">{cluster.members.length}</b>
+                        <span className="stack-grid">
+                          {stackPreviewMembers(cluster.members).map((member) => (
+                            <span className="stack-card" key={member.id} data-asset-id={member.id}>
+                              {member.thumbnailUrl ? <img src={member.thumbnailUrl} alt="" draggable={false} /> : <i>{member.name.slice(0, 1)}</i>}
+                            </span>
+                          ))}
+                          <b className="stack-count">{cluster.members.length}</b>
+                        </span>
                       </span>
                     </button>
                   );
@@ -1734,17 +1989,25 @@ export function DimensionPreview({
                   const alongY = Math.sin(yaw) * centeredX + Math.cos(yaw) * centeredY;
                   const worldZ = Math.sin(pitch) * alongY + Math.cos(pitch) * centeredZ;
                   const persp = 1 - worldZ / SCENE_PERSPECTIVE;
-                  const assetDofOn = dofEnabled && !isOctantIsolated && hoveredAssetId !== asset.id;
-                  const blurStyle = assetDofOn ? depthBlurStyle(worldZ) : undefined;
-                  const fogStyle = assetDofOn ? depthFogStyle(worldZ) : undefined;
+                  const assetDofOn = blurEnabled && !isOctantIsolated && hoveredAssetId !== asset.id;
+                  const focusDimmed = hoverFocusActive && hoveredAssetId !== asset.id;
+                  // hover 聚焦：模糊受总开关控制，白色叠加始终保留
+                  const baseBlur = assetDofOn ? depthBlurStyle(worldZ) : undefined;
+                  const blurStyle = focusDimmed
+                    ? (baseBlur ?? (blurEnabled ? { filter: `blur(${HOVER_FOCUS_BLUR}px)` } : undefined))
+                    : baseBlur;
+                  const fogStyle = focusDimmed
+                    ? ({ "--dof-fog": HOVER_FOCUS_SCRIM } as CSSProperties)
+                    : (isOctantIsolated ? undefined : depthFogStyle(worldZ));
                   return (
                     <button
                       type="button"
-                      className={`preview-asset ${draggingAssetId === asset.id ? "dragging" : ""} ${hoveredAssetId === asset.id ? "hovered" : ""} ${hiddenAssetIds.includes(asset.id) ? "hover-occluder" : ""} ${octantHidden ? "octant-hidden" : ""}`}
+                      className={`preview-asset ${draggingAssetId === asset.id ? "dragging" : ""} ${hoveredAssetId === asset.id ? "hovered" : ""} ${hoverPreview?.asset.id === asset.id ? "hover-foreground-source" : ""} ${octantHidden ? "octant-hidden" : ""}`}
                       key={asset.id}
                       data-asset-id={asset.id}
                       data-screen-depth={worldZ}
-                      aria-hidden={octantHidden || hiddenAssetIds.includes(asset.id)}
+                      data-hover-disabled={blurStyle ? "true" : undefined}
+                      aria-hidden={octantHidden}
                       style={{
                         left: `${x / 10}%`,
                         top: `${y / 10}%`,
@@ -1760,18 +2023,38 @@ export function DimensionPreview({
                     >
                       {/* 模糊加在整张脸上：图片与雾化底色一起虚化，避免底色被裁出一个硬边框 */}
                       <span className="preview-asset-face" style={blurStyle}>
-                        {asset.thumbnailUrl ? <img src={asset.thumbnailUrl} alt="" draggable={false} /> : <i>{asset.name.slice(0, 1)}</i>}
-                        {(draggingAssetId === asset.id || hoveredAssetId === asset.id) ? <em>{selected.map((dimension) => {
-                          const value = values[dimension.id] ?? 500;
-                          const label = value > 500 ? dimension.rightLabel : dimension.leftLabel;
-                          return `${label} ${Math.abs(displayDimensionValue(value))}`;
-                        }).join(" · ")}</em> : null}
+                        <span className="preview-art-flip">
+                          {asset.thumbnailUrl ? <img src={asset.thumbnailUrl} alt="" draggable={false} /> : <i>{asset.name.slice(0, 1)}</i>}
+                        </span>
+                        {draggingAssetId === asset.id || hoveredAssetId === asset.id ? valueTagsOf(values) : null}
                       </span>
                     </button>
                   );
                 })}
                 </div>
               </div>
+              <div ref={flipGhostLayerRef} className="flip-ghost-layer" aria-hidden="true" />
+              {hoverPreview ? (
+                // 单张 hover 的前景层：脱离 3D 深度排序，永远显示在最前；遮挡物保持原位
+                <div
+                  className="hover-preview"
+                  key={hoverPreview.asset.id}
+                  style={{
+                    left: hoverPreview.left,
+                    top: hoverPreview.top,
+                    width: hoverPreview.width,
+                    height: hoverPreview.height,
+                  }}
+                  aria-hidden="true"
+                >
+                  <span className="preview-asset-face">
+                    {hoverPreview.asset.thumbnailUrl
+                      ? <img src={hoverPreview.asset.thumbnailUrl} alt="" draggable={false} />
+                      : <i>{hoverPreview.asset.name.slice(0, 1)}</i>}
+                    {valueTagsOf(hoverPreview.values)}
+                  </span>
+                </div>
+              ) : null}
               {(planeCluster || closingCluster) ? (() => {
                 const cluster = (planeCluster ?? closingCluster)!;
                 const isClosing = !planeCluster && closingCluster !== null;
@@ -1838,11 +2121,7 @@ export function DimensionPreview({
                             }}
                           >
                             {member.thumbnailUrl ? <img src={member.thumbnailUrl} alt="" draggable={false} /> : <i>{member.name.slice(0, 1)}</i>}
-                            <em>{selected.map((dimension) => {
-                              const value = { ...member.dimensionValues, ...overrides[member.id] }[dimension.id] ?? 500;
-                              const label = value > 500 ? dimension.rightLabel : dimension.leftLabel;
-                              return `${label} ${Math.abs(displayDimensionValue(value))}`;
-                            }).join(" · ")}</em>
+                            {valueTagsOf({ ...member.dimensionValues, ...overrides[member.id] })}
                           </button>
                         );
                       })}
