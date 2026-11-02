@@ -1,15 +1,15 @@
-import { Sparkles } from "lucide-react";
 import { cn } from "../../ui";
 
-/** 品牌方块：登录页、侧栏共用。尺寸由调用方决定。 */
+/** 品牌图标：登录页、侧栏共用，与浏览器标签页图标保持一致。 */
 export function BrandMark({ size = 34, radius = 8, className }: { size?: number; radius?: number; className?: string }) {
   return (
-    <span
+    <img
+      src="/favicon.svg"
+      alt=""
       aria-hidden
-      className={cn("grid flex-none place-items-center bg-accent text-white", className)}
+      draggable={false}
+      className={cn("flex-none select-none", className)}
       style={{ width: size, height: size, borderRadius: radius }}
-    >
-      <Sparkles size={Math.round(size * 0.5)} />
-    </span>
+    />
   );
 }
