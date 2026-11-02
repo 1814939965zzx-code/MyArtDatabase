@@ -1,17 +1,18 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { Eye } from "lucide-react";
 import { apiFetch, notifyUnauthorized } from "./api";
 import { ArtDatabaseApp } from "./ArtDatabaseApp";
 import { AuthCard, AuthScreen, LoginForm, SetupForm } from "./components/auth/AuthCard";
 import type { LoginPayload, SetupPayload } from "./components/auth/AuthCard";
-import { Spinner } from "./ui";
+import { Button, Spinner } from "./ui";
 
 export type SessionUser = {
   id: string;
   username: string;
   displayName: string;
-  role: "admin" | "member";
+  role: "admin" | "member" | "guest";
   active: boolean;
 };
 
@@ -20,6 +21,7 @@ export function AuthGate() {
   const [needsSetup, setNeedsSetup] = useState(false);
   const [user, setUser] = useState<SessionUser | null>(null);
   const [message, setMessage] = useState<string | null>(null);
+  const [guestBusy, setGuestBusy] = useState(false);
   const [announcement, setAnnouncement] = useState<{ text: string; enabled: boolean } | null>(null);
 
   useEffect(() => {
@@ -79,6 +81,19 @@ export function AuthGate() {
     }
   }
 
+  async function guestLogin() {
+    setMessage(null);
+    setGuestBusy(true);
+    try {
+      const data = await apiFetch<{ user: SessionUser }>("/api/auth/guest", { method: "POST" });
+      setUser(data.user);
+    } catch (reason) {
+      setMessage(reason instanceof Error ? reason.message : "游客登录失败");
+    } finally {
+      setGuestBusy(false);
+    }
+  }
+
   if (booting) {
     return (
       <div className="flex min-h-dvh items-center justify-center bg-paper p-6">
@@ -105,7 +120,24 @@ export function AuthGate() {
       description={needsSetup ? "首次使用需要创建管理员账号，用于管理成员与系统设置。" : "请输入账号密码访问团队素材库。"}
       error={message}
     >
-      {needsSetup ? <SetupForm onSubmit={setup} onError={setMessage} /> : <LoginForm onSubmit={login} />}
+      {needsSetup ? <SetupForm onSubmit={setup} onError={setMessage} /> : (
+        <>
+          <LoginForm onSubmit={login} />
+          <div className="flex items-center gap-2 text-2xs text-faint" aria-hidden>
+            <span className="h-px flex-1 bg-line-soft" />或<span className="h-px flex-1 bg-line-soft" />
+          </div>
+          <Button
+            variant="secondary"
+            className="min-h-10 w-full"
+            icon={<Eye size={15} aria-hidden />}
+            loading={guestBusy}
+            onClick={() => void guestLogin()}
+          >
+            {guestBusy ? "正在进入…" : "以游客身份浏览"}
+          </Button>
+          <p className="m-0 text-center text-xs text-muted">游客无需账号，可浏览全部项目内容，但不能编辑。</p>
+        </>
+      )}
     </AuthScreen>
   );
 }

@@ -4,6 +4,8 @@ import {
   AlertTriangle,
   Archive,
   ArrowLeft,
+  ChevronLeft,
+  ChevronRight,
   Grid2X2,
   ImageIcon,
   LayoutGrid,
@@ -16,6 +18,7 @@ import {
   Plus,
   RotateCcw,
   Settings2,
+  Star,
   Tags,
   Trash2,
   Upload,
@@ -34,7 +37,7 @@ import { BoardView } from "./BoardView";
 import { DeletionToast } from "./DeletionToast";
 import { DimensionControlsEditor, type DimensionControlsEditorHandle } from "./DimensionControlsEditor";
 import { DimensionEditorModal } from "./DimensionEditorModal";
-import { DimensionPages, type PreviewPage } from "./DimensionPages";
+import { DimensionPages, type PageDimension, type PreviewPage } from "./DimensionPages";
 import { mergePreviewPage, useDimensionSync } from "./sync/dimensionSync";
 import { HomeView } from "./HomeView";
 import { TagFilterBar } from "./TagFilterBar";
@@ -50,7 +53,7 @@ import { TopbarTitle } from "./components/layout/TopbarTitle";
 import { UserMenu } from "./components/layout/UserMenu";
 import { AssetCard } from "./components/library/AssetCard";
 import { ViewToggle } from "./components/library/ViewToggle";
-import { Button, EmptyState, Field, IconButton, Input, Modal, SearchInput, Spinner, Textarea, Toast, cn } from "./ui";
+import { Button, EmptyState, Field, IconButton, Input, Modal, SearchInput, Spinner, Tabs, Textarea, Toast, cn } from "./ui";
 import { VisualComponentsPage } from "./design/VisualComponentsPage";
 import { useProgressiveImage } from "./useProgressiveImage";
 
@@ -90,6 +93,8 @@ type Asset = {
   transcodeProgress: number;
   createdAt: string;
   createdByName?: string;
+  /** 项目内收藏：每个项目独立维护 */
+  favorite: boolean;
   dimensionValues: Record<string, number>;
 };
 
@@ -100,9 +105,32 @@ type Workspace = {
 };
 
 type PendingDeletion =
-  | { token: string; kind: "dimension"; projectId: string; pageId: string; dimension: Dimension; seconds: number };
+  | {
+      token: string; kind: "dimension"; projectId: string; pageId: string;
+      dimension: PageDimension; index: number;
+      dimensionValues: Record<string, number>; selectedIds: string[];
+      seconds: number;
+    }
+  | { token: string; kind: "asset"; assetId: string; name: string; seconds: number };
+
+/** 撤销窗口内服务端快照仍带着待删除维度：合并前先剥掉，避免刷新把维度带回来。 */
+function withoutDimension(page: PreviewPage, dimensionId: string): PreviewPage {
+  return {
+    ...page,
+    selectedIds: page.selectedIds.filter((id) => id !== dimensionId),
+    dimensions: page.dimensions.filter((dimension) => dimension.id !== dimensionId),
+    assets: page.assets.map((asset) => {
+      if (!(dimensionId in asset.dimensionValues)) return asset;
+      const dimensionValues = { ...asset.dimensionValues };
+      delete dimensionValues[dimensionId];
+      return { ...asset, dimensionValues };
+    }),
+  };
+}
 
 export function ArtDatabaseApp({ user, onLogout }: { user: SessionUser; onLogout: () => void }) {
+  // 游客：只读浏览全部项目内容；界面隐藏所有写入口，服务端也会拒绝非 GET 请求
+  const readOnly = user.role === "guest";
   const [projects, setProjects] = useState<Project[]>([]);
   const [libraryAssets, setLibraryAssets] = useState<LibraryAsset[]>([]);
   const [trashAssets, setTrashAssets] = useState<TrashedAsset[]>([]);
@@ -156,12 +184,17 @@ export function ArtDatabaseApp({ user, onLogout }: { user: SessionUser; onLogout
 
   /** 服务器返回的预览页：未同步坐标保留本地，其余按版本合并。 */
   function receivePreviewPage(next: PreviewPage) {
-    setPreviewPage((current) => current && current.id === next.id ? mergePreviewPage(next, current, dimSync.isPending) : next);
+    // 删除撤销窗口内服务端还没删掉这些维度：合并前剥掉，避免刷新把维度带回来
+    let incoming = next;
+    for (const dimensionId of pendingDimensionDeletions.current.get(next.id) ?? []) {
+      incoming = withoutDimension(incoming, dimensionId);
+    }
+    setPreviewPage((current) => current && current.id === incoming.id ? mergePreviewPage(incoming, current, dimSync.isPending) : incoming);
   }
 
   // 打开 Page 时恢复上次没传完的坐标草稿，并立即补传。
   useEffect(() => {
-    if (!currentPreviewPage?.id) return;
+    if (readOnly || !currentPreviewPage?.id) return;
     const draft = dimSync.restoreDraft();
     if (!draft.length) return;
     setPreviewPage((current) => {
@@ -176,11 +209,17 @@ export function ArtDatabaseApp({ user, onLogout }: { user: SessionUser; onLogout
       return { ...current, assets };
     });
     void dimSync.flush();
-  }, [currentPreviewPage?.id]);
+  }, [currentPreviewPage?.id, readOnly]);
   const [selectedAssetId, setSelectedAssetId] = useState<string | null>(null);
+  // 维度预览打开详情时传入的左右切换顺序（1D 全量 / 2D·3D 堆内）；其他入口保持为 null，不显示箭头
+  const [previewAssetNav, setPreviewAssetNav] = useState<string[] | null>(null);
   const [search, setSearch] = useState("");
   const [view, setView] = useState<"grid" | "list">("grid");
   const [surface, setSurface] = useState<"assets" | "preview" | "board">("preview");
+  const [projectAssetCategory, setProjectAssetCategory] = useState<"all" | "favorites">("all");
+  // 详情页左右切换只在维度预览入口启用；索引按当前导航顺序实时计算，导航过期时自动不显示
+  const previewNavigation = surface === "preview" ? previewAssetNav : null;
+  const previewNavIndex = previewNavigation && selectedAssetId ? previewNavigation.indexOf(selectedAssetId) : -1;
   const [projectTagFilter, setProjectTagFilter] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
   const [libraryLoading, setLibraryLoading] = useState(true);
@@ -209,6 +248,10 @@ export function ArtDatabaseApp({ user, onLogout }: { user: SessionUser; onLogout
   const fileInputRef = useRef<HTMLInputElement>(null);
   const metadataEditorRef = useRef<AssetMetadataEditorHandle>(null);
   const dimensionEditorRef = useRef<DimensionControlsEditorHandle>(null);
+  // 正在等待撤销窗口结束的删除任务：token → timer，用于取消或组件卸载时清理
+  const deletionTimers = useRef(new Map<string, number>());
+  // 已本地移除、但服务端删除还没提交的维度（pageId → dimensionIds）：刷新合并时先剥掉
+  const pendingDimensionDeletions = useRef(new Map<string, Set<string>>());
   const availableTags = useMemo(
     () => tagDict.filter((tag) => tag.usageCount > 0).map((tag) => tag.name).sort((a, b) => a.localeCompare(b, "zh-CN")),
     [tagDict],
@@ -237,9 +280,11 @@ export function ArtDatabaseApp({ user, onLogout }: { user: SessionUser; onLogout
     if (!quiet) setLoading(true);
     try {
       const data = await apiFetch<Workspace>(`/api/workspace?projectId=${encodeURIComponent(projectId)}`);
-      setWorkspace(data);
+      // favorite 在 SQLite 里是 0/1，统一转成布尔值供界面使用
+      const next: Workspace = { ...data, assets: data.assets.map((asset) => ({ ...asset, favorite: Boolean(asset.favorite) })) };
+      setWorkspace(next);
       setSelectedAssetId((current) =>
-        current && data.assets.some((asset) => asset.id === current) ? current : null,
+        current && next.assets.some((asset) => asset.id === current) ? current : null,
       );
     } catch (error) {
       if (!quiet) setMessage(error instanceof Error ? error.message : "项目载入失败");
@@ -355,44 +400,85 @@ export function ArtDatabaseApp({ user, onLogout }: { user: SessionUser; onLogout
   async function closeAssetDetail() {
     if (dimensionEditorRef.current?.dismissEditor()) return;
     const saved = await metadataEditorRef.current?.save();
-    if (saved !== false) setSelectedAssetId(null);
+    if (saved !== false) {
+      setSelectedAssetId(null);
+      setPreviewAssetNav(null);
+    }
   }
 
+  /** 维度预览打开素材详情：同时记下左右切换顺序，供详情页箭头使用。 */
+  function openPreviewAsset(assetId: string, navigation?: string[] | null) {
+    setPreviewAssetNav(navigation ?? null);
+    setSelectedAssetId(assetId);
+  }
+
+  /** 详情页左右箭头：先保存当前素材的未提交修改，再切换到相邻素材。 */
+  async function switchPreviewAsset(offset: -1 | 1) {
+    if (!previewNavigation || previewNavIndex < 0) return;
+    const nextId = previewNavigation[previewNavIndex + offset];
+    if (!nextId) return;
+    if (await metadataEditorRef.current?.save() === false) return;
+    setSelectedAssetId(nextId);
+  }
+
+  useEffect(() => () => {
+    for (const timer of deletionTimers.current.values()) window.clearTimeout(timer);
+    deletionTimers.current.clear();
+  }, []);
+
+  /** 排队 5 秒后的服务端提交；到点先收起撤销条，再执行提交（维度删除失败会回滚本地）。 */
+  function startDeletionTimer(token: string, commit: () => void) {
+    const timer = window.setTimeout(() => {
+      deletionTimers.current.delete(token);
+      setPendingDeletion((current) => current?.token === token ? null : current);
+      commit();
+    }, 5000);
+    deletionTimers.current.set(token, timer);
+  }
+
+  function cancelDeletionTimer(token: string) {
+    const timer = deletionTimers.current.get(token);
+    if (timer === undefined) return;
+    window.clearTimeout(timer);
+    deletionTimers.current.delete(token);
+  }
+
+  // 删除已即时生效，这里只负责撤销条倒计时；5 秒后的服务端提交由 startDeletionTimer 排队，
+  // 倒计时被打断（撤销）时按 token 取消对应提交。
   useEffect(() => {
     if (!pendingDeletion) return;
-    const pending = pendingDeletion;
+    const token = pendingDeletion.token;
     const interval = window.setInterval(() => {
-      setPendingDeletion((current) => current?.token === pending.token
+      setPendingDeletion((current) => current?.token === token
         ? { ...current, seconds: Math.max(1, current.seconds - 1) }
         : current);
     }, 1000);
-    const timer = window.setTimeout(() => {
-      setPendingDeletion((current) => current?.token === pending.token ? null : current);
-      void commitDimensionDeletion(pending.projectId, pending.pageId, pending.dimension);
-    }, 5000);
-    return () => {
-      window.clearInterval(interval);
-      window.clearTimeout(timer);
-    };
+    return () => window.clearInterval(interval);
   }, [pendingDeletion?.token]);
 
   useEffect(() => {
+    if (readOnly) return;
     const handlePaste = (event: ClipboardEvent) => {
       const file = Array.from(event.clipboardData?.files ?? []).find((candidate) => candidate.type.startsWith("image/"));
       if (file && activeArea === "project" && !selectedAssetId) setUploadFile(file);
     };
     window.addEventListener("paste", handlePaste);
     return () => window.removeEventListener("paste", handlePaste);
-  }, [activeArea, selectedAssetId]);
+  }, [activeArea, selectedAssetId, readOnly]);
 
   const filteredAssets = useMemo(() => {
     const keyword = search.trim().toLowerCase();
     return (workspace?.assets ?? []).filter((asset) => {
+      if (projectAssetCategory === "favorites" && !asset.favorite) return false;
       const matchesTags = projectTagFilter.length === 0 || projectTagFilter.some((tag) => asset.tags.includes(tag));
       const matchesKeyword = !keyword || [asset.name, asset.fileName, ...asset.tags].some((text) => text.toLowerCase().includes(keyword));
       return matchesTags && matchesKeyword;
     });
-  }, [search, workspace, projectTagFilter]);
+  }, [search, workspace, projectTagFilter, projectAssetCategory]);
+  const favoriteAssetCount = useMemo(
+    () => (workspace?.assets ?? []).filter((asset) => asset.favorite).length,
+    [workspace],
+  );
 
   // 有视频在转码时每 2 秒刷新工作区，驱动"转码中 X%"进度
   useTranscodePolling(activeArea === "project" ? workspace?.assets : [], () => {
@@ -412,6 +498,7 @@ export function ArtDatabaseApp({ user, onLogout }: { user: SessionUser; onLogout
     setActiveArea("project");
     setSelectedProjectId(project.id);
     setSelectedAssetId(null);
+    setProjectAssetCategory("all");
     setSidebarCollapsed(true);
     setSidebarOpen(false);
   }
@@ -528,46 +615,132 @@ export function ArtDatabaseApp({ user, onLogout }: { user: SessionUser; onLogout
     }
   }
 
-  function scheduleDimensionDeletion(dimension: Dimension) {
-    if (!workspace || !currentPreviewPage) return;
-    if (pendingDeletion) {
-      setMessage("请先撤销或等待当前删除完成");
-      return;
-    }
-    setMessage(null);
-    setPendingDeletion({
-      token: `${dimension.id}-${Date.now()}`,
-      kind: "dimension",
-      projectId: workspace.project.id,
-      pageId: currentPreviewPage.id,
-      dimension,
-      seconds: 5,
+  /** 立即从本地移除维度（含选中轴与所有坐标），服务端删除在 5 秒撤销窗口结束后提交。 */
+  function removeDimensionLocally(pageId: string, dimensionId: string) {
+    setPreviewPage((current) => current?.id === pageId ? {
+      ...current,
+      selectedIds: current.selectedIds.filter((id) => id !== dimensionId),
+      dimensions: current.dimensions.filter((item) => item.id !== dimensionId),
+      assets: current.assets.map((asset) => {
+        if (!(dimensionId in asset.dimensionValues)) return asset;
+        const dimensionValues = { ...asset.dimensionValues };
+        delete dimensionValues[dimensionId];
+        return { ...asset, dimensionValues };
+      }),
+    } : current);
+  }
+
+  function markPendingDimension(pageId: string, dimensionId: string) {
+    const pending = pendingDimensionDeletions.current.get(pageId) ?? new Set<string>();
+    pending.add(dimensionId);
+    pendingDimensionDeletions.current.set(pageId, pending);
+  }
+
+  function unmarkPendingDimension(pageId: string, dimensionId: string) {
+    const pending = pendingDimensionDeletions.current.get(pageId);
+    if (!pending) return;
+    pending.delete(dimensionId);
+    if (!pending.size) pendingDimensionDeletions.current.delete(pageId);
+  }
+
+  /** 撤销或服务端删除失败时，把维度、选中顺序与全部坐标放回原位置。 */
+  function restoreDimensionLocally(pending: Extract<PendingDeletion, { kind: "dimension" }>) {
+    setPreviewPage((current) => {
+      if (!current || current.id !== pending.pageId) return current;
+      if (current.dimensions.some((item) => item.id === pending.dimension.id)) return current;
+      const dimensions = [...current.dimensions];
+      dimensions.splice(Math.min(pending.index, dimensions.length), 0, pending.dimension);
+      const selectedIds = pending.selectedIds.filter((id) =>
+        id === pending.dimension.id || dimensions.some((item) => item.id === id));
+      return {
+        ...current,
+        dimensions,
+        selectedIds,
+        assets: current.assets.map((asset) => {
+          const value = pending.dimensionValues[asset.assetId];
+          return value === undefined
+            ? asset
+            : { ...asset, dimensionValues: { ...asset.dimensionValues, [pending.dimension.id]: value } };
+        }),
+      };
     });
   }
 
-  async function commitDimensionDeletion(projectId: string, pageId: string, dimension: Dimension) {
+  function scheduleDimensionDeletion(dimension: PageDimension) {
+    if (!workspace || !currentPreviewPage) return;
+    const page = currentPreviewPage;
+    const index = page.dimensions.findIndex((item) => item.id === dimension.id);
+    if (index < 0) return;
+    const dimensionValues: Record<string, number> = {};
+    for (const asset of page.assets) dimensionValues[asset.assetId] = asset.dimensionValues[dimension.id] ?? 500;
+    const pending: Extract<PendingDeletion, { kind: "dimension" }> = {
+      token: `dimension:${dimension.id}:${Date.now()}`,
+      kind: "dimension",
+      projectId: workspace.project.id,
+      pageId: page.id,
+      dimension,
+      index,
+      dimensionValues,
+      selectedIds: [...page.selectedIds],
+      seconds: 5,
+    };
+    setMessage(null);
+    removeDimensionLocally(page.id, dimension.id);
+    markPendingDimension(page.id, dimension.id);
+    setPendingDeletion(pending);
+    startDeletionTimer(pending.token, () => { void commitDimensionDeletion(pending); });
+  }
+
+  async function commitDimensionDeletion(pending: Extract<PendingDeletion, { kind: "dimension" }>) {
     setBusy(true);
     try {
       await apiFetch(
-        `/api/preview-dimensions?id=${encodeURIComponent(dimension.id)}&projectId=${encodeURIComponent(projectId)}&pageId=${encodeURIComponent(pageId)}`,
+        `/api/preview-dimensions?id=${encodeURIComponent(pending.dimension.id)}&projectId=${encodeURIComponent(pending.projectId)}&pageId=${encodeURIComponent(pending.pageId)}`,
         { method: "DELETE" },
       );
       await loadProjects();
-      setPreviewPage((current) => current?.id === pageId ? {
-        ...current,
-        selectedIds: current.selectedIds.filter((id) => id !== dimension.id),
-        dimensions: current.dimensions.filter((item) => item.id !== dimension.id),
-        assets: current.assets.map((asset) => {
-          const dimensionValues = { ...asset.dimensionValues };
-          delete dimensionValues[dimension.id];
-          return { ...asset, dimensionValues };
-        }),
-      } : current);
       setMessage("维度已删除");
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : "删除失败");
+      // 服务端仍在：把本地也恢复，避免刷新前后不一致
+      restoreDimensionLocally(pending);
+      setMessage(error instanceof Error ? `${error.message}（已恢复维度）` : "删除失败，已恢复维度");
     } finally {
+      unmarkPendingDimension(pending.pageId, pending.dimension.id);
       setBusy(false);
+    }
+  }
+
+  function undoDimensionDeletion(pending: Extract<PendingDeletion, { kind: "dimension" }>) {
+    cancelDeletionTimer(pending.token);
+    unmarkPendingDimension(pending.pageId, pending.dimension.id);
+    restoreDimensionLocally(pending);
+    setPendingDeletion((current) => current?.token === pending.token ? null : current);
+    setMessage("已撤销删除");
+  }
+
+  /** 素材软删除已即时提交到回收站，撤销窗口只负责提供“恢复”入口。 */
+  function scheduleAssetDeletion(asset: { id: string; name: string }) {
+    const pending: Extract<PendingDeletion, { kind: "asset" }> = {
+      token: `asset:${asset.id}:${Date.now()}`,
+      kind: "asset",
+      assetId: asset.id,
+      name: asset.name,
+      seconds: 5,
+    };
+    setMessage(null);
+    setPendingDeletion(pending);
+    startDeletionTimer(pending.token, () => { /* 已进入回收站，倒计时结束即不可撤销 */ });
+  }
+
+  async function undoAssetDeletion(pending: Extract<PendingDeletion, { kind: "asset" }>) {
+    cancelDeletionTimer(pending.token);
+    setPendingDeletion((current) => current?.token === pending.token ? null : current);
+    try {
+      await apiFetch("/api/assets/restore", { method: "POST", body: JSON.stringify({ id: pending.assetId }) });
+      await Promise.all([loadLibrary(true), loadProjects()]);
+      setMessage("已撤销删除");
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "撤销删除失败");
     }
   }
 
@@ -626,6 +799,7 @@ export function ArtDatabaseApp({ user, onLogout }: { user: SessionUser; onLogout
   }
 
   function acceptUpload(file?: File) {
+    if (readOnly) return; // 游客只读
     if (activeArea !== "project") return; // 上传只发生在项目内
     if (!file) return;
     const isVideo = file.type.startsWith("video/");
@@ -656,6 +830,27 @@ export function ArtDatabaseApp({ user, onLogout }: { user: SessionUser; onLogout
       setMessage(error instanceof Error ? error.message : "重新转码失败");
     } finally {
       setBusy(false);
+    }
+  }
+
+  /** 项目内收藏：先本地生效，失败回滚；每个项目各存各的。 */
+  async function toggleProjectFavorite(asset: Asset) {
+    if (!workspace) return;
+    const favorite = !asset.favorite;
+    const projectId = workspace.project.id;
+    const apply = (value: boolean) => setWorkspace((current) => current && current.project.id === projectId ? {
+      ...current,
+      assets: current.assets.map((item) => item.id === asset.id ? { ...item, favorite: value } : item),
+    } : current);
+    apply(favorite);
+    try {
+      await apiFetch("/api/project-assets", {
+        method: "PATCH",
+        body: JSON.stringify({ projectId, assetId: asset.id, favorite }),
+      });
+    } catch (error) {
+      apply(!favorite);
+      setMessage(error instanceof Error ? error.message : (favorite ? "收藏失败" : "取消收藏失败"));
     }
   }
 
@@ -830,50 +1025,56 @@ export function ArtDatabaseApp({ user, onLogout }: { user: SessionUser; onLogout
                 void loadLibrary();
               }}
             />
-            <SidebarNavItem
-              icon={<Tags size={16} aria-hidden />}
-              title="标签管理"
-              subtitle="词库与标签维护"
-              onClick={() => {
-                setSidebarOpen(false);
-                setTagManagerOpen(true);
-              }}
-            />
+            {!readOnly ? (
+              <SidebarNavItem
+                icon={<Tags size={16} aria-hidden />}
+                title="标签管理"
+                subtitle="词库与标签维护"
+                onClick={() => {
+                  setSidebarOpen(false);
+                  setTagManagerOpen(true);
+                }}
+              />
+            ) : null}
           </nav>
 
           <div className="mt-6 flex items-center justify-between px-2.5 pb-2 pt-1 text-2xs uppercase tracking-[.12em] text-white/50">
             <span>项目</span>
             <span>{projects.length}</span>
           </div>
-          <button
-            type="button"
-            onClick={() => setCreateOpen(true)}
-            className="mt-2.5 flex h-10 items-center justify-center gap-2 rounded-lg border border-dashed border-white/25 text-sm text-white/70 transition-colors hover:border-white/40 hover:text-white focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
-          >
-            <Plus size={17} aria-hidden /> 新建项目
-          </button>
+          {!readOnly ? (
+            <button
+              type="button"
+              onClick={() => setCreateOpen(true)}
+              className="mt-2.5 flex h-10 items-center justify-center gap-2 rounded-lg border border-dashed border-white/25 text-sm text-white/70 transition-colors hover:border-white/40 hover:text-white focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+            >
+              <Plus size={17} aria-hidden /> 新建项目
+            </button>
+          ) : null}
 
-          <SidebarNavItem
-            className="mt-auto"
-            icon={<Trash2 size={16} aria-hidden />}
-            title="回收站"
-            subtitle={`${trashAssets.length} 个已删除素材`}
-            active={activeArea === "trash"}
-            onClick={() => {
-              setActiveArea("trash");
-              setSelectedAssetId(null);
-              setSidebarOpen(false);
-              void loadTrash();
-            }}
-          />
+          {!readOnly ? (
+            <SidebarNavItem
+              className="mt-auto"
+              icon={<Trash2 size={16} aria-hidden />}
+              title="回收站"
+              subtitle={`${trashAssets.length} 个已删除素材`}
+              active={activeArea === "trash"}
+              onClick={() => {
+                setActiveArea("trash");
+                setSelectedAssetId(null);
+                setSidebarOpen(false);
+                void loadTrash();
+              }}
+            />
+          ) : null}
         </aside>
       ) : null}
 
       <section
         className={`workspace ${activeArea === "project" && surface === "preview" ? "preview-active" : activeArea === "project" && surface === "board" ? "board-active" : ""}`}
-        onDragOver={(event) => { if (activeArea === "project" && Array.from(event.dataTransfer.types).includes("Files")) { event.preventDefault(); setDragActive(true); } }}
+        onDragOver={(event) => { if (!readOnly && activeArea === "project" && Array.from(event.dataTransfer.types).includes("Files")) { event.preventDefault(); setDragActive(true); } }}
         onDragLeave={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node)) setDragActive(false); }}
-        onDrop={(event) => { event.preventDefault(); setDragActive(false); acceptUpload(event.dataTransfer.files[0]); }}
+        onDrop={(event) => { event.preventDefault(); setDragActive(false); if (!readOnly) acceptUpload(event.dataTransfer.files[0]); }}
       >
         <input ref={fileInputRef} className="visually-hidden" type="file" accept="image/jpeg,image/png,image/webp,image/gif,image/svg+xml,image/tiff,image/heic,image/heif,image/avif,video/mp4,video/webm,video/quicktime,video/x-msvideo,video/x-matroska,video/mpeg,video/3gpp,video/3gpp2" onChange={(event) => { acceptUpload(event.target.files?.[0]); event.currentTarget.value = ""; }} />
         {dragActive ? (
@@ -906,17 +1107,19 @@ export function ArtDatabaseApp({ user, onLogout }: { user: SessionUser; onLogout
               <div className="flex min-w-0 flex-col gap-1">
                 <div className="flex min-w-0 items-center gap-1.5">
                   <h1 className="truncate text-lg font-semibold tracking-[-.01em] text-ink">{workspace.project.name}</h1>
-                  <IconButton
-                    size="sm"
-                    label="编辑项目"
-                    className="flex-none"
-                    onClick={() => {
-                      setEditingProject(workspace.project);
-                      setEditOpen(true);
-                    }}
-                  >
-                    <Pencil size={14} aria-hidden />
-                  </IconButton>
+                  {!readOnly ? (
+                    <IconButton
+                      size="sm"
+                      label="编辑项目"
+                      className="flex-none"
+                      onClick={() => {
+                        setEditingProject(workspace.project);
+                        setEditOpen(true);
+                      }}
+                    >
+                      <Pencil size={14} aria-hidden />
+                    </IconButton>
+                  ) : null}
                 </div>
                 <div className="flex min-w-0 items-center gap-2 max-sm:hidden">
                   <span className="truncate text-sm text-muted">{workspace.project.description || "还没有项目说明"}</span>
@@ -940,7 +1143,7 @@ export function ArtDatabaseApp({ user, onLogout }: { user: SessionUser; onLogout
           </div>
 
           <div className="topbar-actions">
-            {activeArea === "library" ? (
+            {activeArea === "library" && !readOnly ? (
               <Button variant="secondary" size="sm" icon={<Tags size={14} aria-hidden />} onClick={() => setTagManagerOpen(true)}>
                 标签管理
               </Button>
@@ -954,7 +1157,7 @@ export function ArtDatabaseApp({ user, onLogout }: { user: SessionUser; onLogout
                 className="w-[min(205px,27.5vw)] max-sm:w-auto max-sm:flex-1"
               />
             ) : null}
-            {activeArea === "project" && workspace ? (
+            {activeArea === "project" && workspace && !readOnly ? (
               <Button variant="primary" size="lg" icon={<Upload size={15} aria-hidden />} onClick={() => fileInputRef.current?.click()}>
                 上传素材
               </Button>
@@ -1000,12 +1203,15 @@ export function ArtDatabaseApp({ user, onLogout }: { user: SessionUser; onLogout
             onViewChange={setView}
             onRefresh={async () => { await Promise.all([loadLibrary(), loadProjects()]); }}
             onMessage={setMessage}
+            onAssetTrashed={scheduleAssetDeletion}
+            readOnly={readOnly}
           />
         ) : activeArea === "home" ? (
           <HomeView
             projects={filteredProjects}
             search={search}
             loading={loading}
+            readOnly={readOnly}
             onEnter={openProject}
             onNewProject={() => setCreateOpen(true)}
             onRename={(project) => { setEditingProject(project); setEditOpen(true); }}
@@ -1021,21 +1227,34 @@ export function ArtDatabaseApp({ user, onLogout }: { user: SessionUser; onLogout
             {surface === "assets" ? <><div className="mx-[42px] flex items-end justify-between gap-6 pb-[18px] pt-[34px] max-md:mx-6">
               <div>
                 <h2 className="m-0 text-lg font-semibold text-ink">项目素材</h2>
-                <p className="mt-1 text-sm text-muted">{search || projectTagFilter.length ? `找到 ${filteredAssets.length} 项` : "按维度整理与比较你的视觉参考"}</p>
+                <p className="mt-1 text-sm text-muted">{search || projectTagFilter.length || projectAssetCategory === "favorites" ? `找到 ${filteredAssets.length} 项` : "按维度整理与比较你的视觉参考"}</p>
               </div>
               <div className="flex items-center gap-2.5">
-                <Button variant="secondary" size="sm" icon={<Tags size={14} aria-hidden />} onClick={() => setProjectTagManagerOpen(true)}>标签管理</Button>
+                {!readOnly ? <Button variant="secondary" size="sm" icon={<Tags size={14} aria-hidden />} onClick={() => setProjectTagManagerOpen(true)}>标签管理</Button> : null}
                 <ViewToggle value={view} onChange={setView} />
               </div>
             </div>
 
-            <div className="mx-[42px] mb-[18px] mt-0 border border-line bg-surface px-3.5 py-3 max-md:mx-6">
-              <TagFilterBar
-                tags={projectTags}
-                selected={projectTagFilter}
-                label="标签"
-                onToggle={(tag) => setProjectTagFilter((current) => current.includes(tag) ? current.filter((item) => item !== tag) : [...current, tag])}
+            <div className="mx-[42px] mb-[18px] mt-0 border border-line bg-surface max-md:mx-6">
+              <Tabs
+                variant="underline"
+                ariaLabel="素材分类"
+                value={projectAssetCategory}
+                onChange={setProjectAssetCategory}
+                className="px-3.5"
+                items={[
+                  { value: "all", label: "全部素材", count: workspace.assets.length },
+                  { value: "favorites", label: "收藏", icon: <Star size={13} aria-hidden />, count: favoriteAssetCount },
+                ]}
               />
+              <div className="px-3.5 py-3">
+                <TagFilterBar
+                  tags={projectTags}
+                  selected={projectTagFilter}
+                  label="标签"
+                  onToggle={(tag) => setProjectTagFilter((current) => current.includes(tag) ? current.filter((item) => item !== tag) : [...current, tag])}
+                />
+              </div>
             </div>
 
             {filteredAssets.length ? (
@@ -1046,6 +1265,7 @@ export function ArtDatabaseApp({ user, onLogout }: { user: SessionUser; onLogout
                     asset={asset}
                     index={index}
                     variant={view}
+                    favorite={asset.favorite}
                     thumbnailLoading={index > 3 ? "lazy" : "eager"}
                     onOpen={() => setSelectedAssetId(asset.id)}
                   />
@@ -1053,17 +1273,21 @@ export function ArtDatabaseApp({ user, onLogout }: { user: SessionUser; onLogout
               </div>
             ) : (
               <EmptyState
-                icon={<Grid2X2 size={25} aria-hidden />}
-                title={search || projectTagFilter.length ? "没有匹配的素材" : "项目还是空的"}
-                description={search || projectTagFilter.length ? "换一个关键词或标签试试。" : "拖入、粘贴或选择图片/视频开始。"}
+                icon={projectAssetCategory === "favorites" ? <Star size={25} aria-hidden /> : <Grid2X2 size={25} aria-hidden />}
+                title={search || projectTagFilter.length ? "没有匹配的素材" : projectAssetCategory === "favorites" ? "还没有收藏素材" : "项目还是空的"}
+                description={search || projectTagFilter.length
+                  ? "换一个关键词或标签试试。"
+                  : projectAssetCategory === "favorites"
+                    ? "在素材详情点“收藏”，素材会出现在这里。"
+                    : readOnly ? "当前项目还没有素材。" : "拖入、粘贴或选择图片/视频开始。"}
                 className="mx-[42px] max-md:mx-6"
-                action={
+                action={readOnly ? undefined : (
                   <Button variant="primary" icon={<Upload size={15} aria-hidden />} onClick={() => fileInputRef.current?.click()}>
                     上传素材
                   </Button>
-                }
+                )}
               />
-            )}</> : surface === "preview" ? <DimensionPages key={workspace.project.id} projectId={workspace.project.id} assets={workspace.assets} page={currentPreviewPage} onPageChange={setPreviewPage} onReceivePage={receivePreviewPage} revision={previewRevision} syncStatus={dimSync.status} onRetrySync={dimSync.retry} onMessage={setMessage} onSelectAsset={setSelectedAssetId} onUpdateAssetDimensions={savePreviewDimensionValues} onAddDimension={() => setDimensionOpen(true)} onEditDimension={(dimension) => setEditingDimensionId(dimension.id)} /> : <BoardView key={workspace.project.id} projectId={workspace.project.id} assets={workspace.assets} onMessage={setMessage} onSelectAsset={setSelectedAssetId} />}
+            )}</> : surface === "preview" ? <DimensionPages key={workspace.project.id} projectId={workspace.project.id} assets={workspace.assets} page={currentPreviewPage} onPageChange={setPreviewPage} onReceivePage={receivePreviewPage} revision={previewRevision} syncStatus={dimSync.status} onRetrySync={dimSync.retry} onMessage={setMessage} onSelectAsset={openPreviewAsset} onUpdateAssetDimensions={savePreviewDimensionValues} onAddDimension={() => setDimensionOpen(true)} onEditDimension={(dimension) => setEditingDimensionId(dimension.id)} readOnly={readOnly} /> : <BoardView key={workspace.project.id} projectId={workspace.project.id} assets={workspace.assets} onMessage={setMessage} onSelectAsset={setSelectedAssetId} readOnly={readOnly} />}
           </>
         ) : (
           <EmptyState
@@ -1100,9 +1324,50 @@ export function ArtDatabaseApp({ user, onLogout }: { user: SessionUser; onLogout
               }
               return detailImage ? <span className="drawer-image-frame"><img key={detailImage} className="drawer-image" src={detailImage} alt={selectedAsset.name} onClick={(event) => event.stopPropagation()} /></span> : <span className="drawer-image-fallback" onClick={(event) => event.stopPropagation()}><ImageIcon size={40} /></span>;
             })()}
+            {previewNavIndex >= 0 && previewNavigation && previewNavigation.length > 1 ? (
+              <>
+                <button
+                  type="button"
+                  className="drawer-nav drawer-nav-prev"
+                  aria-label="上一张"
+                  title="上一张"
+                  disabled={previewNavIndex <= 0}
+                  onClick={(event) => { event.stopPropagation(); void switchPreviewAsset(-1); }}
+                  onKeyDown={(event) => event.stopPropagation()}
+                >
+                  <ChevronLeft size={22} aria-hidden />
+                </button>
+                <button
+                  type="button"
+                  className="drawer-nav drawer-nav-next"
+                  aria-label="下一张"
+                  title="下一张"
+                  disabled={previewNavIndex >= previewNavigation.length - 1}
+                  onClick={(event) => { event.stopPropagation(); void switchPreviewAsset(1); }}
+                  onKeyDown={(event) => event.stopPropagation()}
+                >
+                  <ChevronRight size={22} aria-hidden />
+                </button>
+              </>
+            ) : null}
           </div>
           <div className="drawer-panel">
-            <div className="drawer-heading"><div><p className="mb-1 text-2xs font-bold uppercase tracking-[.15em] text-accent">ASSET DETAIL</p><h2>素材详情</h2></div><IconButton label="关闭素材详情" onClick={() => void closeAssetDetail()}><X size={18} aria-hidden /></IconButton></div>
+            <div className="drawer-heading">
+              <div><p className="mb-1 text-2xs font-bold uppercase tracking-[.15em] text-accent">ASSET DETAIL</p><h2>素材详情</h2></div>
+              <div className="flex items-center gap-1">
+                {!readOnly ? (
+                  <IconButton
+                    label={selectedAsset.favorite ? "取消收藏" : "收藏"}
+                    title={selectedAsset.favorite ? "取消收藏" : "收藏"}
+                    className={selectedAsset.favorite ? "text-accent" : undefined}
+                    onClick={() => void toggleProjectFavorite(selectedAsset)}
+                  >
+                    <Star size={18} aria-hidden fill={selectedAsset.favorite ? "currentColor" : "none"} />
+                  </IconButton>
+                ) : null}
+                <IconButton label="关闭素材详情" onClick={() => void closeAssetDetail()}><X size={18} aria-hidden /></IconButton>
+              </div>
+            </div>
             <div className="drawer-scroll">
               <div className="drawer-file"><small>文件名</small><span>{selectedAsset.fileName}</span></div>
               {selectedAsset.createdByName ? <div className="drawer-file"><small>上传者</small><span>{selectedAsset.createdByName}</span></div> : null}
@@ -1115,19 +1380,22 @@ export function ArtDatabaseApp({ user, onLogout }: { user: SessionUser; onLogout
                   <span>{selectedAsset.mimeType || "image"}</span>
                 </div>
               ) : null}
-              <AssetImageReplacement
-                asset={selectedAsset}
-                busy={busy}
-                onBusyChange={setBusy}
-                onComplete={async () => { await Promise.all([loadWorkspace(workspace.project.id), loadLibrary()]); }}
-                onMessage={setMessage}
-              />
+              {!readOnly ? (
+                <AssetImageReplacement
+                  asset={selectedAsset}
+                  busy={busy}
+                  onBusyChange={setBusy}
+                  onComplete={async () => { await Promise.all([loadWorkspace(workspace.project.id), loadLibrary()]); }}
+                  onMessage={setMessage}
+                />
+              ) : null}
               <AssetMetadataEditor
                 ref={metadataEditorRef}
                 asset={selectedAsset}
                 busy={busy}
                 availableTags={availableTags}
                 aiTagBusy={aiTagBusy}
+                readOnly={readOnly}
                 onAiTag={() => void runAiTag(selectedAsset)}
                 onSave={(update) => saveAssetMetadata(selectedAsset, update)}
               />
@@ -1144,31 +1412,35 @@ export function ArtDatabaseApp({ user, onLogout }: { user: SessionUser; onLogout
                       values={selectedAsset.dimensionValues}
                       assetId={selectedAsset.id}
                       busy={busy}
+                      readOnly={readOnly}
                       onChangeValue={setLocalDimensionValue}
                       onSaveValue={saveDimensionValue}
                     />
                   ) : (
                     <p className="text-sm text-muted">先为当前 Page 添加维度，再给素材定位。</p>
                   )}
-                  <Button
-                    variant="danger"
-                    size="sm"
-                    className="mt-4 w-full"
-                    icon={<Trash2 size={14} aria-hidden />}
-                    onClick={async () => {
-                      if (await metadataEditorRef.current?.save() === false) return;
-                      try {
-                        await apiFetch(`/api/preview-page-assets?projectId=${encodeURIComponent(workspace.project.id)}&pageId=${encodeURIComponent(currentPreviewPage.id)}&assetId=${encodeURIComponent(selectedAsset.id)}`, { method: "DELETE" });
-                        setSelectedAssetId(null);
-                        setPreviewRevision((v) => v + 1);
-                        setMessage("已从当前 Page 移除，项目素材保留");
-                      } catch (error) { setMessage(error instanceof Error ? error.message : "移除失败"); }
-                    }}
-                  >
-                    从当前 Page 移除
-                  </Button>
+                  {!readOnly ? (
+                    <Button
+                      variant="danger"
+                      size="sm"
+                      className="mt-4 w-full"
+                      icon={<Trash2 size={14} aria-hidden />}
+                      onClick={async () => {
+                        if (await metadataEditorRef.current?.save() === false) return;
+                        try {
+                          await apiFetch(`/api/preview-page-assets?projectId=${encodeURIComponent(workspace.project.id)}&pageId=${encodeURIComponent(currentPreviewPage.id)}&assetId=${encodeURIComponent(selectedAsset.id)}`, { method: "DELETE" });
+                          setSelectedAssetId(null);
+                          setPreviewRevision((v) => v + 1);
+                          setMessage("已从当前 Page 移除，项目素材保留");
+                        } catch (error) { setMessage(error instanceof Error ? error.message : "移除失败"); }
+                      }}
+                    >
+                      从当前 Page 移除
+                    </Button>
+                  ) : null}
                 </>
-              ) : (
+              ) : null}
+              {!readOnly && !(selectedPageAsset && currentPreviewPage) ? (
                 <Button
                   variant="danger"
                   size="sm"
@@ -1178,7 +1450,7 @@ export function ArtDatabaseApp({ user, onLogout }: { user: SessionUser; onLogout
                 >
                   从当前项目移除
                 </Button>
-              )}
+              ) : null}
             </div>
           </div>
         </aside>
@@ -1336,9 +1608,14 @@ export function ArtDatabaseApp({ user, onLogout }: { user: SessionUser; onLogout
       {message ? <Toast open>{message}</Toast> : null}
       {pendingDeletion ? (
         <DeletionToast
-          label={`维度“${pendingDeletion.dimension.leftLabel} — ${pendingDeletion.dimension.rightLabel}”`}
+          label={pendingDeletion.kind === "dimension"
+            ? `维度“${pendingDeletion.dimension.leftLabel} — ${pendingDeletion.dimension.rightLabel}”`
+            : `素材“${pendingDeletion.name}”`}
           seconds={pendingDeletion.seconds}
-          onUndo={() => { setPendingDeletion(null); setMessage("已撤销删除"); }}
+          onUndo={() => {
+            if (pendingDeletion.kind === "dimension") undoDimensionDeletion(pendingDeletion);
+            else void undoAssetDeletion(pendingDeletion);
+          }}
         />
       ) : null}
     </main>

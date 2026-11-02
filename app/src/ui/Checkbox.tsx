@@ -8,7 +8,7 @@ export type CheckboxProps = Omit<InputHTMLAttributes<HTMLInputElement>, "type"> 
 
 export function Checkbox({ label, className, wrapperClassName, ...rest }: CheckboxProps) {
   return (
-    <label className={cn("flex cursor-pointer items-center gap-2 text-sm font-normal text-muted", wrapperClassName)}>
+    <label className={cn("flex cursor-pointer items-center gap-2 text-sm font-normal text-muted has-[:disabled]:cursor-not-allowed has-[:disabled]:opacity-60", wrapperClassName)}>
       <input type="checkbox" className={cn("accent-sage", className)} {...rest} />
       {label}
     </label>

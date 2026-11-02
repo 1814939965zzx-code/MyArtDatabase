@@ -22,7 +22,8 @@ const SIZE: Record<ButtonSize, string> = {
 const BASE =
   "inline-flex select-none items-center justify-center gap-1.5 whitespace-nowrap rounded-md border font-medium transition-colors duration-150 " +
   "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent " +
-  "disabled:cursor-wait disabled:opacity-55";
+  // 默认手型与“禁用=禁止”光标来自 base.css；提交中额外用等待光标表示正在处理。
+  "disabled:opacity-55";
 
 export type ButtonProps = ButtonHTMLAttributes<HTMLButtonElement> & {
   variant?: ButtonVariant;
@@ -48,7 +49,7 @@ export function Button({
     <button
       ref={ref}
       type={type}
-      className={cn(BASE, VARIANT[variant], SIZE[size], className)}
+      className={cn(BASE, VARIANT[variant], SIZE[size], loading && "cursor-wait", className)}
       disabled={disabled || loading}
       aria-busy={loading || undefined}
       {...rest}

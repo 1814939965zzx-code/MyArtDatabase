@@ -38,6 +38,8 @@ export const AssetMetadataEditor = forwardRef<AssetMetadataEditorHandle, {
   aiTagBusy?: boolean;
   onAiTag?: () => void;
   onSave: (update: AssetMetadataUpdate) => Promise<void>;
+  /** 游客只读：所有输入禁用，隐藏标签增删、AI 打标与来源链接编辑。 */
+  readOnly?: boolean;
 }>(function AssetMetadataEditor({
   asset,
   busy,
@@ -45,6 +47,7 @@ export const AssetMetadataEditor = forwardRef<AssetMetadataEditorHandle, {
   aiTagBusy = false,
   onAiTag,
   onSave,
+  readOnly = false,
 }, ref) {
   const formRef = useRef<HTMLFormElement>(null);
   const composingRef = useRef(false);
@@ -94,6 +97,7 @@ export const AssetMetadataEditor = forwardRef<AssetMetadataEditorHandle, {
   }
 
   async function save() {
+    if (readOnly) return true;
     if (!formRef.current?.reportValidity()) return false;
     const update = metadataUpdate();
     if (!hasChanges(update) && !pendingDeleteTags.length) return true;
@@ -176,7 +180,7 @@ export const AssetMetadataEditor = forwardRef<AssetMetadataEditorHandle, {
       className="flex flex-col gap-3 border-b border-line-soft pb-4 pt-4"
     >
       <Field label="素材名称" required htmlFor="asset-name">
-        <Input id="asset-name" value={name} onChange={(event) => setName(event.target.value)} maxLength={120} required />
+        <Input id="asset-name" value={name} onChange={(event) => setName(event.target.value)} maxLength={120} required readOnly={readOnly} />
       </Field>
 
       <fieldset className="m-0 flex min-w-0 flex-col gap-2 border-0 p-0">
@@ -198,7 +202,7 @@ export const AssetMetadataEditor = forwardRef<AssetMetadataEditorHandle, {
                     type="button"
                     aria-label={pendingDelete ? `撤销删除标签 ${tag}` : `删除标签 ${tag}`}
                     onClick={() => pendingDelete ? undoTagDeletion(tag) : removeTag(tag)}
-                    className="grid size-4 place-items-center rounded-full transition-colors hover:bg-white/70"
+                    className={cn("grid size-4 place-items-center rounded-full transition-colors hover:bg-white/70", readOnly && "hidden")}
                   >
                     {pendingDelete ? <RotateCcw size={11} aria-hidden /> : <X size={11} aria-hidden />}
                   </button>
@@ -209,7 +213,7 @@ export const AssetMetadataEditor = forwardRef<AssetMetadataEditorHandle, {
           </div>
         ) : null}
 
-        <div className="relative flex flex-col gap-1">
+        <div className={cn("relative flex flex-col gap-1", readOnly && "hidden")}>
           <div className="flex items-center gap-1.5">
             <Input
               aria-label="添加全局标签"
@@ -301,13 +305,13 @@ export const AssetMetadataEditor = forwardRef<AssetMetadataEditorHandle, {
       </fieldset>
 
       <Field label="描述" htmlFor="asset-description">
-        <Textarea id="asset-description" value={description} onChange={(event) => setDescription(event.target.value)} rows={3} maxLength={2000} placeholder="描述图片内容或使用方向" />
+        <Textarea id="asset-description" value={description} onChange={(event) => setDescription(event.target.value)} rows={3} maxLength={2000} placeholder="描述图片内容或使用方向" readOnly={readOnly} />
       </Field>
 
       <div className="flex flex-col gap-1.5">
         <div className="flex items-center justify-between gap-2">
           <strong className="text-sm font-medium text-ink-label">来源链接</strong>
-          {!editingSourceUrl ? (
+          {!readOnly && !editingSourceUrl ? (
             sourceUrl ? (
               <Button size="xs" variant="ghost" icon={<Pencil size={12} aria-hidden />} onClick={() => setEditingSourceUrl(true)}>
                 编辑
@@ -349,16 +353,18 @@ export const AssetMetadataEditor = forwardRef<AssetMetadataEditorHandle, {
             <ExternalLink size={13} aria-hidden className="flex-none" />
           </a>
         ) : sourceUrl ? (
-          <button className="text-left text-sm text-danger" type="button" onClick={() => setEditingSourceUrl(true)}>
-            链接格式无效，点击编辑
-          </button>
+          readOnly
+            ? <span className="break-all text-sm text-danger">{sourceUrl}</span>
+            : <button className="text-left text-sm text-danger" type="button" onClick={() => setEditingSourceUrl(true)}>
+                链接格式无效，点击编辑
+              </button>
         ) : (
           <span className="text-sm text-muted">暂无来源链接</span>
         )}
       </div>
 
       <Field label="备注" htmlFor="asset-notes">
-        <Textarea id="asset-notes" value={notes} onChange={(event) => setNotes(event.target.value)} rows={2} maxLength={2000} placeholder="团队内部备注" />
+        <Textarea id="asset-notes" value={notes} onChange={(event) => setNotes(event.target.value)} rows={2} maxLength={2000} placeholder="团队内部备注" readOnly={readOnly} />
       </Field>
     </form>
   );

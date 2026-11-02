@@ -127,8 +127,12 @@ globalThis.fetch = async (input, init = {}) => {
   const headers = new Headers(init.headers || {});
   if (sessionCookie) headers.set("cookie", sessionCookie);
   const response = await originalFetch(input, { ...init, headers });
-  const setCookie = response.headers.get("set-cookie");
-  if (setCookie) sessionCookie = setCookie.split(";")[0];
+  // 登录/初始化响应同时会清除游客 cookie，因此这里只取真实的 session cookie
+  const setCookies = typeof response.headers.getSetCookie === "function"
+    ? response.headers.getSetCookie()
+    : [response.headers.get("set-cookie") || ""];
+  const sessionSetCookie = setCookies.find((value) => value.startsWith("artdb_session="));
+  if (sessionSetCookie) sessionCookie = sessionSetCookie.split(";")[0];
   return response;
 };
 
@@ -160,6 +164,30 @@ const badLogin = await post(`${base}/api/auth/login`, { username: "admin", passw
 assert.equal(badLogin.status, 401, "密码错误应 401");
 const goodLogin = await post(`${base}/api/auth/login`, { username: "admin", password: "admin1234", remember: true });
 assert.equal(goodLogin.status, 200, "正确密码应登录成功");
+
+// 0) 游客登录：无需账号即可只读浏览，所有写接口 403
+{
+  const guestLogin = await originalFetch(`${base}/api/auth/guest`, { method: "POST" });
+  assert.equal(guestLogin.status, 200, "游客登录应成功");
+  const guestUser = (await guestLogin.json()).user;
+  assert.equal(guestUser.role, "guest", "游客身份应为 guest");
+  const guestSetCookie = guestLogin.headers.get("set-cookie") || "";
+  assert.ok(guestSetCookie.includes("artdb_guest="), "游客登录应下发游客 cookie");
+  const guestCookie = guestSetCookie.split(";")[0];
+  const guestFetch = (requestPath, init = {}) => originalFetch(requestPath, {
+    ...init,
+    headers: { ...(init.headers || {}), cookie: guestCookie },
+  });
+  assert.equal((await guestFetch(`${base}/api/projects`)).status, 200, "游客可浏览项目列表");
+  assert.equal((await guestFetch(`${base}/api/workspace?projectId=project-visual-direction`)).status, 200, "游客可浏览项目内容");
+  assert.equal((await guestFetch(`${base}/api/preview-pages?projectId=project-visual-direction`)).status, 200, "游客可浏览维度 Page");
+  assert.equal((await guestFetch(`${base}/api/projects`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ name: "游客不可建" }) })).status, 403, "游客不能创建项目");
+  assert.equal((await guestFetch(`${base}/api/project-assets`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ projectId: "project-visual-direction", assetId: "asset-01", favorite: true }) })).status, 403, "游客不能收藏");
+  assert.equal((await guestFetch(`${base}/api/uploads`, { method: "POST", body: new FormData() })).status, 403, "游客不能上传");
+  const guestLogout = await guestFetch(`${base}/api/auth/logout`, { method: "POST" });
+  assert.equal(guestLogout.status, 200, "游客可以退出登录");
+  assert.ok((guestLogout.headers.get("set-cookie") || "").includes("artdb_guest=;"), "退出时应清除游客 cookie");
+}
 
 // 0) 安全边界：编码路径穿越不得读取系统文件或导致进程崩溃
 const traversal = await rawGet("/%2e%2e%2f%2e%2e%2f%2e%2e%2f%2e%2e%2fetc%2fpasswd");
@@ -214,6 +242,34 @@ const ws = await json(await fetch(`${base}/api/workspace?projectId=project-visua
 assert.equal(ws.project.name, "机器人视觉方向");
 assert.ok(ws.assets.length >= 8, "应有种子素材");
 assert.equal(ws.dimensions.length, 2, "应有 2 个维度");
+
+// 2b) 项目收藏：按 (project, asset) 独立保存
+const favoriteOn = await fetch(`${base}/api/project-assets`, {
+  method: "PATCH",
+  headers: { "content-type": "application/json" },
+  body: JSON.stringify({ projectId: "project-visual-direction", assetId: "asset-01", favorite: true }),
+});
+assert.equal(favoriteOn.status, 200, "收藏接口应返回 200");
+assert.equal((await json(favoriteOn)).favorite, true, "收藏接口应返回最新状态");
+const wsFavorite = await json(await fetch(`${base}/api/workspace?projectId=project-visual-direction`));
+assert.equal(wsFavorite.assets.find((item) => item.id === "asset-01").favorite, 1, "收藏后工作区应标记 favorite");
+assert.equal(wsFavorite.assets.filter((item) => item.favorite).length, 1, "只应收藏这一条素材");
+const assignSecondProject = await fetch(`${base}/api/project-assets`, {
+  method: "POST",
+  headers: { "content-type": "application/json" },
+  body: JSON.stringify({ assetId: "asset-01", projectIds: ["project-material-language"] }),
+});
+assert.equal(assignSecondProject.status, 200);
+const wsSecondProject = await json(await fetch(`${base}/api/workspace?projectId=project-material-language`));
+assert.equal(wsSecondProject.assets.find((item) => item.id === "asset-01").favorite, 0, "同一素材在另一个项目的收藏应独立");
+const favoriteOff = await json(await fetch(`${base}/api/project-assets`, {
+  method: "PATCH",
+  headers: { "content-type": "application/json" },
+  body: JSON.stringify({ projectId: "project-visual-direction", assetId: "asset-01", favorite: false }),
+}));
+assert.equal(favoriteOff.favorite, false);
+const wsUnfavorite = await json(await fetch(`${base}/api/workspace?projectId=project-visual-direction`));
+assert.equal(wsUnfavorite.assets.find((item) => item.id === "asset-01").favorite, 0, "取消收藏应清除标记");
 
 // 3) 上传
 const buffer = await sharp({ create: { width: 800, height: 600, channels: 3, background: { r: 30, g: 120, b: 200 } } }).png().toBuffer();

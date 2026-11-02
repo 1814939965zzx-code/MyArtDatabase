@@ -49,7 +49,14 @@ const MIME = {
 
 function sendResponse(res, response) {
   const headers = {};
-  response.headers.forEach((value, key) => { headers[key] = value; });
+  // Set-Cookie 可能有多条（例如登录时同时下发会话并清除游客 cookie），
+  // Headers.forEach 会把同名头合并/覆盖，必须单独取出数组交给 writeHead。
+  const setCookies = typeof response.headers.getSetCookie === "function" ? response.headers.getSetCookie() : [];
+  response.headers.forEach((value, key) => {
+    if (key.toLowerCase() === "set-cookie") return;
+    headers[key] = value;
+  });
+  if (setCookies.length) headers["set-cookie"] = setCookies;
   res.writeHead(response.status, headers);
   if (response.body) {
     const stream = Readable.fromWeb(response.body);

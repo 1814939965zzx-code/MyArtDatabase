@@ -71,6 +71,55 @@
     font-size: 12px;
   }
 
+  /*
+   * 详情页左右切换箭头：只在维度预览入口出现（见 ArtDatabaseApp），
+   * 浮在图片两侧的深色底上，因此颜色取自 scrim/ink 而不是面板 token。
+   */
+  .drawer-nav {
+    position: absolute;
+    top: 50%;
+    z-index: 2;
+    width: 44px;
+    height: 44px;
+    display: grid;
+    place-items: center;
+    border: 1px solid color-mix(in srgb, var(--color-white) 22%, transparent);
+    border-radius: var(--radius-full);
+    background: color-mix(in srgb, var(--color-ink) 58%, transparent);
+    color: var(--color-white);
+    transform: translateY(-50%);
+    box-shadow: var(--shadow-md);
+    cursor: pointer;
+    transition: background var(--duration-fast) var(--ease-out-soft), opacity var(--duration-fast) var(--ease-out-soft);
+  }
+
+  .drawer-nav:hover:not(:disabled) {
+    background: color-mix(in srgb, var(--color-ink) 82%, transparent);
+  }
+
+  .drawer-nav:focus-visible {
+    outline: 2px solid var(--color-white);
+    outline-offset: 2px;
+  }
+
+  .drawer-nav:disabled {
+    opacity: 0.25;
+    cursor: default;
+  }
+
+  .drawer-nav-prev { left: 16px; }
+  .drawer-nav-next { right: 16px; }
+
+  @media (max-width: 620px) {
+    .drawer-nav {
+      width: 36px;
+      height: 36px;
+    }
+
+    .drawer-nav-prev { left: 10px; }
+    .drawer-nav-next { right: 10px; }
+  }
+
   .drawer-progress {
     width: 130px;
     height: 5px;

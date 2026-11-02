@@ -11,7 +11,7 @@ export function UserMenu({
   onAction,
 }: {
   displayName: string;
-  role: "admin" | "member";
+  role: "admin" | "member" | "guest";
   onAction: (action: UserMenuAction) => void;
 }) {
   const [open, setOpen] = useState(false);
@@ -52,19 +52,23 @@ export function UserMenu({
         </span>
         <span className="flex min-w-0 flex-col items-start leading-[1.15]">
           <strong className="max-w-[110px] truncate text-sm font-semibold text-ink">{displayName}</strong>
-          <small className="text-2xs text-muted">{role === "admin" ? "管理员" : "成员"}</small>
+          <small className="text-2xs text-muted">{role === "admin" ? "管理员" : role === "guest" ? "游客（只读）" : "成员"}</small>
         </span>
         <ChevronDown size={14} className="text-muted" aria-hidden />
       </button>
 
       {open ? (
         <MenuPanel>
-          <MenuItem icon={<UserCog size={15} aria-hidden />} onClick={() => pick("account")}>
-            账号设置
-          </MenuItem>
-          <MenuItem icon={<KeyRound size={15} aria-hidden />} onClick={() => pick("tokens")}>
-            插件令牌
-          </MenuItem>
+          {role !== "guest" ? (
+            <>
+              <MenuItem icon={<UserCog size={15} aria-hidden />} onClick={() => pick("account")}>
+                账号设置
+              </MenuItem>
+              <MenuItem icon={<KeyRound size={15} aria-hidden />} onClick={() => pick("tokens")}>
+                插件令牌
+              </MenuItem>
+            </>
+          ) : null}
           {role === "admin" ? (
             <>
               <MenuItem icon={<Users size={15} aria-hidden />} onClick={() => pick("members")}>

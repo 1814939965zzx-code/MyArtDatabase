@@ -25,7 +25,7 @@
 
 - 产品：团队使用的图片/视频素材库，按项目引用全局素材，并通过独立维度 Page 和自由画板组织素材。
 - 运行时：单个原生 Node.js 进程，同时提供 React 页面、`/api/*` 接口、SQLite 数据库和本地图片/视频存储。
-- 账号：两级角色（管理员/成员）；除健康检查与登录相关接口外，全部 `/api/*` 需要登录（HttpOnly Cookie Session 或插件令牌 Bearer 二选一）；首次启动在界面引导创建管理员。
+- 账号：两级角色（管理员/成员），另有无需账号的游客只读浏览；除健康检查与登录相关接口外，全部 `/api/*` 需要登录（HttpOnly Cookie Session、插件令牌 Bearer 或游客 cookie）；游客会话只允许 GET，写请求一律 403；首次启动在界面引导创建管理员。
 - 前端：React 19、TypeScript、Vite、Tailwind CSS v4。
 - 浏览器采集：`extension/` 目录是独立的 Chrome 扩展（Manifest V3、原生 JS 零构建、unpacked 加载），右键保存网页图片/视频到素材库，经「插件令牌」（顶部用户菜单 → 插件令牌面板生成）认证。
 - 后端：`node:http`、Node 内置 `node:sqlite`、`sharp`、`ffmpeg-static`（视频转码与抽帧）。

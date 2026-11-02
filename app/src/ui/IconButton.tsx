@@ -19,7 +19,8 @@ const SIZE: Record<IconButtonSize, string> = {
 const BASE =
   "inline-grid place-items-center rounded-md border border-transparent transition-colors duration-150 " +
   "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent " +
-  "disabled:cursor-wait disabled:opacity-55";
+  // 默认手型与“禁用=禁止”光标来自 base.css。
+  "disabled:opacity-55";
 
 export type IconButtonProps = Omit<ButtonHTMLAttributes<HTMLButtonElement>, "aria-label"> & {
   /** 必须提供：图标按钮没有可见文字，屏幕阅读器依赖它。 */

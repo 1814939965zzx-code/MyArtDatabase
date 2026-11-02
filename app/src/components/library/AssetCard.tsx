@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import { ImageIcon } from "lucide-react";
+import { ImageIcon, Star } from "lucide-react";
 import { formatDuration, isVideoMime, transcodePercent } from "../../assetMedia";
 import { cn } from "../../ui";
 import { TagRow } from "./TagRow";
@@ -26,6 +26,8 @@ export type AssetCardProps = {
   onCheckedChange?: (checked: boolean) => void;
   busy?: boolean;
   onOpen?: () => void;
+  /** 项目内收藏标记（全局库/回收站不传） */
+  favorite?: boolean;
   showProjectCount?: boolean;
   showDuration?: boolean;
   roundedThumb?: boolean;
@@ -46,6 +48,7 @@ export function AssetCard({
   onCheckedChange,
   busy = false,
   onOpen,
+  favorite = false,
   showProjectCount = false,
   showDuration = false,
   roundedThumb = false,
@@ -80,6 +83,12 @@ export function AssetCard({
           </span>
         )}
 
+        {favorite ? (
+          <span className="absolute right-2 top-2 z-10 grid size-6 place-items-center rounded-full bg-ink-panel/75 text-white" aria-label="已收藏" title="已收藏">
+            <Star size={12} fill="currentColor" aria-hidden />
+          </span>
+        ) : null}
+
         {typeof index === "number" ? (
           <span className="absolute left-2 top-2 bg-ink-panel/75 px-1.5 py-1 text-2xs tracking-[.08em] text-white">
             {String(index + 1).padStart(2, "0")}
@@ -94,7 +103,7 @@ export function AssetCard({
             aria-label={`选择 ${asset.name}`}
             onChange={(event) => onCheckedChange?.(event.target.checked)}
             onClick={(event) => event.stopPropagation()}
-            className="absolute left-2 top-2 z-10 size-4 cursor-pointer accent-success"
+            className="absolute left-2 top-2 z-10 size-4 cursor-pointer accent-success disabled:cursor-not-allowed"
           />
         ) : null}
 

@@ -5,11 +5,14 @@ import path from "node:path";
 import { Readable } from "node:stream";
 import {
   backfillLegacyAssets,
+  clearGuestCookieHeader,
   clearSessionCookieHeader,
   createApiToken,
   createSession,
   createUser,
   destroySession,
+  GUEST_USER,
+  guestCookieHeader,
   hashPassword,
   listApiTokens,
   logLogin,
@@ -280,7 +283,7 @@ function workspace(request, { db }) {
     a.description, a.notes, a.source_url AS sourceUrl,
     a.file_size AS fileSize, a.width, a.height, a.mime_type AS mimeType,
     a.duration AS duration, a.transcode_status AS transcodeStatus, a.transcode_progress AS transcodeProgress,
-    a.created_at AS createdAt, a.created_by_name AS createdByName
+    a.created_at AS createdAt, a.created_by_name AS createdByName, pa.favorite AS favorite
     FROM assets a
     INNER JOIN project_assets pa ON pa.asset_id = a.id
     WHERE pa.project_id = ? AND a.deleted_at IS NULL ORDER BY pa.created_at DESC, a.id`).all(projectId);
@@ -724,6 +727,22 @@ function removeAssetFromProject(request, { db }) {
     db.prepare("UPDATE projects SET updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(projectId);
   });
   return Response.json({ ok: true });
+}
+
+/** 项目内收藏：每个项目的同一条素材引用独立保存 favorite。 */
+async function setProjectAssetFavorite(request, { db }) {
+  const payload = await request.json().catch(() => null);
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+    return Response.json({ error: "请求内容必须是对象" }, { status: 400 });
+  }
+  const projectId = cleanText(payload.projectId, 80);
+  const assetId = cleanText(payload.assetId, 80);
+  if (!projectId || !assetId) return Response.json({ error: "参数不完整" }, { status: 400 });
+  const favorite = payload.favorite === true || payload.favorite === 1 ? 1 : 0;
+  const link = db.prepare("SELECT 1 FROM project_assets WHERE project_id = ? AND asset_id = ?").get(projectId, assetId);
+  if (!link) return Response.json({ error: "素材不在该项目中" }, { status: 404 });
+  db.prepare("UPDATE project_assets SET favorite = ? WHERE project_id = ? AND asset_id = ?").run(favorite, projectId, assetId);
+  return Response.json({ ok: true, favorite: favorite === 1 });
 }
 
 // ---- 画板 ----
@@ -1199,6 +1218,12 @@ function authStatus(request, { db }) {
   return Response.json({ needsSetup: count === 0, user: user ? { ...user, role: user.role } : null });
 }
 
+function cookieHeaders(...cookies) {
+  const headers = new Headers();
+  for (const cookie of cookies) headers.append("set-cookie", cookie);
+  return headers;
+}
+
 /** 首次初始化：数据库没有任何用户时创建管理员并直接登录。 */
 async function setupAdmin(request, { db }) {
   const { count } = db.prepare("SELECT COUNT(*) AS count FROM users").get();
@@ -1217,8 +1242,16 @@ async function setupAdmin(request, { db }) {
   const session = createSession(db, user.id, true);
   return Response.json({ user: toUserPayload({ ...user, active: true }) }, {
     status: 201,
-    headers: { "set-cookie": sessionCookieHeader(session.token, session.maxAge) },
+    headers: cookieHeaders(sessionCookieHeader(session.token, session.maxAge), clearGuestCookieHeader()),
   });
+}
+
+/** 游客登录：不创建账号，只下发只读浏览 cookie；管理端尚未初始化时不允许进入。 */
+function guestLogin(request, { db }) {
+  const { count } = db.prepare("SELECT COUNT(*) AS count FROM users").get();
+  if (count === 0) return Response.json({ error: "系统尚未初始化管理员，暂时不能以游客身份浏览" }, { status: 409 });
+  destroySession(db, request);
+  return Response.json({ user: GUEST_USER }, { headers: { "set-cookie": guestCookieHeader() } });
 }
 
 /** 登录：校验密码、写入审计、创建会话。 */
@@ -1247,14 +1280,14 @@ async function login(request, { db, clientIp }) {
   const session = createSession(db, row.id, remember);
   audit(true, "登录成功");
   return Response.json({ user: { id: row.id, username: row.username, displayName: row.displayName, role: row.role, active: true } }, {
-    headers: { "set-cookie": sessionCookieHeader(session.token, session.maxAge) },
+    headers: cookieHeaders(sessionCookieHeader(session.token, session.maxAge), clearGuestCookieHeader()),
   });
 }
 
-/** 退出登录：删除会话并清 cookie。 */
+/** 退出登录：删除会话并同时清掉真实会话与游客 cookie。 */
 function logout(request, { db }) {
   destroySession(db, request);
-  return Response.json({ ok: true }, { headers: { "set-cookie": clearSessionCookieHeader() } });
+  return Response.json({ ok: true }, { headers: cookieHeaders(clearSessionCookieHeader(), clearGuestCookieHeader()) });
 }
 
 /** 当前用户信息。 */
@@ -1475,11 +1508,18 @@ export async function handleApi(request, ctx) {
     if (pathname === "/api/auth/status" && method === "GET") return authStatus(request, ctx);
     if (pathname === "/api/auth/setup" && method === "POST") return await setupAdmin(request, ctx);
     if (pathname === "/api/auth/login" && method === "POST") return await login(request, ctx);
+    if (pathname === "/api/auth/guest" && method === "POST") return guestLogin(request, ctx);
 
-    // 其余所有接口都必须登录：Cookie 会话或插件令牌（Bearer）二选一
-    const user = resolveUser(ctx.db, request) || resolveUserFromToken(ctx.db, request);
+    // 其余所有接口都必须登录：插件令牌（Bearer）优先，其次 Cookie 会话/游客 cookie
+    const user = resolveUserFromToken(ctx.db, request) || resolveUser(ctx.db, request);
     if (!user) return Response.json({ error: "请先登录" }, { status: 401 });
     ctx.user = user;
+    // 游客只能浏览：除 GET/HEAD 与退出登录外一律拒绝，服务端兜底所有编辑入口
+    if (user.role === "guest"
+      && method !== "GET" && method !== "HEAD"
+      && !(pathname === "/api/auth/logout" && method === "POST")) {
+      return Response.json({ error: "游客只能浏览，不能进行此操作" }, { status: 403 });
+    }
 
     if (["/api/preview-pages", "/api/preview-page", "/api/preview-page-assets", "/api/preview-dimensions", "/api/preview-values"].includes(pathname)) return await handlePreviewPages(request, ctx);
 
@@ -1550,6 +1590,7 @@ export async function handleApi(request, ctx) {
     if (pathname === "/api/trash" && method === "GET") return trash(ctx);
 
     if (pathname === "/api/project-assets" && method === "POST") return await assignAssets(request, ctx);
+    if (pathname === "/api/project-assets" && method === "PATCH") return await setProjectAssetFavorite(request, ctx);
     if (pathname === "/api/project-assets" && method === "DELETE") return removeAssetFromProject(request, ctx);
 
     if (pathname === "/api/canvases" && method === "GET") return listCanvases(request, ctx);

@@ -28,6 +28,11 @@
     overflow: hidden;
   }
 
+  /* 游客只读：不渲染左侧素材托盘，画布占满整行 */
+  .board-body.read-only {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
   .board-viewport {
     min-width: 0;
     min-height: 0;

@@ -1,6 +1,9 @@
 import { createHash, randomBytes, randomUUID, scryptSync, timingSafeEqual } from "node:crypto";
 
 export const SESSION_COOKIE = "artdb_session";
+/** 游客标记 cookie：仅用于只读浏览，不代表任何真实账号。 */
+export const GUEST_COOKIE = "artdb_guest";
+export const GUEST_USER = { id: "guest", username: "guest", displayName: "游客", role: "guest", active: true };
 const REMEMBER_MS = 30 * 24 * 60 * 60 * 1000; // 记住我：30 天
 const DEFAULT_MS = 24 * 60 * 60 * 1000; // 不记住：24 小时（浏览器会话 cookie 关闭即失效，服务端兜底过期）
 
@@ -103,25 +106,39 @@ export function clearSessionCookieHeader() {
   return `${SESSION_COOKIE}=; HttpOnly; Path=/; SameSite=Lax; Max-Age=0`;
 }
 
-/** 根据请求 cookie 解析当前用户；session 过期、用户被停用或删除时返回 null。 */
+/** 游客浏览 cookie：浏览器会话级，不写 Max-Age。 */
+export function guestCookieHeader() {
+  return `${GUEST_COOKIE}=1; HttpOnly; Path=/; SameSite=Lax`;
+}
+
+export function clearGuestCookieHeader() {
+  return `${GUEST_COOKIE}=; HttpOnly; Path=/; SameSite=Lax; Max-Age=0`;
+}
+
+function guestUserFromRequest(request) {
+  const cookies = parseCookies(request.headers.get("cookie") || "");
+  return cookies[GUEST_COOKIE] === "1" ? { ...GUEST_USER } : null;
+}
+
+/** 根据请求 cookie 解析当前用户；真实会话优先，没有会话时回退到游客 cookie。 */
 export function resolveUser(db, request) {
   const token = sessionTokenFromRequest(request);
-  if (!token) return null;
+  if (!token) return guestUserFromRequest(request);
   const session = db.prepare(`
     SELECT s.token, s.expires_at AS expiresAt, u.id, u.username, u.display_name AS displayName,
       u.role, u.active
     FROM sessions s INNER JOIN users u ON u.id = s.user_id
     WHERE s.token = ? LIMIT 1
   `).get(token);
-  if (!session) return null;
+  if (!session) return guestUserFromRequest(request);
   if (new Date(session.expiresAt).getTime() <= Date.now()) {
     db.prepare("DELETE FROM sessions WHERE token = ?").run(token);
-    return null;
+    return guestUserFromRequest(request);
   }
   if (!session.active) {
     // 停用立即踢下线：删除其全部会话，避免残留 cookie 反复命中
     db.prepare("DELETE FROM sessions WHERE user_id = ?").run(session.id);
-    return null;
+    return guestUserFromRequest(request);
   }
   return {
     id: session.id,

@@ -15,9 +15,10 @@ export const DimensionControlsEditor = forwardRef<DimensionControlsEditorHandle,
   values: Record<string, number>;
   assetId: string;
   busy: boolean;
+  readOnly?: boolean;
   onChangeValue: (assetId: string, dimensionId: string, value: number) => void;
   onSaveValue: (assetId: string, dimensionId: string, value: number) => Promise<void>;
-}>(function DimensionControlsEditor({ dimensions, values, assetId, busy, onChangeValue, onSaveValue }, ref) {
+}>(function DimensionControlsEditor({ dimensions, values, assetId, busy, readOnly = false, onChangeValue, onSaveValue }, ref) {
   useImperativeHandle(ref, () => ({
     // Kept for API compatibility with the parent; there is no in-drawer editor to dismiss anymore.
     dismissEditor() {
@@ -49,7 +50,7 @@ export const DimensionControlsEditor = forwardRef<DimensionControlsEditorHandle,
                 max={1000}
                 step={5}
                 value={value}
-                disabled={busy}
+                disabled={busy || readOnly}
                 onValueChange={(next) => onChangeValue(assetId, dimension.id, next)}
                 onPointerUp={(event) => void onSaveValue(assetId, dimension.id, Number(event.currentTarget.value))}
                 onBlur={(event) => void onSaveValue(assetId, dimension.id, Number(event.currentTarget.value))}

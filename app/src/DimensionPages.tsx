@@ -15,14 +15,16 @@ export type PreviewPage = {
 type Asset = { id: string; name: string; fileName: string; tags: string[]; thumbnailUrl: string | null; width: number; height: number };
 type Summary = { id: string; name: string; assetCount: number };
 
-export function DimensionPages({ projectId, assets, page, onPageChange, onReceivePage, revision, syncStatus, onRetrySync, onSelectAsset, onUpdateAssetDimensions, onAddDimension, onEditDimension, onMessage }: {
+export function DimensionPages({ projectId, assets, page, onPageChange, onReceivePage, revision, syncStatus, onRetrySync, onSelectAsset, onUpdateAssetDimensions, onAddDimension, onEditDimension, onMessage, readOnly = false }: {
   projectId: string; assets: Asset[]; page: PreviewPage | null; onPageChange: (page: PreviewPage | null) => void; revision: number;
   onReceivePage: (page: PreviewPage) => void;
   syncStatus: "synced" | "saving" | "offline";
   onRetrySync: () => void;
-  onSelectAsset: (id: string) => void;
+  onSelectAsset: (id: string, navigation?: string[] | null) => void;
   onUpdateAssetDimensions: (id: string, values: Record<string, number>) => Promise<boolean>;
   onAddDimension: () => void; onEditDimension: (dimension: PageDimension) => void; onMessage: (message: string) => void;
+  /** 游客只读：隐藏 Page/素材/维度的增删改，坐标轴切换仅保留本地视图状态。 */
+  readOnly?: boolean;
 }) {
   const [pages, setPages] = useState<Summary[]>([]);
   const [pageId, setPageId] = useState(() => {
@@ -165,6 +167,7 @@ export function DimensionPages({ projectId, assets, page, onPageChange, onReceiv
   function selectAxes(selectedIds: string[]) {
     if (!current) return;
     onPageChange({ ...current, selectedIds });
+    if (readOnly) return; // 游客只切换本地视图，不写回 Page
     const id = current.id;
     // 顺序提交，避免快速切换坐标轴时较早的请求覆盖最后一次选择。
     axesQueue.current = axesQueue.current.catch(() => {}).then(() => apiFetch("/api/preview-pages", { method: "PATCH", body: JSON.stringify({ projectId, pageId: id, selectedIds }) })).catch((reason) => {
@@ -178,8 +181,9 @@ export function DimensionPages({ projectId, assets, page, onPageChange, onReceiv
     icon: <Box size={14} aria-hidden />,
     label: (
       <span
-        title="双击重命名"
+        title={readOnly ? undefined : "双击重命名"}
         onDoubleClick={() => {
+          if (readOnly) return;
           setEditTargetId(p.id);
           setName(p.name);
           setEdit("rename");
@@ -196,51 +200,55 @@ export function DimensionPages({ projectId, assets, page, onPageChange, onReceiv
       <div className="flex flex-col gap-3 border-b border-line px-3 py-2.5 min-[900px]:flex-row min-[900px]:items-center min-[900px]:justify-between">
         <div className={cn("flex min-w-0 items-center gap-1 overflow-x-auto", busy && "pointer-events-none opacity-60")}>
           <Tabs variant="underline" ariaLabel="维度 Pages" value={pageId} onChange={switchPage} className="border-b-0" items={tabItems} />
-          <IconButton
-            size="sm"
-            label="新建维度 Page"
-            className="flex-none"
-            onClick={() => {
-              setEditTargetId("");
-              setName(`Page ${pages.length + 1}`);
-              setEdit("create");
-            }}
-          >
-            <Plus size={15} aria-hidden />
-          </IconButton>
+          {!readOnly ? (
+            <IconButton
+              size="sm"
+              label="新建维度 Page"
+              className="flex-none"
+              onClick={() => {
+                setEditTargetId("");
+                setName(`Page ${pages.length + 1}`);
+                setEdit("create");
+              }}
+            >
+              <Plus size={15} aria-hidden />
+            </IconButton>
+          ) : null}
         </div>
-        <div className="flex flex-none items-center justify-end gap-1.5">
-          <IconButton
-            variant="solid"
-            size="sm"
-            label="重命名当前 Page"
-            disabled={!current || loading}
-            onClick={() => {
-              if (!current) return;
-              setEditTargetId(current.id);
-              setName(current.name);
-              setEdit("rename");
-            }}
-          >
-            <Pencil size={14} aria-hidden />
-          </IconButton>
-          <IconButton variant="solid" size="sm" label="删除当前 Page" disabled={!current || loading} onClick={() => setEdit("delete")}>
-            <Trash2 size={14} aria-hidden />
-          </IconButton>
-          <Button
-            variant="primary"
-            icon={<Plus size={14} aria-hidden />}
-            disabled={!current || loading}
-            onClick={() => {
-              setSearch("");
-              setTags([]);
-              setSelected([]);
-              setPicker(true);
-            }}
-          >
-            添加素材
-          </Button>
-        </div>
+        {!readOnly ? (
+          <div className="flex flex-none items-center justify-end gap-1.5">
+            <IconButton
+              variant="solid"
+              size="sm"
+              label="重命名当前 Page"
+              disabled={!current || loading}
+              onClick={() => {
+                if (!current) return;
+                setEditTargetId(current.id);
+                setName(current.name);
+                setEdit("rename");
+              }}
+            >
+              <Pencil size={14} aria-hidden />
+            </IconButton>
+            <IconButton variant="solid" size="sm" label="删除当前 Page" disabled={!current || loading} onClick={() => setEdit("delete")}>
+              <Trash2 size={14} aria-hidden />
+            </IconButton>
+            <Button
+              variant="primary"
+              icon={<Plus size={14} aria-hidden />}
+              disabled={!current || loading}
+              onClick={() => {
+                setSearch("");
+                setTags([]);
+                setSelected([]);
+                setPicker(true);
+              }}
+            >
+              添加素材
+            </Button>
+          </div>
+        ) : null}
       </div>
 
       {loading ? (
@@ -261,7 +269,7 @@ export function DimensionPages({ projectId, assets, page, onPageChange, onReceiv
         <>
           {!pageAssets.length ? (
             <div className="border-b border-line-soft px-4 py-2 text-sm text-muted">
-              此 Page 暂无素材，点击“添加素材”从项目中选择。维度和位置仅属于当前 Page。
+              {readOnly ? "此 Page 暂无素材。" : "此 Page 暂无素材，点击“添加素材”从项目中选择。维度和位置仅属于当前 Page。"}
             </div>
           ) : null}
           <DimensionPreview
@@ -277,6 +285,7 @@ export function DimensionPages({ projectId, assets, page, onPageChange, onReceiv
             onAddDimension={onAddDimension}
             onMessage={onMessage}
             onEditDimension={(dimension) => { const found = current.dimensions.find((d) => d.id === dimension.id); if (found) onEditDimension(found); }}
+            readOnly={readOnly}
           />
         </>
       ) : (
@@ -284,8 +293,8 @@ export function DimensionPages({ projectId, assets, page, onPageChange, onReceiv
           className="flex-1"
           icon={<Box size={36} aria-hidden />}
           title="还没有维度 Page"
-          description="新建一个 Page，然后从项目素材中添加要比较的素材。"
-          action={
+          description={readOnly ? "当前项目还没有维度 Page。" : "新建一个 Page，然后从项目素材中添加要比较的素材。"}
+          action={readOnly ? undefined : (
             <Button
               variant="primary"
               icon={<Plus size={15} aria-hidden />}
@@ -297,7 +306,7 @@ export function DimensionPages({ projectId, assets, page, onPageChange, onReceiv
             >
               新建 Page
             </Button>
-          }
+          )}
         />
       )}
 

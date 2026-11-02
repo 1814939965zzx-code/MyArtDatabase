@@ -12,7 +12,7 @@ export function RangeSlider({ value, onValueChange, className, ...rest }: RangeS
       type="range"
       value={value}
       onChange={(event) => onValueChange(Number(event.target.value))}
-      className={cn("h-1.5 w-full cursor-pointer accent-sage", className)}
+      className={cn("h-1.5 w-full cursor-pointer accent-sage disabled:cursor-not-allowed", className)}
       {...rest}
     />
   );

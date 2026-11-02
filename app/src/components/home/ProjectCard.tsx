@@ -8,11 +8,13 @@ export function ProjectCard({
   onEnter,
   onRename,
   onDelete,
+  readOnly = false,
 }: {
   project: HomeProject;
   onEnter: () => void;
   onRename: () => void;
   onDelete: () => void;
+  readOnly?: boolean;
 }) {
   const thumbs = project.thumbnails?.slice(0, 4) ?? [];
   const single = thumbs.length === 1;
@@ -50,30 +52,32 @@ export function ProjectCard({
           </span>
         )}
 
-        <div className="absolute right-2 top-2 flex gap-1.5 opacity-0 transition-opacity focus-within:opacity-100 group-hover:opacity-100">
-          <button
-            type="button"
-            onClick={(event) => {
-              event.stopPropagation();
-              onRename();
-            }}
-            className="inline-flex h-7 items-center gap-1.5 rounded-md border border-white/35 bg-ink-panel/80 px-2 text-xs text-white backdrop-blur transition-colors hover:bg-ink-panel"
-          >
-            <Pencil size={13} aria-hidden />
-            重命名
-          </button>
-          <button
-            type="button"
-            onClick={(event) => {
-              event.stopPropagation();
-              onDelete();
-            }}
-            className="inline-flex h-7 items-center gap-1.5 rounded-md border border-white/35 bg-ink-panel/80 px-2 text-xs text-white backdrop-blur transition-colors hover:bg-ink-panel"
-          >
-            <Trash2 size={13} aria-hidden />
-            删除
-          </button>
-        </div>
+        {!readOnly ? (
+          <div className="absolute right-2 top-2 flex gap-1.5 opacity-0 transition-opacity focus-within:opacity-100 group-hover:opacity-100">
+            <button
+              type="button"
+              onClick={(event) => {
+                event.stopPropagation();
+                onRename();
+              }}
+              className="inline-flex h-7 items-center gap-1.5 rounded-md border border-white/35 bg-ink-panel/80 px-2 text-xs text-white backdrop-blur transition-colors hover:bg-ink-panel"
+            >
+              <Pencil size={13} aria-hidden />
+              重命名
+            </button>
+            <button
+              type="button"
+              onClick={(event) => {
+                event.stopPropagation();
+                onDelete();
+              }}
+              className="inline-flex h-7 items-center gap-1.5 rounded-md border border-white/35 bg-ink-panel/80 px-2 text-xs text-white backdrop-blur transition-colors hover:bg-ink-panel"
+            >
+              <Trash2 size={13} aria-hidden />
+              删除
+            </button>
+          </div>
+        ) : null}
       </div>
 
       <div className="flex flex-col gap-1 px-3.5 pb-3.5 pt-3">

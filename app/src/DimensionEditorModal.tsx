@@ -122,7 +122,7 @@ export function DimensionEditorModal({
           >
             删除维度
           </Button>
-          <span className="text-sm text-muted">删除后素材将回到该维度中点</span>
+          <span className="text-sm text-muted">维度及坐标会一并移除，5 秒内可撤销</span>
         </div>
       </form>
     </Modal>

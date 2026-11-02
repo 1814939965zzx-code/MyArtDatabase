@@ -17,6 +17,7 @@ export function HomeView({
   projects,
   search,
   loading,
+  readOnly = false,
   onEnter,
   onNewProject,
   onRename,
@@ -25,6 +26,7 @@ export function HomeView({
   projects: HomeProject[];
   search: string;
   loading: boolean;
+  readOnly?: boolean;
   onEnter: (project: HomeProject) => void;
   onNewProject: () => void;
   onRename: (project: HomeProject) => void;
@@ -45,11 +47,13 @@ export function HomeView({
         <div>
           <p className="mb-1 text-2xs font-bold uppercase tracking-[.15em] text-accent">PROJECTS</p>
           <h2 className="m-0 font-display text-2xl font-medium text-ink">项目</h2>
-          <p className="mt-2 text-sm text-muted">选择一个项目进入，或新建一个独立空间开始整理素材。</p>
+          <p className="mt-2 text-sm text-muted">{readOnly ? "选择一个项目进入浏览。" : "选择一个项目进入，或新建一个独立空间开始整理素材。"}</p>
         </div>
-        <Button variant="primary" icon={<Plus size={16} aria-hidden />} onClick={onNewProject}>
-          新建项目
-        </Button>
+        {!readOnly ? (
+          <Button variant="primary" icon={<Plus size={16} aria-hidden />} onClick={onNewProject}>
+            新建项目
+          </Button>
+        ) : null}
       </div>
 
       {!projects.length ? (
@@ -58,14 +62,14 @@ export function HomeView({
         ) : (
           <EmptyState
             icon={<Archive size={28} aria-hidden />}
-            title="建立第一个项目"
-            description="项目用于保存独立的素材集合与分类维度。"
+            title={readOnly ? "还没有项目" : "建立第一个项目"}
+            description={readOnly ? "管理员还没有创建项目。" : "项目用于保存独立的素材集合与分类维度。"}
             className="mx-[18px] max-md:mx-0"
-            action={
+            action={readOnly ? undefined : (
               <Button variant="primary" icon={<Plus size={16} aria-hidden />} onClick={onNewProject}>
                 新建项目
               </Button>
-            }
+            )}
           />
         )
       ) : (
@@ -74,6 +78,7 @@ export function HomeView({
             <ProjectCard
               key={project.id}
               project={project}
+              readOnly={readOnly}
               onEnter={() => onEnter(project)}
               onRename={() => onRename(project)}
               onDelete={() => onDelete(project)}

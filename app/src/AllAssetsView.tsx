@@ -71,6 +71,8 @@ export function AllAssetsView({
   onViewChange,
   onRefresh,
   onMessage,
+  onAssetTrashed,
+  readOnly = false,
 }: {
   assets: LibraryAsset[];
   projects: LibraryProject[];
@@ -80,6 +82,10 @@ export function AllAssetsView({
   onViewChange: (view: "grid" | "list") => void;
   onRefresh: () => Promise<void>;
   onMessage: (message: string) => void;
+  /** 删除已生效后交给上层开启 5 秒撤销窗口（恢复仍走 /api/assets/restore）。 */
+  onAssetTrashed?: (asset: { id: string; name: string }) => void;
+  /** 游客只读：隐藏替换/删除/AI/添加项目等写入口，Metadata 只读展示。 */
+  readOnly?: boolean;
 }) {
   const [selectedAssetId, setSelectedAssetId] = useState<string | null>(null);
   const [assignAssetId, setAssignAssetId] = useState<string | null>(null);
@@ -207,7 +213,7 @@ export function AllAssetsView({
       setSelectedAssetId(null);
       setAssignAssetId(null);
       await onRefresh();
-      onMessage("素材已移入回收站，可在回收站恢复或永久删除");
+      onAssetTrashed?.({ id: asset.id, name: asset.name });
     } catch (reason) {
       onMessage(reason instanceof Error ? reason.message : "删除失败");
     } finally {
@@ -323,7 +329,7 @@ export function AllAssetsView({
                 return (
                   <span className="drawer-image-fallback" onClick={(event) => event.stopPropagation()}>
                     {status === "failed"
-                      ? <><AlertTriangle size={30} /><small>转码失败，原文件已保留</small><Button size="sm" icon={<RotateCcw size={13} aria-hidden />} onClick={(event) => { event.stopPropagation(); void retranscodeVideo(selectedAsset); }}>重新转码</Button></>
+                      ? <><AlertTriangle size={30} /><small>转码失败，原文件已保留</small>{!readOnly ? <Button size="sm" icon={<RotateCcw size={13} aria-hidden />} onClick={(event) => { event.stopPropagation(); void retranscodeVideo(selectedAsset); }}>重新转码</Button> : null}</>
                       : <><Spinner size={30} /><small>视频转码中 {transcodePercent(selectedAsset.transcodeProgress)}%</small><span className="drawer-progress"><span style={{ width: `${transcodePercent(selectedAsset.transcodeProgress)}%` }} /></span></>}
                   </span>
                 );
@@ -343,19 +349,22 @@ export function AllAssetsView({
                 <span>{selectedAsset.mimeType || "image"}</span>
               </div>
               {error ? <InlineMessage tone="error" className="mb-3">{error}</InlineMessage> : null}
-              <AssetImageReplacement
-                asset={selectedAsset}
-                busy={busy}
-                onBusyChange={setBusy}
-                onComplete={onRefresh}
-                onMessage={onMessage}
-              />
+              {!readOnly ? (
+                <AssetImageReplacement
+                  asset={selectedAsset}
+                  busy={busy}
+                  onBusyChange={setBusy}
+                  onComplete={onRefresh}
+                  onMessage={onMessage}
+                />
+              ) : null}
               <AssetMetadataEditor
                 ref={metadataEditorRef}
                 asset={selectedAsset}
                 busy={busy}
                 availableTags={availableTags}
                 aiTagBusy={aiTagBusy}
+                readOnly={readOnly}
                 onAiTag={() => void runAiTag()}
                 onSave={(update) => saveAssetMetadata(selectedAsset, update)}
               />
@@ -376,12 +385,16 @@ export function AllAssetsView({
               ) : (
                 <p className="text-sm text-muted">当前没有项目引用这项素材。</p>
               )}
-              <Button variant="secondary" size="sm" className="mt-4 w-full" icon={<FolderPlus size={14} aria-hidden />} onClick={() => openAssign(selectedAsset)}>
-                添加到其他项目
-              </Button>
-              <Button variant="danger" size="sm" className="mt-2 w-full" disabled={busy} icon={<Trash2 size={14} aria-hidden />} onClick={() => void deleteToTrash(selectedAsset)}>
-                删除素材
-              </Button>
+              {!readOnly ? (
+                <>
+                  <Button variant="secondary" size="sm" className="mt-4 w-full" icon={<FolderPlus size={14} aria-hidden />} onClick={() => openAssign(selectedAsset)}>
+                    添加到其他项目
+                  </Button>
+                  <Button variant="danger" size="sm" className="mt-2 w-full" disabled={busy} icon={<Trash2 size={14} aria-hidden />} onClick={() => void deleteToTrash(selectedAsset)}>
+                    删除素材
+                  </Button>
+                </>
+              ) : null}
             </div>
           </div>
         </aside>

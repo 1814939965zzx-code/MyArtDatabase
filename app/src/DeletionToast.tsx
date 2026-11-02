@@ -14,7 +14,7 @@ export function DeletionToast({
   return (
     <Toast open action={{ label: "撤销", onClick: onUndo }}>
       <span>
-        <strong>{label}</strong> 将在 {seconds} 秒后删除
+        <strong>{label}</strong> 已删除，{seconds} 秒内可撤销
       </span>
     </Toast>
   );

@@ -393,7 +393,14 @@
     z-index: 4;
     transform-style: preserve-3d;
     pointer-events: none;
-    transform: translate(calc(-50% + var(--corner-dx, 0px)), calc(-50% + var(--corner-dy, 0px))) translateZ(var(--corner-tz, 0px));
+    /*
+     * 2D 用 --corner-tx/--corner-ty 把整组 tag 贴到角落外侧（不再以角落为中心，避免压住象限）；
+     * 3D 没有这两个变量，回退到「以角落为中心 + 12px 内缩」的原对齐方式。
+     */
+    transform: translate(
+      var(--corner-tx, calc(-50% + var(--corner-dx, 0px))),
+      var(--corner-ty, calc(-50% + var(--corner-dy, 0px)))
+    ) translateZ(var(--corner-tz, 0px));
     transition: opacity 0.3s ease, visibility 0s linear 0.3s;
   }
 

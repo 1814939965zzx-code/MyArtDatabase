@@ -92,6 +92,7 @@ CREATE TABLE IF NOT EXISTS asset_tags (
 CREATE TABLE IF NOT EXISTS project_assets (
   project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
   asset_id TEXT NOT NULL REFERENCES assets(id) ON DELETE CASCADE,
+  favorite INTEGER NOT NULL DEFAULT 0,
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY(project_id, asset_id)
 );
@@ -315,6 +316,11 @@ function migrateSchema(db) {
       db.exec(`UPDATE canvas_items SET last_rev = (
         SELECT revision FROM canvases WHERE canvases.id = canvas_items.canvas_id
       ) WHERE last_rev = 0`);
+    }
+    // 项目内收藏：素材级标记，按 (project_id, asset_id) 独立保存
+    const projectAssetColumns = db.prepare("PRAGMA table_info(project_assets)").all().map((column) => column.name);
+    if (!projectAssetColumns.includes("favorite")) {
+      db.exec("ALTER TABLE project_assets ADD COLUMN favorite INTEGER NOT NULL DEFAULT 0");
     }
   }
   db.exec(`PRAGMA user_version = ${Math.max(version, SCHEMA_VERSION)}`);

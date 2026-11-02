@@ -37,6 +37,34 @@
     color: inherit;
   }
 
+  /*
+   * 指针语义：能操作的地方显示手型，不能操作的地方显示禁止符号。
+   * 拖拽、画布、场景的专用光标由 modules/* 覆盖（components 层优先于 base 层），
+   * 组件内的 cursor-* 工具类优先级更高，可在局部继续定制。
+   */
+  button,
+  select,
+  summary,
+  input[type="checkbox"],
+  input[type="radio"],
+  input[type="range"],
+  input[type="color"],
+  input[type="file"] {
+    cursor: pointer;
+  }
+
+  [role="button"]:not([aria-disabled="true"]) {
+    cursor: pointer;
+  }
+
+  button:disabled,
+  select:disabled,
+  input:disabled,
+  textarea:disabled,
+  [aria-disabled="true"] {
+    cursor: not-allowed;
+  }
+
   button:focus-visible,
   input:focus-visible,
   textarea:focus-visible {
@@ -63,6 +91,10 @@
     border: 0 !important;
     background: transparent !important;
     cursor: pointer;
+  }
+
+  .centered-range:disabled {
+    cursor: not-allowed;
   }
 
   .centered-range::-webkit-slider-runnable-track {

@@ -148,7 +148,11 @@ function aspectSize(asset: Asset, targetWidth: number) {
   return { width: targetWidth, height: Math.round(targetWidth * 3 / 4) };
 }
 
-export function BoardView({ projectId, assets, onMessage, onSelectAsset }: { projectId: string; assets: Asset[]; onMessage: (message: string) => void; onSelectAsset: (assetId: string) => void }) {
+export function BoardView({ projectId, assets, onMessage, onSelectAsset, readOnly = false }: {
+  projectId: string; assets: Asset[]; onMessage: (message: string) => void; onSelectAsset: (assetId: string) => void;
+  /** 游客只读：保留平移/缩放/专注与双击查看详情，隐藏所有编辑工具并禁用拖动、框选、新建。 */
+  readOnly?: boolean;
+}) {
   const [canvases, setCanvases] = useState<CanvasSummary[]>([]);
   const [canvasId, setCanvasId] = useState("");
   const [canvas, setCanvas] = useState<CanvasSummary | null>(null);
@@ -337,7 +341,9 @@ export function BoardView({ projectId, assets, onMessage, onSelectAsset }: { pro
 
   async function loadCanvases(preferredId?: string) {
     const data = await json<{ canvases: CanvasSummary[] }>(`/api/canvases?projectId=${encodeURIComponent(projectId)}`);
-    if (!data.canvases.length && !creatingDefaultPage.current) {
+    if (!data.canvases.length) {
+      if (readOnly) { setCanvases([]); setCanvasId(""); setLoading(false); return; }
+      if (creatingDefaultPage.current) return;
       creatingDefaultPage.current = true;
       try {
         const created = await json<{ canvas: CanvasSummary }>("/api/canvases", { method: "POST", body: JSON.stringify({ projectId, name: "Page 1" }) });
@@ -393,7 +399,7 @@ export function BoardView({ projectId, assets, onMessage, onSelectAsset }: { pro
       const migratedKey = `artdatabase:frames-migrated:v1:${id}`;
       let migrated = false;
       try { migrated = Boolean(window.localStorage.getItem(migratedKey)); } catch { migrated = false; }
-      if (!migrated && !serverFrames.length && localFrames.length) {
+      if (!migrated && !readOnly && !serverFrames.length && localFrames.length) {
         sync.markFrames(localFrames);
         try { window.localStorage.setItem(migratedKey, "1"); } catch { /* ignore */ }
       } else {
@@ -429,6 +435,7 @@ export function BoardView({ projectId, assets, onMessage, onSelectAsset }: { pro
   // 旧数据一次性迁移：把旧的“相对 Frame”坐标换算为自由画布绝对坐标，并标记 parentFrameId。
   // 另：始终按“真实几何与 Frame 相交”归一化元素的归属（跟随 Frame 位移/删除）。
   useEffect(() => {
+    if (readOnly) return; // 游客只读：不做 Frame 归属归一化（会写回服务端），仅按现有坐标展示
     if (!canvasId || !items.length || !frames.length) return;
     const frameIndex = Object.fromEntries(frames.map((frame) => [frame.id, frame]));
     const changedIds = new Set<string>();
@@ -462,28 +469,30 @@ export function BoardView({ projectId, assets, onMessage, onSelectAsset }: { pro
         await submitCanvasOps(pending.map((item) => ({ op: "update" as const, item })));
       } catch { /* 归一化失败可忽略，下次加载仍会重试 */ }
     })();
-  }, [canvasId, items.length, frames.length]);
+  }, [canvasId, items.length, frames.length, readOnly]);
 
   useEffect(() => { void loadCanvases().catch((error) => { onMessage(error instanceof Error ? error.message : "Page 载入失败"); setLoading(false); }); }, [projectId]);
 
   useEffect(() => {
     clearFrameSelection(); selectItems([]); setMarkupHidden(false); setEditingTextId(null); setDrawPreview(null); setFrameDraft(null); setFrameMode(false); setFrameDragId(null); frameDrawRef.current = null;
     undoStack.current = []; // 撤销栈只在当前 Page 内有效
-    // 先恢复上次没传完的本地草稿（断网/刷新不丢），再拉服务器快照做合并。
-    const draft = sync.restoreDraft();
-    if (draft.frames) setFramesByCanvas((current) => ({ ...current, [canvasId]: draft.frames as PageFrame[] }));
-    if (draft.items.length || draft.deleted.length) {
-      setItems((current) => {
-        const deleted = new Set(draft.deleted);
-        const byId = new Map(draft.items.map((item) => [item.id, item as unknown as CanvasItem]));
-        const kept = current.filter((item) => !deleted.has(item.id)).map((item) => byId.get(item.id) ?? item);
-        const existing = new Set(kept.map((item) => item.id));
-        return [...kept, ...[...byId.values()].filter((item) => !existing.has(item.id))];
-      });
+    // 先恢复上次没传完的本地草稿（断网/刷新不丢），再拉服务器快照做合并；游客只读时不读写草稿。
+    if (!readOnly) {
+      const draft = sync.restoreDraft();
+      if (draft.frames) setFramesByCanvas((current) => ({ ...current, [canvasId]: draft.frames as PageFrame[] }));
+      if (draft.items.length || draft.deleted.length) {
+        setItems((current) => {
+          const deleted = new Set(draft.deleted);
+          const byId = new Map(draft.items.map((item) => [item.id, item as unknown as CanvasItem]));
+          const kept = current.filter((item) => !deleted.has(item.id)).map((item) => byId.get(item.id) ?? item);
+          const existing = new Set(kept.map((item) => item.id));
+          return [...kept, ...[...byId.values()].filter((item) => !existing.has(item.id))];
+        });
+      }
+      if (draft.items.length || draft.deleted.length || draft.frames) void sync.flush();
     }
-    if (draft.items.length || draft.deleted.length || draft.frames) void sync.flush();
     void loadCanvas(canvasId).catch((error) => onMessage(error instanceof Error ? error.message : "Page 载入失败"));
-  }, [canvasId]);
+  }, [canvasId, readOnly]);
 
   // 拉取时机：进入页面 / 切回标签 / 窗口聚焦时拉一次，停留期间 30 秒兜底；有未同步改动时不覆盖本地。
   useEffect(() => {
@@ -521,6 +530,10 @@ export function BoardView({ projectId, assets, onMessage, onSelectAsset }: { pro
     const toolByKey: Record<string, Tool> = { v: "pointer", t: "text", r: "rect", o: "ellipse" };
     const down = (event: globalThis.KeyboardEvent) => {
       if (event.code === "Space" && !editable(event.target)) { event.preventDefault(); setSpaceHeld(true); }
+      if (readOnly) {
+        if (event.key === "Escape") { setFrameMenu(null); setItemMenu(null); setConfirmFrameDeleteIds([]); }
+        return;
+      }
       // Ctrl/Cmd+Z：撤销最近一次移动（元素 / Frame / 整组移动）；输入框内保留浏览器原生撤销
       if (!event.isComposing && !event.altKey && (event.ctrlKey || event.metaKey) && !event.shiftKey && event.code === "KeyZ" && !editable(event.target)) {
         // 拖动过程中不撤销历史操作；弹窗打开时把快捷键让给浮层（如撤销待替换图片）
@@ -545,7 +558,7 @@ export function BoardView({ projectId, assets, onMessage, onSelectAsset }: { pro
     const up = (event: globalThis.KeyboardEvent) => { if (event.code === "Space") setSpaceHeld(false); };
     window.addEventListener("keydown", down); window.addEventListener("keyup", up);
     return () => { window.removeEventListener("keydown", down); window.removeEventListener("keyup", up); };
-  }, [selectedItemIds, selectedFrameIds]);
+  }, [selectedItemIds, selectedFrameIds, readOnly]);
 
   // Esc 退出专注模式：文本编辑与 Frame/Page 重命名输入框先由自身处理，弹窗打开时让浮层优先
   useEffect(() => {
@@ -585,6 +598,7 @@ export function BoardView({ projectId, assets, onMessage, onSelectAsset }: { pro
   });
 
   async function createCanvas() {
+    if (readOnly) return;
     const name = `Page ${canvases.length + 1}`;
     try {
       const data = await json<{ canvas: CanvasSummary }>("/api/canvases", { method: "POST", body: JSON.stringify({ projectId, name }) });
@@ -595,6 +609,7 @@ export function BoardView({ projectId, assets, onMessage, onSelectAsset }: { pro
 
   // ---- “新建 Frame”：点击按钮进入创建态，按住左键拖动出自定义大小/位置的 Frame（不再固定默认尺寸） ----
   function startFrameCreateMode() {
+    if (readOnly) return;
     if (!canvasId) return;
     if (frameMode) { setFrameMode(false); setFrameDraft(null); return; }
     setTool("pointer");
@@ -603,6 +618,7 @@ export function BoardView({ projectId, assets, onMessage, onSelectAsset }: { pro
     onMessage("在画布上按住左键拖动，松手创建自定义大小的 Frame（Esc 或再次点击按钮取消）");
   }
   function beginFrameDraw(event: PointerEvent<HTMLDivElement>) {
+    if (readOnly) return;
     if (event.button !== 0) return;
     event.preventDefault();
     const raw = toCanvas(event.clientX, event.clientY);
@@ -648,6 +664,7 @@ export function BoardView({ projectId, assets, onMessage, onSelectAsset }: { pro
   }
 
   async function deleteCanvas() {
+    if (readOnly) return;
     if (!canvas || !window.confirm(`删除 Page“${canvas.name}”？其中的画板布局也会删除。`)) return;
     try {
       await json(`/api/canvases?id=${encodeURIComponent(canvas.id)}`, { method: "DELETE" });
@@ -656,12 +673,12 @@ export function BoardView({ projectId, assets, onMessage, onSelectAsset }: { pro
     } catch (error) { onMessage(error instanceof Error ? error.message : "删除失败"); }
   }
 
-  function startPageRename(entry: CanvasSummary) { setEditingPageId(entry.id); setPageNameDraft(entry.name); }
+  function startPageRename(entry: CanvasSummary) { if (readOnly) return; setEditingPageId(entry.id); setPageNameDraft(entry.name); }
   function handlePageNameKeyDown(event: KeyboardEvent<HTMLInputElement>, entry: CanvasSummary) {
     if (event.key === "Enter") event.currentTarget.blur();
     if (event.key === "Escape") { setEditingPageId(null); setPageNameDraft(entry.name); }
   }
-  function startFrameNameEdit(frame: PageFrame) { setFrameNameDraft(frame.name); setEditingFrameId(frame.id); }
+  function startFrameNameEdit(frame: PageFrame) { if (readOnly) return; setFrameNameDraft(frame.name); setEditingFrameId(frame.id); }
   function finishFrameNameEdit(frame: PageFrame) {
     const name = frameNameDraft.trim();
     if (name && name !== frame.name) updateFrame(frame.id, { name });
@@ -690,6 +707,8 @@ export function BoardView({ projectId, assets, onMessage, onSelectAsset }: { pro
 
   // ---- 视图平移与框选 ----
   function startPan(event: PointerEvent<HTMLDivElement>) {
+    // 游客只读：只允许空格/中键平移，不进入框选
+    if (readOnly && !(event.button === 1 || (event.button === 0 && spaceHeld))) return;
     if (event.button === 0 && !spaceHeld) {
       const rect = event.currentTarget.getBoundingClientRect();
       const next = {
@@ -779,6 +798,7 @@ export function BoardView({ projectId, assets, onMessage, onSelectAsset }: { pro
   }
 
   function startFrameMove(event: PointerEvent<HTMLElement>, frame: PageFrame) {
+    if (readOnly) return;
     if (isPanGesture(event)) return;
     event.stopPropagation();
     // Shift + 点击：增删 Frame 多选（不启动拖动；保留已选的素材元素，可继续 Shift 点素材构成混合选择）
@@ -851,6 +871,7 @@ export function BoardView({ projectId, assets, onMessage, onSelectAsset }: { pro
     return { width: MIN_FRAME_WIDTH, height: MIN_FRAME_HEIGHT };
   }
   function startFrameResize(event: PointerEvent<HTMLButtonElement>, frame: PageFrame, direction: ResizeDirection) {
+    if (readOnly) return;
     if (isPanGesture(event)) return;
     event.stopPropagation(); event.currentTarget.setPointerCapture(event.pointerId);
     selectFrames([frame.id], frame.id);
@@ -870,6 +891,7 @@ export function BoardView({ projectId, assets, onMessage, onSelectAsset }: { pro
   function endFrameResize(event: PointerEvent<HTMLButtonElement>) { if (frameResizeRef.current?.pointerId === event.pointerId) { frameResizeRef.current = null; setFrameDragId(null); } }
 
   function openFrameMenu(event: MouseEvent<HTMLDivElement>, frame: PageFrame) {
+    if (readOnly) return;
     event.preventDefault(); event.stopPropagation();
     selectFrames([frame.id], frame.id);
     setItemMenu(null);
@@ -877,6 +899,7 @@ export function BoardView({ projectId, assets, onMessage, onSelectAsset }: { pro
   }
 
   function openItemMenu(event: MouseEvent<HTMLElement>, item: CanvasItem) {
+    if (readOnly) return;
     event.preventDefault(); event.stopPropagation();
     clearFrameSelection();
     if (!selectedItemIds.includes(item.id)) selectItems([item.id], item.id);
@@ -928,6 +951,7 @@ export function BoardView({ projectId, assets, onMessage, onSelectAsset }: { pro
 
   /** 素材元素 + Frame 混合整体拖动：锁定全部选中 Frame、选中的素材元素及 Frame 内部元素 */
   function startMixedDrag(event: PointerEvent<HTMLElement>) {
+    if (readOnly) return;
     const frameIds = [...selectedFrameIds];
     const frameStarts = Object.fromEntries(frames.filter((entry) => frameIds.includes(entry.id)).map((entry) => [entry.id, { x: entry.x, y: entry.y }]));
     const internalIds = new Set(items.filter((item) => item.parentFrameId && frameIds.includes(item.parentFrameId)).map((item) => item.id));
@@ -941,6 +965,7 @@ export function BoardView({ projectId, assets, onMessage, onSelectAsset }: { pro
 
   // ---- 图片元素移动 / 缩放 ----
   function startInteraction(event: PointerEvent<HTMLElement>, item: CanvasItem, mode: "move" | "resize", direction: ResizeDirection = "se") {
+    if (readOnly) return;
     if (isPanGesture(event)) return;
     event.stopPropagation();
     if (event.button !== 0) return;
@@ -1070,6 +1095,7 @@ export function BoardView({ projectId, assets, onMessage, onSelectAsset }: { pro
 
   // ---- 标记元素：绘制 / 文本 ----
   function beginDraw(event: PointerEvent<HTMLDivElement>) {
+    if (readOnly) return;
     if (tool === "text") {
       // 正在编辑文本框时点击空白处：只结束本次编辑（由编辑器 blur 提交），不再新建文本框
       if (editingTextId) return;
@@ -1176,6 +1202,7 @@ export function BoardView({ projectId, assets, onMessage, onSelectAsset }: { pro
 
   // ---- 标记元素移动 / 缩放 ----
   function startAnnotationInteraction(event: PointerEvent<HTMLElement>, item: CanvasItem, mode: "move" | "resize", direction: ResizeDirection = "se") {
+    if (readOnly) return;
     if (isPanGesture(event)) return;
     event.stopPropagation();
     if (event.button !== 0) return;
@@ -1459,6 +1486,7 @@ export function BoardView({ projectId, assets, onMessage, onSelectAsset }: { pro
   }
 
   function handleAssetDragStart(event: DragEvent<HTMLButtonElement>, asset: Asset) {
+    if (readOnly) return;
     event.dataTransfer.setData("application/x-artdb-asset", asset.id);
     event.dataTransfer.effectAllowed = "copy";
   }
@@ -1467,6 +1495,7 @@ export function BoardView({ projectId, assets, onMessage, onSelectAsset }: { pro
     event.dataTransfer.effectAllowed = "copy";
   }
   function handleDrop(event: DragEvent<HTMLDivElement>) {
+    if (readOnly) return;
     event.preventDefault();
     const point = toCanvas(event.clientX, event.clientY);
     const assetId = event.dataTransfer.getData("application/x-artdb-asset");
@@ -1646,13 +1675,15 @@ export function BoardView({ projectId, assets, onMessage, onSelectAsset }: { pro
                 <span className="text-2xs text-muted">{entry.itemCount}</span>
               </button>
             ))}
-            <Button variant="ghost" size="xs" className="border border-dashed border-line-strong text-muted" icon={<Plus size={14} aria-hidden />} onClick={() => void createCanvas()}>
-              新建 Page
-            </Button>
+            {!readOnly ? (
+              <Button variant="ghost" size="xs" className="border border-dashed border-line-strong text-muted" icon={<Plus size={14} aria-hidden />} onClick={() => void createCanvas()}>
+                新建 Page
+              </Button>
+            ) : null}
           </div>
         </div>
         <div className="flex items-center gap-1">
-          {canvas ? (
+          {canvas && !readOnly ? (
             <>
               <span className="mr-1 flex items-center gap-1 text-2xs text-sage-deep">
                 <Check size={13} aria-hidden />
@@ -1673,7 +1704,8 @@ export function BoardView({ projectId, assets, onMessage, onSelectAsset }: { pro
           </IconButton>
         </div>
       </div>
-      <div className="flex min-h-[44px] flex-wrap items-center gap-2.5 border-b border-line px-[13px] py-1.5">
+      {!readOnly ? (
+        <div className="flex min-h-[44px] flex-wrap items-center gap-2.5 border-b border-line px-[13px] py-1.5">
         <div className="flex items-center gap-0.5 rounded-md border border-line bg-surface-muted p-0.5" role="toolbar" aria-label="标记工具">
           {TOOLS.slice(0, 1).map((entry) => {
             const Icon = entry.icon;
@@ -1757,13 +1789,15 @@ export function BoardView({ projectId, assets, onMessage, onSelectAsset }: { pro
           {markupHidden ? "标记已隐藏" : "隐藏标记"}
         </Button>
       </div>
+      ) : null}
       {loading ? (
         <div className="flex min-h-[570px] items-center justify-center gap-2 text-md text-muted">
           <Spinner size={20} />
           载入 Page…
         </div>
       ) : canvas ? (
-        <div className="board-body">
+        <div className={cn("board-body", readOnly && "read-only")}>
+          {!readOnly ? (
           <aside className="overflow-y-auto border-r border-line bg-surface-muted">
             <Button
               variant="ghost"
@@ -1838,7 +1872,8 @@ export function BoardView({ projectId, assets, onMessage, onSelectAsset }: { pro
               </div>
             ) : null}
           </aside>
-          <div ref={viewportRef} className={`board-viewport ${panning ? "panning" : ""} ${spaceHeld ? "space-held" : ""} ${frameMode ? "frame-mode" : ""} ${tool !== "pointer" || frameMode ? "tool-active" : ""}`} onPointerDown={(event) => { if (frameMode) { if (isPanGesture(event)) startPan(event); else beginFrameDraw(event); } else if (isPanGesture(event)) startPan(event); else if (tool !== "pointer") beginDraw(event); else startPan(event); }} onPointerMove={(event) => { movePan(event); moveDraw(event); moveFrameDraw(event); }} onPointerUp={(event) => { endPan(event); endDraw(event); endFrameDraw(event); }} onPointerCancel={(event) => { endPan(event); endDraw(event); endFrameDraw(event); }} onAuxClick={(event) => event.preventDefault()} onMouseDown={(event) => { if (event.button === 1) event.preventDefault(); }} onDragOver={(event) => { const types = Array.from(event.dataTransfer.types); if (types.includes("application/x-artdb-asset") || types.includes("application/x-artdb-tag")) { event.preventDefault(); event.dataTransfer.dropEffect = "copy"; setDragHint({ x: event.clientX, y: event.clientY, text: types.includes("application/x-artdb-tag") ? "松开批量插入同标签素材" : "松开放入画板" }); } }} onDragLeave={() => setDragHint(null)} onDrop={(event) => { setDragHint(null); handleDrop(event); }}>
+          ) : null}
+          <div ref={viewportRef} className={`board-viewport ${panning ? "panning" : ""} ${spaceHeld ? "space-held" : ""} ${frameMode ? "frame-mode" : ""} ${tool !== "pointer" || frameMode ? "tool-active" : ""}`} onPointerDown={(event) => { if (readOnly) { startPan(event); return; } if (frameMode) { if (isPanGesture(event)) startPan(event); else beginFrameDraw(event); } else if (isPanGesture(event)) startPan(event); else if (tool !== "pointer") beginDraw(event); else startPan(event); }} onPointerMove={(event) => { movePan(event); moveDraw(event); moveFrameDraw(event); }} onPointerUp={(event) => { endPan(event); endDraw(event); endFrameDraw(event); }} onPointerCancel={(event) => { endPan(event); endDraw(event); endFrameDraw(event); }} onAuxClick={(event) => event.preventDefault()} onMouseDown={(event) => { if (event.button === 1) event.preventDefault(); }} onDragOver={(event) => { if (readOnly) return; const types = Array.from(event.dataTransfer.types); if (types.includes("application/x-artdb-asset") || types.includes("application/x-artdb-tag")) { event.preventDefault(); event.dataTransfer.dropEffect = "copy"; setDragHint({ x: event.clientX, y: event.clientY, text: types.includes("application/x-artdb-tag") ? "松开批量插入同标签素材" : "松开放入画板" }); } }} onDragLeave={() => setDragHint(null)} onDrop={(event) => { setDragHint(null); if (!readOnly) handleDrop(event); }}>
             <div className="board-page" style={{ transform: `translate(${view.x}px, ${view.y}px) scale(${view.zoom})` }}>
               {frames.map((frame) => {
                 const frameSelected = selectedFrameIds.includes(frame.id);
@@ -1848,7 +1883,7 @@ export function BoardView({ projectId, assets, onMessage, onSelectAsset }: { pro
                     {frameDragId === frame.id ? <span>{Math.round(frame.width)} × {Math.round(frame.height)}</span> : null}
                   </div>
                   <div className="board-grid" />
-                  {frameSelected && !selectedItemIds.length && selectedFrameId === frame.id && selectedFrameIds.length === 1 ? RESIZE_DIRECTIONS.map((direction) => <button key={direction} className={`frame-selection-handle frame-handle-${direction}`} style={{ width: controlSize, height: controlSize }} type="button" aria-label={`从 ${direction} 方向调整 Frame 大小`} onPointerDown={(event) => startFrameResize(event, frame, direction)} onPointerMove={moveFrameResize} onPointerUp={endFrameResize} onPointerCancel={endFrameResize} />) : null}
+                  {frameSelected && !readOnly && !selectedItemIds.length && selectedFrameId === frame.id && selectedFrameIds.length === 1 ? RESIZE_DIRECTIONS.map((direction) => <button key={direction} className={`frame-selection-handle frame-handle-${direction}`} style={{ width: controlSize, height: controlSize }} type="button" aria-label={`从 ${direction} 方向调整 Frame 大小`} onPointerDown={(event) => startFrameResize(event, frame, direction)} onPointerMove={moveFrameResize} onPointerUp={endFrameResize} onPointerCancel={endFrameResize} />) : null}
                 </div>;
               })}
               {[...items].sort((a, b) => a.zIndex - b.zIndex).map((item) => {
@@ -1860,7 +1895,7 @@ export function BoardView({ projectId, assets, onMessage, onSelectAsset }: { pro
             </div>
             {marquee ? <div className="board-selection-marquee" style={{ left: Math.min(marquee.startX, marquee.currentX), top: Math.min(marquee.startY, marquee.currentY), width: Math.abs(marquee.currentX - marquee.startX), height: Math.abs(marquee.currentY - marquee.startY) }} /> : null}
             {dragHint ? <div className="pointer-events-none fixed z-[30000] rounded-sm bg-ink-popover px-2.5 py-1.5 text-sm text-white shadow-md" style={{ left: dragHint.x + 12, top: dragHint.y + 14 }}>{dragHint.text}</div> : null}
-            {textFormatPanelPos && selectedTextItem ? (() => {
+            {!readOnly && textFormatPanelPos && selectedTextItem ? (() => {
               const p = selectedTextItem.payload as TextPayload;
               const align = p.textAlign ?? "left";
               const valign = p.verticalAlign ?? "top";
@@ -1896,12 +1931,14 @@ export function BoardView({ projectId, assets, onMessage, onSelectAsset }: { pro
               );
             })() : null}
           </div>
-          {selectedItemIds.length && !selectedFrameIds.length ? <div className="absolute bottom-3.5 right-3.5 z-[10020] flex items-center gap-0.5 rounded-md bg-ink-popover p-1 text-white shadow-lg"><span className="px-2 text-2xs text-white/85">已选 {selectedItemIds.length} 个</span><IconButton size="sm" label="置于顶层" title="置于顶层" className="text-white/85 hover:bg-white/10 hover:text-white" onClick={() => void updateSelected({ zIndex: topZ + 1 })}><ArrowUpToLine size={15} aria-hidden /></IconButton><IconButton size="sm" label="置于底层" title="置于底层" className="text-white/85 hover:bg-white/10 hover:text-white" onClick={() => void updateSelected({ zIndex: Math.max(0, bottomZ - 1) })}><ArrowDownToLine size={15} aria-hidden /></IconButton><IconButton size="sm" label="删除" title="删除" className="text-accent-light hover:bg-white/10" onClick={() => void deleteSelected()}><Trash2 size={15} aria-hidden /></IconButton></div> : null}
-          {!selectedItemIds.length && selectedFrameIds.length ? <div className="absolute bottom-3.5 right-3.5 z-[10020] flex items-center gap-0.5 rounded-md bg-ink-popover p-1 text-white shadow-lg"><span className="px-2 text-2xs text-white/85">已选 {selectedFrameIds.length} 个 Frame</span><IconButton size="sm" label="删除选中的 Frame" title="删除选中的 Frame（Delete/Backspace）" className="text-accent-light hover:bg-white/10" onClick={() => deleteSelectedFrames()}><Trash2 size={15} aria-hidden /></IconButton></div> : null}
-          {selectedItemIds.length && selectedFrameIds.length ? <div className="absolute bottom-3.5 right-3.5 z-[10020] flex items-center gap-0.5 rounded-md bg-ink-popover p-1 text-white shadow-lg"><span className="px-2 text-2xs text-white/85">已选 {selectedItemIds.length} 个 · {selectedFrameIds.length} 个 Frame</span><IconButton size="sm" label="删除选中的素材与 Frame" title="删除选中的素材与 Frame（Delete/Backspace）" className="text-accent-light hover:bg-white/10" onClick={() => deleteMixedSelection()}><Trash2 size={15} aria-hidden /></IconButton></div> : null}
+          {!readOnly && selectedItemIds.length && !selectedFrameIds.length ? <div className="absolute bottom-3.5 right-3.5 z-[10020] flex items-center gap-0.5 rounded-md bg-ink-popover p-1 text-white shadow-lg"><span className="px-2 text-2xs text-white/85">已选 {selectedItemIds.length} 个</span><IconButton size="sm" label="置于顶层" title="置于顶层" className="text-white/85 hover:bg-white/10 hover:text-white" onClick={() => void updateSelected({ zIndex: topZ + 1 })}><ArrowUpToLine size={15} aria-hidden /></IconButton><IconButton size="sm" label="置于底层" title="置于底层" className="text-white/85 hover:bg-white/10 hover:text-white" onClick={() => void updateSelected({ zIndex: Math.max(0, bottomZ - 1) })}><ArrowDownToLine size={15} aria-hidden /></IconButton><IconButton size="sm" label="删除" title="删除" className="text-accent-light hover:bg-white/10" onClick={() => void deleteSelected()}><Trash2 size={15} aria-hidden /></IconButton></div> : null}
+          {!readOnly && !selectedItemIds.length && selectedFrameIds.length ? <div className="absolute bottom-3.5 right-3.5 z-[10020] flex items-center gap-0.5 rounded-md bg-ink-popover p-1 text-white shadow-lg"><span className="px-2 text-2xs text-white/85">已选 {selectedFrameIds.length} 个 Frame</span><IconButton size="sm" label="删除选中的 Frame" title="删除选中的 Frame（Delete/Backspace）" className="text-accent-light hover:bg-white/10" onClick={() => deleteSelectedFrames()}><Trash2 size={15} aria-hidden /></IconButton></div> : null}
+          {!readOnly && selectedItemIds.length && selectedFrameIds.length ? <div className="absolute bottom-3.5 right-3.5 z-[10020] flex items-center gap-0.5 rounded-md bg-ink-popover p-1 text-white shadow-lg"><span className="px-2 text-2xs text-white/85">已选 {selectedItemIds.length} 个 · {selectedFrameIds.length} 个 Frame</span><IconButton size="sm" label="删除选中的素材与 Frame" title="删除选中的素材与 Frame（Delete/Backspace）" className="text-accent-light hover:bg-white/10" onClick={() => deleteMixedSelection()}><Trash2 size={15} aria-hidden /></IconButton></div> : null}
           {frameMenu ? <div className="fixed z-[20000] min-w-[148px] rounded-sm border border-line-strong bg-white p-1 shadow-lg" role="menu" style={{ left: frameMenu.x, top: frameMenu.y }} onPointerDown={(event) => event.stopPropagation()}><MenuItem danger icon={<Trash2 size={14} aria-hidden />} onClick={() => requestFrameDeletion(frameMenu.frameId)}>删除 Frame</MenuItem></div> : null}
           {itemMenu ? <div className="fixed z-[20000] min-w-[148px] rounded-sm border border-line-strong bg-white p-1 shadow-lg" role="menu" style={{ left: itemMenu.x, top: itemMenu.y }} onPointerDown={(event) => event.stopPropagation()}><MenuItem danger icon={<Trash2 size={14} aria-hidden />} onClick={() => void deleteCanvasItems(selectedItemIds.includes(itemMenu.itemId) ? selectedItemIds : [itemMenu.itemId])}>删除</MenuItem></div> : null}
-          <div className="pointer-events-none absolute bottom-3 left-[calc(180px+50%)] z-[10010] -translate-x-1/2 rounded-sm border border-line bg-surface/90 px-2 py-1.5 text-2xs text-muted">V 选择 · T 文本 · R 矩形 · O 椭圆 · 隐藏标记 · 拖左侧素材到画板放置 · 拖标签批量插入 · 框选 · 空格 / 中键 + 拖动移动 Page · Ctrl+Z 撤销移动 · 双指平移 · 滚轮 / 捏合缩放</div>
+          {!readOnly ? (
+            <div className="pointer-events-none absolute bottom-3 left-[calc(180px+50%)] z-[10010] -translate-x-1/2 rounded-sm border border-line bg-surface/90 px-2 py-1.5 text-2xs text-muted">V 选择 · T 文本 · R 矩形 · O 椭圆 · 隐藏标记 · 拖左侧素材到画板放置 · 拖标签批量插入 · 框选 · 空格 / 中键 + 拖动移动 Page · Ctrl+Z 撤销移动 · 双指平移 · 滚轮 / 捏合缩放</div>
+          ) : null}
           <div className="absolute bottom-3.5 left-3.5 z-[10010] flex h-6 w-6 items-center justify-center rounded-full border border-line bg-surface/90 shadow-sm">
             <SyncStatusDot status={sync.status} pending={sync.pending} onRetry={sync.retry} />
           </div>
@@ -1929,6 +1966,8 @@ export function BoardView({ projectId, assets, onMessage, onSelectAsset }: { pro
             );
           })() : null}
         </div>
+      ) : readOnly ? (
+        <EmptyState compact className="min-h-[570px]" icon={<ImagePlus size={29} aria-hidden />} title="还没有画板" description="当前项目还没有创建自由画板。" />
       ) : <EmptyState compact className="min-h-[570px]" icon={<ImagePlus size={29} aria-hidden />} title="正在创建默认 Page" description="默认 Page 是一块空白无限画布，可从左侧把素材拖入。" />}
     </section>
   );

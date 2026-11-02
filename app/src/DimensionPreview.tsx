@@ -186,10 +186,11 @@ export function DimensionPreview({
   onMessage,
   syncStatus = "synced",
   onRetrySync,
+  readOnly = false,
 }: {
   dimensions: Dimension[];
   assets: Asset[];
-  onSelectAsset: (assetId: string) => void;
+  onSelectAsset: (assetId: string, navigation?: string[] | null) => void;
   onUpdateAssetDimensions: (assetId: string, values: Record<string, number>) => Promise<boolean>;
   onAddDimension: () => void;
   onEditDimension: (dimension: Dimension) => void;
@@ -198,6 +199,8 @@ export function DimensionPreview({
   onMessage?: (message: string) => void;
   syncStatus?: "synced" | "saving" | "offline";
   onRetrySync?: () => void;
+  /** 游客只读：可切换维度轴、缩放/平移与打开详情，但不能拖动改坐标或增删维度。 */
+  readOnly?: boolean;
 }) {
   const [zoom, setZoom] = useState(1);
   const gestureZoomRef = useRef(zoom);
@@ -452,6 +455,33 @@ export function DimensionPreview({
     }
     return { clusters, clusterOf };
   }, [assets, mode, selected, activeGridDivisions, sceneSize, scenePivot.x, scenePivot.y, scenePivot.z, isolatedOctants, overrides, draggingAssetId, draggingPlaneAssetId, rotateX, rotateZ]);
+  /**
+   * 详情页左右切换的顺序：
+   * - 1D：Page 内全部素材按该维度值升序（同值保持 Page 顺序），任何单张/堆内成员都能前后切换；
+   * - 2D/3D：只有处于堆中的素材可切换，顺序沿用堆内顺序（2D 按 y 行、行内按 x；3D 保持 Page 顺序）；
+   * - 未选维度或 2D/3D 的单张素材返回 null，详情页不显示左右箭头。
+   */
+  function previewNavigationFor(assetId: string): string[] | null {
+    if (!mode || !selected.length) return null;
+    if (mode === 1) {
+      const dimensionId = selected[0].id;
+      return [...assets]
+        .sort((left, right) => effectiveDimensionValue(left, dimensionId) - effectiveDimensionValue(right, dimensionId))
+        .map((asset) => asset.id);
+    }
+    const clusterKey = clusterOf.get(assetId);
+    const cluster = clusterKey ? clusters.find((candidate) => candidate.key === clusterKey) : null;
+    if (!cluster || cluster.members.length < 2) return null;
+    const members = mode === 2
+      ? orderStackGrid(
+        cluster.members,
+        planeDimensions(cluster.members.length).columns,
+        (member) => effectiveDimensionValue(member, selected[0].id),
+        (member) => effectiveDimensionValue(member, selected[1].id),
+      )
+      : cluster.members;
+    return members.map((member) => member.id);
+  }
   function octantNames(octant: Octant): string[] {
     // 切回 1D/2D 时可能还残留 3D 的选中象限，缺少第三个维度就退回空名，避免读取 undefined
     if (!selected[0] || !selected[1] || !selected[2]) return [];
@@ -1452,6 +1482,8 @@ export function DimensionPreview({
   }
 
   function startPlaneCardDrag(event: PointerEvent<HTMLButtonElement>, member: Asset) {
+    // 游客只读：卡片只响应点击（打开详情），不进入拖动
+    if (readOnly) return;
     // 平移优先：中键 / 空格+左键不进入卡片拖动，事件继续冒泡给场景开始平移
     if (event.button === 1 || (event.button === 0 && spaceHeldRef.current)) return;
     if (mode === 3 || event.button !== 0) {
@@ -1588,7 +1620,7 @@ export function DimensionPreview({
       // 单击打开详情：先撤掉 hover 前景层，避免详情打开后场景里残留一张放大图
       setAssetHover(null);
       dropHoverPreview();
-      onSelectAsset(active.assetId);
+      onSelectAsset(active.assetId, previewNavigationFor(active.assetId));
     }
   }
 
@@ -1635,7 +1667,7 @@ export function DimensionPreview({
     };
     dragValues.current = currentValues;
     clearFan();
-    setDraggingAssetId(asset.id);
+    if (!readOnly) setDraggingAssetId(asset.id);
   }
 
   function moveAsset(event: PointerEvent<HTMLElement>) {
@@ -1644,6 +1676,7 @@ export function DimensionPreview({
     if (!active || active.pointerId !== event.pointerId || !plane || !selected.length) return;
     event.preventDefault();
     event.stopPropagation();
+    if (readOnly) return; // 游客只读：按下不移动坐标，松手仍按单击打开详情
     const dx = event.clientX - active.startX;
     const dy = event.clientY - active.startY;
     if (Math.hypot(dx, dy) > 3) active.moved = true;
@@ -1677,7 +1710,7 @@ export function DimensionPreview({
         delete next[active.assetId];
         return next;
       });
-      onSelectAsset(active.assetId);
+      onSelectAsset(active.assetId, previewNavigationFor(active.assetId));
       return;
     }
     const changedValues = Object.fromEntries(
@@ -1735,26 +1768,30 @@ export function DimensionPreview({
                   <i className="not-italic text-faint">—</i>
                   <strong className="truncate text-right font-medium">{dimension.rightLabel}</strong>
                 </div>
-                <IconButton
-                  size="sm"
-                  label={`编辑${dimension.leftLabel}到${dimension.rightLabel}维度`}
-                  title="编辑维度名称"
-                  className="absolute right-[5px] top-[5px] opacity-0 transition-opacity group-hover:opacity-100 focus-visible:opacity-100"
-                  onClick={(event) => { event.stopPropagation(); if (!disabled) onEditDimension(dimension); }}
-                >
-                  <Pencil size={13} aria-hidden />
-                </IconButton>
+                {!readOnly ? (
+                  <IconButton
+                    size="sm"
+                    label={`编辑${dimension.leftLabel}到${dimension.rightLabel}维度`}
+                    title="编辑维度名称"
+                    className="absolute right-[5px] top-[5px] opacity-0 transition-opacity group-hover:opacity-100 focus-visible:opacity-100"
+                    onClick={(event) => { event.stopPropagation(); if (!disabled) onEditDimension(dimension); }}
+                  >
+                    <Pencil size={13} aria-hidden />
+                  </IconButton>
+                ) : null}
               </div>
             );
           })}
-          <Button
-            variant="secondary"
-            className="mt-1 w-full flex-none border-dashed"
-            icon={<Plus size={14} aria-hidden />}
-            onClick={onAddDimension}
-          >
-            添加维度
-          </Button>
+          {!readOnly ? (
+            <Button
+              variant="secondary"
+              className="mt-1 w-full flex-none border-dashed"
+              icon={<Plus size={14} aria-hidden />}
+              onClick={onAddDimension}
+            >
+              添加维度
+            </Button>
+          ) : null}
         </div>
       </aside>
       <div className="preview-workspace">
@@ -1904,6 +1941,10 @@ export function DimensionPreview({
                     (corner.x === 0 || corner.x === octant.x) &&
                     (corner.y === 0 || corner.y === octant.y) &&
                     (corner.z === 0 || corner.z === octant.z));
+                  // 2D 的角落 tag 贴到平面外侧：内边缘距平面 7px，和轴端点 tag 的端距一致，
+                  // 整组的内侧边因此与相邻轴端点 tag 对齐，不再以角落为中心压住象限内容；
+                  // 3D 的角落是空间的顶点，旋转后仍以该顶点为中心才不会被视角拉偏。
+                  const anchoredOutside = mode === 2;
                   return (
                     <span
                       className={`corner-label ${octantHidden ? "octant-hidden" : ""}`}
@@ -1912,8 +1953,11 @@ export function DimensionPreview({
                         left: corner.x === 1 ? "100%" : corner.x === -1 ? "0" : "50%",
                         top: corner.y === 1 ? "0" : corner.y === -1 ? "100%" : "50%",
                         "--corner-tz": `calc(var(--scene-size) / 2 * ${corner.z})`,
+                        // 3D 保留以顶点为中心的内缩偏移；2D 用外侧对齐变量覆盖它（见下面的 --corner-tx/ty）
                         "--corner-dx": corner.x === 0 ? "0px" : corner.x === 1 ? "-12px" : "12px",
                         "--corner-dy": corner.y === 0 ? "0px" : corner.y === 1 ? "12px" : "-12px",
+                        "--corner-tx": anchoredOutside ? (corner.x === 1 ? "7px" : "calc(-100% - 7px)") : undefined,
+                        "--corner-ty": anchoredOutside ? (corner.y === 1 ? "calc(-100% - 7px)" : "7px") : undefined,
                         "--billboard-rx": `${mode === 3 ? -sceneRotateX : 0}deg`,
                         "--billboard-rz": `${mode === 3 ? -sceneRotateZ : 0}deg`,
                       } as CSSProperties}
@@ -2167,7 +2211,7 @@ export function DimensionPreview({
                                 return;
                               }
                               clearFan();
-                              onSelectAsset(member.id);
+                              onSelectAsset(member.id, previewNavigationFor(member.id));
                             }}
                           >
                             {member.thumbnailUrl ? <img src={member.thumbnailUrl} alt="" draggable={false} /> : <i>{member.name.slice(0, 1)}</i>}
