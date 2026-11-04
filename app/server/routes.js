@@ -1239,6 +1239,8 @@ async function setupAdmin(request, { db }) {
   const user = createUser(db, { username, displayName, password, role: "admin" });
   // 存量数据整体挂到默认管理员名下，不做追溯
   backfillLegacyAssets(db, user.id, user.displayName);
+  // 初始化即自动登录，与普通登录一致记录最近登录时间
+  db.prepare("UPDATE users SET last_login_at = CURRENT_TIMESTAMP WHERE id = ?").run(user.id);
   const session = createSession(db, user.id, true);
   return Response.json({ user: toUserPayload({ ...user, active: true }) }, {
     status: 201,
@@ -1387,7 +1389,12 @@ function listUsers({ db }) {
       u.created_at AS createdAt, u.last_login_at AS lastLoginAt,
       (SELECT COUNT(*) FROM assets a WHERE a.created_by = u.id AND a.deleted_at IS NULL) AS assetCount
     FROM users u ORDER BY u.created_at, u.username
-  `).all().map(toUserPayload);
+  `).all().map((row) => ({
+    ...toUserPayload(row),
+    createdAt: row.createdAt,
+    lastLoginAt: row.lastLoginAt,
+    assetCount: row.assetCount,
+  }));
   return Response.json({ users });
 }
 

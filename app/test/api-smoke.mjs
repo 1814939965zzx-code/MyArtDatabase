@@ -668,6 +668,13 @@ assert.equal(usersList.users.length, 2, "用户列表应包含管理员与成员
 const member1 = usersList.users.find((u) => u.username === "member1");
 assert.equal(member1.role, "member");
 assert.equal(member1.active, true);
+const admin1 = usersList.users.find((u) => u.username === "admin");
+assert.ok(admin1.createdAt, "用户列表应返回创建时间");
+assert.equal(typeof admin1.assetCount, "number", "用户列表应返回素材数");
+assert.ok(admin1.assetCount > 0, "管理员名下应有素材");
+assert.ok(admin1.lastLoginAt, "首次初始化即自动登录，管理员应记录最近登录时间");
+assert.equal(member1.lastLoginAt, null, "新成员默认从未登录");
+assert.equal(member1.assetCount, 0, "新成员素材数为 0");
 
 // 成员登录后：可访问业务接口，但不可访问用户管理与 AI 配置
 const memberLogin = await post(`${base}/api/auth/login`, { username: "member1", password: "member123" });
@@ -675,6 +682,9 @@ assert.equal(memberLogin.status, 200);
 const memberCookie = sessionCookie.split(";")[0];
 // 恢复管理员会话（此时管理员密码仍为初始值 admin1234，改密发生在下方）
 await post(`${base}/api/auth/login`, { username: "admin", password: "admin1234" });
+// 成员登录后，用户列表的「最近登录」必须回填（登录记录与用户资料保持同步）
+const usersAfterMemberLogin = await json(await fetch(`${base}/api/users`));
+assert.ok(usersAfterMemberLogin.users.find((u) => u.username === "member1").lastLoginAt, "成员登录后用户列表应显示最近登录时间");
 const memberFetch = (url, init) => originalFetch(url, { ...init, headers: { ...(init?.headers || {}), cookie: memberCookie } });
 assert.equal((await memberFetch(`${base}/api/projects`)).status, 200, "成员应能访问业务接口");
 assert.equal((await memberFetch(`${base}/api/users`)).status, 403, "成员访问用户管理应 403");
@@ -760,6 +770,8 @@ assert.equal(memberUpload.status, 201, "成员应能上传素材");
 const memberAsset = (await memberUpload.json()).asset;
 const wsWithUploader = await json(await memberFetch2(`${base}/api/workspace?projectId=project-visual-direction`));
 assert.equal(wsWithUploader.assets.find((item) => item.id === memberAsset.id).createdByName, "member1", "素材应记录上传者显示名");
+const usersWithUpload = await json(await fetch(`${base}/api/users`));
+assert.equal(usersWithUpload.users.find((u) => u.username === "member1").assetCount, 1, "用户列表素材数应统计该成员未删除的素材");
 
 // 成员不能删除账号；管理员删除成员后素材保留
 assert.equal((await memberFetch2(`${base}/api/users?id=${member1.id}`, { method: "DELETE" })).status, 403, "成员不能删除账号");
