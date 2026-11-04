@@ -4,7 +4,7 @@
 
 ## 安装（zip 安装包方式，推荐）
 
-1. 拿到 `extension/release/artdb-extension-v0.1.0.zip`（或用 `extension/build.ps1` 重新打包）；
+1. 拿到 `extension/release/artdb-extension-v0.1.1.zip`（或用 `extension/build.ps1` 重新打包）；
 2. 解压到任意目录（如 `D:\artdb-extension`），确认该目录下有 `manifest.json`；
 3. 打开 Chrome 访问 `chrome://extensions/`，右上角开启「开发者模式」；
 4. 点「加载已解压的扩展程序」，选择**解压出的那个目录**（不是 zip）；
@@ -14,18 +14,21 @@
 
 ## 使用
 
-1. 在任意网页的**图片或视频**上**右键** → 点「保存到素材库」；
+1. 在任意网页的**图片、视频或它们所在的容器**上**右键** → 点「保存到素材库」；
 2. 若素材库已有相同文件（SHA-256 完全重复）→ 页面角落 toast「已存在，未保存」，直接跳过；
 3. 否则弹出确认面板：图片显示预览（视频显示占位与大小）、选项目（记住上次）、编辑名称/标签/来源/备注，图片可选「AI 打标」（视频隐藏）；
 4. 点「保存」→ 上传成功 toast「已保存到项目X」；视频上传后服务端自动转码为低码率 MP4（转码期间状态为"处理中"）。
+
+支持 Instagram：图片可直接右键（扩展会注入一条样式取消图片上方的透明覆盖层）；帖子/Reel 里的视频需要浏览器已登录 Instagram，扩展会调用 Instagram 媒体接口解析 mp4 直链后下载。该接口不是公开 API，Instagram 改版后可能失效，失败时会在页面内提示。
 
 ## 文件说明
 
 | 文件 | 职责 |
 | --- | --- |
-| `manifest.json` | MV3 声明：右键菜单（图片/视频）、activeTab/scripting、`<all_urls>` 主机权限 |
-| `background.js` | Service Worker：菜单注册与点击处理、图片/视频下载与魔数校验、SHA-256/查重、全部网络请求代理（Bearer 令牌） |
-| `content.js` | 内容脚本：确认面板与 toast（Shadow DOM 隔离样式；图片预览/视频占位）、blob: 素材代为获取、默认名称计算 |
+| `manifest.json` | MV3 声明：右键菜单、内容脚本（所有 http/https 页面常驻，Instagram 额外注入 CSS）、activeTab/scripting、`<all_urls>` 主机权限 |
+| `background.js` | Service Worker：菜单注册与点击处理、右键目标解析、图片/视频下载与魔数校验、SHA-256/查重、全部 artDatabase 请求代理（Bearer 令牌） |
+| `content.js` | 内容脚本：右键目标记录与穿透覆盖层解析（srcset 最高清、Instagram 视频直链）、确认面板与 toast（Shadow DOM 隔离样式）、blob: 素材代为获取、默认名称计算 |
+| `instagram.css` | Instagram 兼容样式：取消图片上方透明空 div 的 `inset`，让右键能命中图片本身 |
 | `options.html` / `options.js` | 设置页：服务器地址 + 令牌 + 测试连接 |
 
 ## 依赖的服务端能力
@@ -38,8 +41,9 @@
 
 ## 边界
 
-- 仅 `<img>` 与 `<video>` 元素可采集（右键菜单 `contexts: ["image", "video"]`）；CSS 背景图、canvas、内嵌 SVG 不支持；
+- 右键菜单在所有上下文可见（`contexts: ["all"]`），实际只采集右键位置解析到的 `<img>` / `<video>`；CSS 背景图、canvas、内嵌 SVG 不支持；
 - 图片：JPEG/PNG/WebP/GIF/SVG/TIFF/HEIC/HEIF，≤50MB（魔数判定，与服务端 IMAGE_TYPES 一致）；
 - 视频：mp4/webm/mov/mkv/avi/mpeg/3gp，≤200MB（魔数判定，与服务端 VIDEO_TYPES 一致）；上传后服务端异步转码；
 - `http(s):`、`data:`、`blob:` 素材均可采集；懒加载元素（`src` 为空）无法获取；
+- Instagram 图片依赖一条页面样式补丁；Instagram 视频依赖登录态和其内部媒体接口，接口变化时会失败并提示；
 - 视频不支持 AI 打标（与服务端一致）。

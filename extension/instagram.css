@@ -1,0 +1,13 @@
+/*
+ * Instagram 图片兼容补丁。
+ *
+ * Instagram 会在帖子图片上方盖一层空的 div（position:absolute; inset:0），
+ * 右键时命中的是这层覆盖层而不是 <img>，Chrome 的「图片」上下文菜单和扩展菜单
+ * 都不会出现，info.srcUrl 也为空。
+ *
+ * 取消这层空 div 的 inset 后，覆盖层收缩，图片本身重新可被右键命中。
+ * 选择器与 Eagle 扩展的 Instagram 兼容补丁一致。
+ */
+div[role="button"]:has(img) > div div div:empty {
+  inset: unset;
+}

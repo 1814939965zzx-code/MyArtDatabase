@@ -115,11 +115,23 @@ const IMAGE_DETECTORS = [
   },
 ];
 
-chrome.runtime.onInstalled.addListener(() => {
+// 所有上下文都显示菜单：Instagram 等站点会在图片上盖透明层，若只注册 image/video，
+// Chrome 会认为右键落点不是媒体元素，菜单项直接不出现。
+// 真正的目标由内容脚本在右键时记录，点击菜单后再解析。
+function registerContextMenu() {
   chrome.contextMenus.removeAll(() => {
-    chrome.contextMenus.create({ id: MENU_ID, title: "保存到素材库", contexts: ["image", "video"] });
+    chrome.contextMenus.create({
+      id: MENU_ID,
+      title: "保存到素材库",
+      contexts: ["all"],
+      documentUrlPatterns: ["http://*/*", "https://*/*"],
+    }, () => void chrome.runtime.lastError);
   });
-});
+}
+
+chrome.runtime.onInstalled.addListener(registerContextMenu);
+chrome.runtime.onStartup.addListener(registerContextMenu);
+registerContextMenu();
 
 // ---- 右键菜单点击 ----
 chrome.contextMenus.onClicked.addListener(async (info, tab) => {
@@ -128,12 +140,8 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
   if (tabId == null) return;
 
   try {
-    // 点击右键菜单会授予 activeTab，此处按需注入内容脚本
-    try {
-      await chrome.scripting.executeScript({ target: { tabId }, files: ["content.js"] });
-    } catch {
-      return; // 无法注入的页面（chrome:// 等）直接放弃
-    }
+    // 内容脚本已在所有 http/https 页面常驻；旧标签页或扩展刚重载时补注入
+    if (!await ensureContentScript(tabId)) return;
 
     const { serverUrl, token } = await chrome.storage.local.get(["serverUrl", "token"]);
     if (!serverUrl || !token) {
@@ -141,15 +149,14 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
       return;
     }
 
-    // 1. 下载并识别素材（图片/视频）；
-    //    视频上下文（MSE/blob 流式、懒加载无 src）直接抓不到时回退扫描页面直链
-    const capture = await captureMedia(info, tabId);
+    // 1. 解析右键目标并下载（图片/视频）；Instagram 视频通过其媒体接口取直链
+    const { capture, resolved, srcUrl } = await captureFromContext(info, tabId);
     if (!capture) {
       notify(tabId, {
         type: "toast",
-        message: info.mediaType === "video"
-          ? "无法获取素材：该页面使用流式播放（blob:/HLS），且未在页面中找到可下载的视频直链"
-          : "无法获取素材：该元素没有可用地址，可能是懒加载未完成",
+        message: resolved?.error || (info.mediaType === "video"
+          ? "无法获取视频：该页面使用流式播放（blob:/HLS），且未在页面中找到可下载的视频直链"
+          : "无法获取素材：这里没有可保存的图片或视频，或素材尚未加载完成"),
         kind: "error",
       });
       return;
@@ -207,9 +214,10 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
         kind,
         mime,
         sha256,
-        pageUrl: info.pageUrl || "",
-        srcUrl: info.srcUrl || "",
+        pageUrl: resolved?.pageUrl || info.pageUrl || tab?.url || "",
+        srcUrl,
         fileSize: bytes.byteLength,
+        ...(resolved?.suggestedName ? { suggestedName: resolved.suggestedName } : {}),
         ...(previewDataUrl ? { previewDataUrl } : {}),
       },
     });
@@ -220,28 +228,77 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
 
 // ---- 素材下载与校验 ----
 
+/** 确保内容脚本就绪（manifest 已常驻；扩展刚重载或旧标签页时补注入）。 */
+async function ensureContentScript(tabId) {
+  try {
+    await chrome.tabs.sendMessage(tabId, { type: "ping" }, { frameId: 0 });
+    return true;
+  } catch {
+    try {
+      await chrome.scripting.executeScript({ target: { tabId }, files: ["content.js"] });
+      return true;
+    } catch {
+      return false;
+    }
+  }
+}
+
 /**
- * 下载并识别素材：先抓 info.srcUrl；视频上下文抓取失败或无法识别时，
- * 回退请求内容脚本扫描页面直链（mp4 优先，其次 m3u8），逐个尝试下载识别。
+ * 解析右键目标并下载素材：
+ * 1) 内容脚本按右键时记录的目标/坐标穿透覆盖层解析（srcset 最高清、Instagram 视频接口）；
+ * 2) 解析失败时退回浏览器提供的 info.srcUrl；
+ * 3) 视频仍失败时回退扫描页面直链（mp4 优先，其次 m3u8）。
  */
+async function captureFromContext(info, tabId) {
+  let resolved = null;
+  try {
+    resolved = await chrome.tabs.sendMessage(tabId, { type: "resolve-media" }, { frameId: 0 });
+  } catch {
+    resolved = null;
+  }
+
+  if (resolved?.ok && resolved.srcUrl) {
+    try {
+      const capture = await fetchAndDetect(resolved.srcUrl, tabId);
+      if (capture && (!resolved.kind || capture.kind === resolved.kind)) {
+        return { capture, resolved, srcUrl: resolved.srcUrl };
+      }
+    } catch (error) {
+      resolved = { ok: false, error: "素材下载失败：" + (error?.message || "网络错误") };
+    }
+  }
+
+  if (info.srcUrl) {
+    const capture = await captureMedia(info, tabId);
+    if (capture) return { capture, resolved, srcUrl: info.srcUrl };
+  }
+
+  return { capture: null, resolved, srcUrl: "" };
+}
+
+async function fetchAndDetect(srcUrl, tabId) {
+  const { bytes, mime } = await fetchMedia(srcUrl, tabId);
+  const imageMime = detectImage(bytes, mime);
+  const videoMime = imageMime ? null : detectVideo(bytes, mime);
+  if (imageMime || videoMime) return { bytes, mime: imageMime || videoMime, kind: imageMime ? "image" : "video" };
+  return null;
+}
+
 async function captureMedia(info, tabId) {
   if (info.srcUrl) {
     try {
-      const { bytes, mime } = await fetchMedia(info.srcUrl, tabId);
-      const imageMime = detectImage(bytes, mime);
-      const videoMime = imageMime ? null : detectVideo(bytes, mime);
-      if (imageMime || videoMime) return { bytes, mime: imageMime || videoMime, kind: imageMime ? "image" : "video" };
+      const capture = await fetchAndDetect(info.srcUrl, tabId);
+      if (capture) return capture;
     } catch {
       // 落到页面直链回退
     }
   }
-  if (info.mediaType === "video") {
-    const reply = await chrome.tabs.sendMessage(tabId, { type: "find-video-urls" }).catch(() => null);
+  if (info.mediaType === "video" || !info.srcUrl) {
+    const reply = await chrome.tabs.sendMessage(tabId, { type: "find-video-urls" }, { frameId: 0 }).catch(() => null);
     for (const url of reply?.urls || []) {
       try {
-        const { bytes, mime } = await fetchMedia(url, tabId);
-        const videoMime = detectVideo(bytes, mime);
-        if (videoMime) return { bytes, mime: videoMime, kind: "video" };
+        const capture = await fetchAndDetect(url, tabId);
+        if (capture?.kind === "video") return capture;
       } catch {
         // 尝试下一个候选
       }

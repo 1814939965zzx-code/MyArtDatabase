@@ -17,6 +17,31 @@
   let panelEl = null;
   let panelState = null;
 
+  // 右键目标记录：contextMenus 点击时只能拿到 info.srcUrl，拿不到 DOM 元素。
+  // Instagram 等站点会把图片盖在透明 div 下面，导致 info.srcUrl 为空；这里在右键发生前
+  // 记住目标与坐标，菜单点击后再穿透覆盖层解析真正的 <img>/<video>。
+  let lastPointer = null;
+  const POINTER_TTL_MS = 30 * 1000;
+
+  function rememberPointer(event) {
+    if (!(event.target instanceof Element)) return;
+    lastPointer = {
+      target: event.target,
+      x: event.clientX,
+      y: event.clientY,
+      at: Date.now(),
+    };
+  }
+
+  // capture 阶段先记录，避免站点在冒泡阶段 stopPropagation 后我们收不到事件
+  window.addEventListener("contextmenu", rememberPointer, true);
+  window.addEventListener("mousedown", (event) => {
+    if (event.button === 2) rememberPointer(event);
+  }, true);
+  window.addEventListener("mouseup", (event) => {
+    if (event.button === 2) rememberPointer(event);
+  }, true);
+
   const STYLES = `
     :host { all: initial; }
     * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -120,6 +145,16 @@
 
   // ---- 消息入口 ----
   chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+    if (message.type === "ping") {
+      sendResponse({ ok: true });
+      return;
+    }
+    if (message.type === "resolve-media") {
+      resolveMedia()
+        .then((result) => sendResponse(result))
+        .catch((error) => sendResponse({ ok: false, error: error.message || "媒体解析失败" }));
+      return true;
+    }
     if (message.type === "fetch-image") {
       fetch(message.srcUrl)
         .then(async (res) => {
@@ -181,15 +216,328 @@
     return [...candidates].filter((url) => /^https?:/i.test(url)).sort((a, b) => score(b) - score(a));
   }
 
-  /** 向后台发消息并等待回复；带超时兜底，绝不永久挂起。 */
+  // ---- 右键目标解析：穿透覆盖层找到真正的图片/视频 ----
+  // 站点（尤其 Instagram）常用透明 div、pointer-events:none、绝对定位覆盖层挡住 <img>，
+  // 因此不能只看浏览器给的 info.srcUrl：先看右键命中的元素，再看坐标下的元素，最后兜底整页。
+
+  function isUsableMedia(element) {
+    if (!element || !element.isConnected) return false;
+    const rect = element.getBoundingClientRect();
+    if (rect.width < 8 || rect.height < 8) return false;
+    const style = getComputedStyle(element);
+    if (style.display === "none" || style.visibility === "hidden" || Number(style.opacity) === 0) return false;
+    if (element.tagName === "IMG") {
+      const hasSource = Boolean(element.currentSrc || element.getAttribute("src") || element.getAttribute("srcset"));
+      if (!hasSource) return false;
+      // 排除 1px 占位图 / 埋点像素
+      if (element.naturalWidth > 0 && element.naturalWidth <= 8 && element.naturalHeight <= 8) return false;
+    }
+    return true;
+  }
+
+  function mediaFromTarget(target, x, y) {
+    if (!(target instanceof Element)) return null;
+    const direct = target.closest("img, video, picture");
+    if (direct) {
+      if (direct.tagName === "PICTURE") return direct.querySelector("img");
+      return isUsableMedia(direct) ? direct : null;
+    }
+    // Instagram 的图片通常在 <a href="/p/..."> 里，命中容器时向下找一层
+    const link = target.closest("a");
+    if (link && typeof x === "number" && typeof y === "number") {
+      const media = link.querySelector("img, video");
+      if (media && isUsableMedia(media)) {
+        const rect = media.getBoundingClientRect();
+        if (x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom) return media;
+      }
+    }
+    return null;
+  }
+
+  function mediaWithinPoint(element, x, y) {
+    if (!(element instanceof Element) || element === document.documentElement || element === document.body) return null;
+    const matches = [];
+    for (const media of element.querySelectorAll("img, video")) {
+      if (!isUsableMedia(media)) continue;
+      const rect = media.getBoundingClientRect();
+      if (x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom) matches.push(media);
+    }
+    // 同一位置同时有封面图和 <video> 时优先视频，避免把视频封面当成图片保存
+    return matches.find((media) => media.tagName === "VIDEO") || matches[0] || null;
+  }
+
+  function mediaFromPoint(x, y) {
+    // 临时让所有元素可命中，覆盖 pointer-events:none 的图片/视频
+    const style = document.createElement("style");
+    style.textContent = "* { pointer-events: auto !important; }";
+    document.documentElement.appendChild(style);
+    let elements = [];
+    try {
+      elements = document.elementsFromPoint(x, y);
+    } finally {
+      style.remove();
+    }
+    for (const element of elements) {
+      if (element.tagName === "IMG" || element.tagName === "VIDEO") {
+        if (isUsableMedia(element)) return element;
+      }
+      const media = mediaWithinPoint(element, x, y);
+      if (media) return media;
+    }
+    return null;
+  }
+
+  function largestVisibleMedia() {
+    const all = [...document.querySelectorAll("img, video")].filter(isUsableMedia);
+    const inView = all.filter((element) => {
+      const rect = element.getBoundingClientRect();
+      return rect.bottom > 0 && rect.top < window.innerHeight && rect.right > 0 && rect.left < window.innerWidth;
+    });
+    const pool = inView.length ? inView : all;
+    return pool.sort((a, b) => area(b) - area(a))[0] || null;
+  }
+
+  function area(element) {
+    const rect = element.getBoundingClientRect();
+    return rect.width * rect.height;
+  }
+
+  function absoluteUrl(raw) {
+    if (!raw) return "";
+    try {
+      return new URL(raw, location.href).href;
+    } catch {
+      return raw;
+    }
+  }
+
+  function pickLargestSrcset(srcset) {
+    if (!srcset) return "";
+    let best = "";
+    let bestScore = -1;
+    for (const candidate of srcset.split(",")) {
+      const [url, descriptor = ""] = candidate.trim().split(/\s+/);
+      if (!url) continue;
+      const score = Number.parseFloat(descriptor) || 0;
+      if (score > bestScore) {
+        bestScore = score;
+        best = url;
+      }
+    }
+    return best;
+  }
+
+  function pickImageUrl(image) {
+    // srcset 里通常有比当前显示更大的版本，优先取最大
+    const best = pickLargestSrcset(image.getAttribute("srcset"));
+    return absoluteUrl(best || image.currentSrc || image.getAttribute("src") || "");
+  }
+
+  function pickVideoDirectUrl(video) {
+    const candidates = [video.currentSrc, video.src];
+    for (const source of video.querySelectorAll("source")) candidates.push(source.src);
+    const isVideoUrl = (url) => /^https?:/i.test(url)
+      && (/\.(mp4|webm|mov|m4v)([?#]|$)/i.test(url) || /(?:fbcdn|cdninstagram)\./i.test(url));
+    return candidates.map(absoluteUrl).find(isVideoUrl) || "";
+  }
+
+  function findMetaVideoUrl() {
+    const selectors = [
+      'meta[property="og:video"]',
+      'meta[property="og:video:secure_url"]',
+      'meta[property="twitter:player:stream"]',
+    ];
+    for (const selector of selectors) {
+      const content = document.querySelector(selector)?.getAttribute("content");
+      if (content && /^https?:/i.test(content)) return content;
+    }
+    return "";
+  }
+
+  function isInstagram() {
+    return location.hostname === "instagram.com" || location.hostname.endsWith(".instagram.com");
+  }
+
+  const IG_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+  let cachedInstagramAppId = "";
+
+  function parseInstagramShortcode(href) {
+    return href.match(/\/(?:p|reel|reels)\/([^/?#]+)/)?.[1] || "";
+  }
+
+  function instagramShortcode(element) {
+    const fromPath = parseInstagramShortcode(location.pathname);
+    if (fromPath) return fromPath;
+    const container = element?.closest('div[role="dialog"], article');
+    const articleLink = container?.querySelector('a[href*="/p/"], a[href*="/reel/"], a[href*="/reels/"]');
+    return parseInstagramShortcode(articleLink?.getAttribute("href") || "")
+      || parseInstagramShortcode(document.querySelector('a[href*="/p/"], a[href*="/reel/"], a[href*="/reels/"]')?.getAttribute("href") || "");
+  }
+
+  function instagramAppId() {
+    if (cachedInstagramAppId) return cachedInstagramAppId;
+    cachedInstagramAppId = document.documentElement.innerHTML.match(/"appId":"(\d+)"/)?.[1] || "";
+    return cachedInstagramAppId;
+  }
+
+  /** Instagram 短链（base64url 变体）转内部 media id。 */
+  function instagramMediaId(shortcode) {
+    let id = 0n;
+    for (const character of shortcode) {
+      const value = IG_ALPHABET.indexOf(character);
+      if (value < 0) throw new Error("Instagram 帖子 ID 解析失败");
+      id = id * 64n + BigInt(value);
+    }
+    return id.toString();
+  }
+
+  function instagramCarouselIndex(video, length) {
+    const fromUrl = Number(new URLSearchParams(location.search).get("img_index"));
+    if (Number.isInteger(fromUrl) && fromUrl >= 1 && fromUrl <= length) return fromUrl - 1;
+    const slide = video.closest("li");
+    if (slide?.parentElement) {
+      const slides = [...slide.parentElement.children].filter((child) => child.tagName === "LI");
+      const index = slides.indexOf(slide);
+      if (index >= 0 && index < length) return index;
+    }
+    return 0;
+  }
+
+  /**
+   * Instagram 的视频是 MSE/blob 流，DOM 里没有可直接下载的 mp4。
+   * 与 Eagle 扩展相同：用帖子短链换 media id，再带登录 cookie 调 Instagram
+   * 自己的媒体接口取 video_versions（轮播则按 img_index / 当前 slide 取）。
+   */
+  async function resolveInstagramVideo(video) {
+    const shortcode = instagramShortcode(video);
+    if (!shortcode) throw new Error("无法识别 Instagram 帖子");
+    const appId = instagramAppId();
+    if (!appId) throw new Error("无法读取 Instagram appId，请刷新页面后重试");
+    const mediaId = instagramMediaId(shortcode);
+    let response;
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 10000);
+    try {
+      response = await fetch(`https://i.instagram.com/api/v1/media/${mediaId}/info/`, {
+        credentials: "include",
+        headers: { "x-ig-app-id": appId },
+        signal: controller.signal,
+      });
+    } catch {
+      throw new Error("Instagram 视频接口请求失败，请确认已登录 Instagram 后重试");
+    } finally {
+      clearTimeout(timer);
+    }
+    if (!response.ok) {
+      if (response.status === 401 || response.status === 403) {
+        throw new Error("Instagram 登录状态无效，请重新登录后再试");
+      }
+      throw new Error(`Instagram 视频接口返回 HTTP ${response.status}`);
+    }
+    let data;
+    try {
+      data = await response.json();
+    } catch {
+      throw new Error("Instagram 视频接口返回了无法解析的内容");
+    }
+    const item = Array.isArray(data?.items) ? data.items[0] : null;
+    if (!item) throw new Error("Instagram 未返回该帖子的媒体信息");
+    const versions = (Array.isArray(item.video_versions) ? item.video_versions : [])
+      .filter((version) => version && typeof version.url === "string" && version.url);
+    if (versions.length) {
+      // 同一帖子可能返回多个清晰度/编码版本，取分辨率最高、其次码率最高
+      const best = versions.slice().sort((a, b) => {
+        const areaA = (Number(a.width) || 0) * (Number(a.height) || 0);
+        const areaB = (Number(b.width) || 0) * (Number(b.height) || 0);
+        return areaB - areaA || (Number(b.bandwidth) || 0) - (Number(a.bandwidth) || 0);
+      })[0];
+      return best.url;
+    }
+    const carousel = Array.isArray(item.carousel_media) ? item.carousel_media : [];
+    if (carousel.length) {
+      const index = instagramCarouselIndex(video, carousel.length);
+      const ordered = [carousel[index], ...carousel.filter((_, position) => position !== index)];
+      for (const media of ordered) {
+        const candidates = (Array.isArray(media?.video_versions) ? media.video_versions : [])
+          .filter((version) => version && typeof version.url === "string" && version.url)
+          .sort((a, b) => (Number(b.width) || 0) * (Number(b.height) || 0) - (Number(a.width) || 0) * (Number(a.height) || 0));
+        if (candidates[0]?.url) return candidates[0].url;
+      }
+    }
+    throw new Error("该 Instagram 帖子没有可下载的视频直链");
+  }
+
+  async function resolveMedia() {
+    const recent = lastPointer && Date.now() - lastPointer.at <= POINTER_TTL_MS ? lastPointer : null;
+    let element = recent ? mediaFromTarget(recent.target, recent.x, recent.y) : null;
+    if (!element && recent) element = mediaFromPoint(recent.x, recent.y);
+    // 只有在拿不到右键上下文时才兜底整页（例如内容脚本是点击菜单后才补注入的旧标签页）；
+    // 正常右键点在空白处时不应随便保存页面里最大的图片。
+    if (!element && !recent) element = largestVisibleMedia();
+    if (!element) return { ok: false, error: "这里没有可保存的图片或视频" };
+
+    // Instagram Reel 的可见封面可能是 <img>，下面才是 <video>；优先视频
+    if (element.tagName === "IMG" && isInstagram() && recent) {
+      const pointed = mediaFromPoint(recent.x, recent.y);
+      if (pointed?.tagName === "VIDEO") element = pointed;
+    }
+
+    if (element.tagName === "IMG") {
+      const srcUrl = pickImageUrl(element);
+      if (!srcUrl) return { ok: false, error: "没有找到图片地址" };
+      return {
+        ok: true,
+        kind: "image",
+        srcUrl,
+        pageUrl: location.href,
+        suggestedName: (element.alt || "").trim().slice(0, 120),
+      };
+    }
+
+    if (element.tagName === "VIDEO") {
+      const direct = pickVideoDirectUrl(element);
+      if (direct) return { ok: true, kind: "video", srcUrl: direct, pageUrl: location.href };
+
+      if (isInstagram()) {
+        try {
+          const url = await resolveInstagramVideo(element);
+          if (url) {
+            const shortcode = instagramShortcode(element);
+            return {
+              ok: true,
+              kind: "video",
+              srcUrl: url,
+              pageUrl: location.href,
+              suggestedName: shortcode ? `instagram-${shortcode}` : "",
+            };
+          }
+        } catch (error) {
+          // 接口失败时仍尝试 og:video 兜底
+          const fallback = findMetaVideoUrl();
+          if (fallback) return { ok: true, kind: "video", srcUrl: fallback, pageUrl: location.href };
+          throw error;
+        }
+      }
+
+      const meta = findMetaVideoUrl();
+      if (meta) return { ok: true, kind: "video", srcUrl: meta, pageUrl: location.href };
+      return { ok: false, error: "该视频使用流式播放，没有可下载的直链" };
+    }
+
+    return { ok: false, error: "没有找到可保存的图片或视频" };
+  }
+
+  /** 向后台发消息并等待回复；带超时兜底，绝不永久挂起。timeoutMs <= 0 表示不超时。 */
   function send(message, timeoutMs = 12000) {
     return new Promise((resolve) => {
       let settled = false;
-      const timer = setTimeout(() => done({ ok: false, error: "后台无响应（超时），请重试" }), timeoutMs);
+      const timer = timeoutMs > 0
+        ? setTimeout(() => done({ ok: false, error: "后台无响应（超时），请重试" }), timeoutMs)
+        : null;
       function done(reply) {
         if (settled) return;
         settled = true;
-        clearTimeout(timer);
+        if (timer) clearTimeout(timer);
         resolve(reply);
       }
       try {
@@ -318,7 +666,7 @@
 
     // 默认名称与来源
     const imgEl = findImgBySrc(payload.srcUrl);
-    overlay.querySelector(".name").value = defaultName(payload.srcUrl, imgEl);
+    overlay.querySelector(".name").value = (payload.suggestedName || "").trim() || defaultName(payload.srcUrl, imgEl);
     overlay.querySelector(".source").value = payload.pageUrl || "";
 
     // 项目列表 + 标签字典
@@ -428,7 +776,7 @@
     btn.disabled = true;
     setStatus(overlay, "AI 打标中…");
     try {
-      const reply = await send({ type: "ai-tags" });
+      const reply = await send({ type: "ai-tags" }, 60 * 1000);
       if (!reply.ok) {
         setStatus(overlay, reply.error || "AI 打标失败", true);
         return;
@@ -474,7 +822,8 @@
 
     const saveBtn = overlay.querySelector(".save");
     saveBtn.disabled = true;
-    setStatus(overlay, "上传中…");
+    setStatus(overlay, panelState.kind === "video" ? "上传中…（视频较大时可能需要一会儿）" : "上传中…");
+    // 视频上传 + 服务端落盘可能超过 12 秒，不能用消息默认超时误判为失败
     const reply = await send({
       type: "upload",
       projectId,
@@ -482,7 +831,7 @@
       tags,
       sourceUrl,
       notes,
-    });
+    }, panelState.kind === "video" ? 5 * 60 * 1000 : 60 * 1000);
     saveBtn.disabled = false;
 
     if (reply.ok) {

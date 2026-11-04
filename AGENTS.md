@@ -27,7 +27,7 @@
 - 运行时：单个原生 Node.js 进程，同时提供 React 页面、`/api/*` 接口、SQLite 数据库和本地图片/视频存储。
 - 账号：两级角色（管理员/成员），另有无需账号的游客只读浏览；除健康检查与登录相关接口外，全部 `/api/*` 需要登录（HttpOnly Cookie Session、插件令牌 Bearer 或游客 cookie）；游客会话只允许 GET，写请求一律 403；首次启动在界面引导创建管理员。
 - 前端：React 19、TypeScript、Vite、Tailwind CSS v4。
-- 浏览器采集：`extension/` 目录是独立的 Chrome 扩展（Manifest V3、原生 JS 零构建、unpacked 加载），右键保存网页图片/视频到素材库，经「插件令牌」（顶部用户菜单 → 插件令牌面板生成）认证。
+- 浏览器采集：`extension/` 目录是独立的 Chrome 扩展（Manifest V3、原生 JS 零构建、unpacked 加载），右键保存网页图片/视频到素材库（含 Instagram 覆盖层穿透与视频直链解析），经「插件令牌」（顶部用户菜单 → 插件令牌面板生成）认证。
 - 后端：`node:http`、Node 内置 `node:sqlite`、`sharp`、`ffmpeg-static`（视频转码与抽帧）。
 - 环境要求：Node.js `>=23.4.0`，建议 Node.js 24。
 - 默认开发地址：`http://localhost:3000`。
@@ -60,9 +60,10 @@
 | `app/server/transcode.js` | 视频转码队列（上传后异步压码率、抽帧封面、状态推进） |
 | `app/src/TagManager.tsx` | 标签管理面板（全局：重命名/合并/删除/清理/AI 配置；项目：该项目标签，重命名/删除） |
 | `app/test/api-smoke.mjs` | API 全链路冒烟测试（含账号系统用例） |
-| `extension/manifest.json` | Chrome 扩展 MV3 声明（右键菜单、activeTab/scripting、`<all_urls>` 主机权限） |
-| `extension/background.js` | 扩展 Service Worker（右键菜单[图片/视频]、素材下载与魔数校验/查重、采集会话与全部网络请求代理、Bearer 令牌） |
-| `extension/content.js` | 扩展内容脚本（确认面板[图片预览/视频占位]与 toast，Shadow DOM 隔离样式；blob: 素材代为获取） |
+| `extension/manifest.json` | Chrome 扩展 MV3 声明（全上下文右键菜单、全站常驻内容脚本、Instagram 兼容 CSS、activeTab/scripting、`<all_urls>` 主机权限） |
+| `extension/background.js` | 扩展 Service Worker（右键菜单、右键目标解析、素材下载与魔数校验/查重、对 artDatabase 的请求代理与 Bearer 令牌） |
+| `extension/content.js` | 扩展内容脚本（右键目标记录与覆盖层穿透、srcset 最高清、Instagram 视频直链解析、确认面板[图片预览/视频占位]与 toast，Shadow DOM 隔离样式；blob: 素材代为获取） |
+| `extension/instagram.css` | Instagram 图片右键兼容样式（取消透明覆盖层的 `inset`，让图片可被命中） |
 | `extension/options.html` / `extension/options.js` | 扩展设置页（服务器地址 + 插件令牌 + 测试连接） |
 | `scripts/deploy.sh` | 服务器部署与版本校验 |
 | `scripts/install-deps.mjs` | 首次安装/部署共享依赖安装器：临时目录安装、ffmpeg 缓存、验证后替换 |
