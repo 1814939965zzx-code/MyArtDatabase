@@ -45,13 +45,12 @@ export function AssetCardSpecimen() {
   return (
     <div className="flex flex-col gap-5">
       <div className="grid gap-4 md:grid-cols-3">
-        <AssetCard asset={demoAsset} index={0} roundedThumb showProjectCount />
+        <AssetCard asset={demoAsset} roundedThumb showProjectCount />
         <AssetCard
           asset={{ ...demoAsset, id: "asset-2", name: "转码中的视频", mimeType: "video/mp4", transcodeStatus: "processing", transcodeProgress: 64, projects: [] }}
-          index={1}
           roundedThumb
         />
-        <AssetCard asset={{ ...demoAsset, id: "asset-3", name: "无缩略图素材", thumbnailUrl: null, tags: [] }} index={2} roundedThumb />
+        <AssetCard asset={{ ...demoAsset, id: "asset-3", name: "无缩略图素材", thumbnailUrl: null, tags: [] }} roundedThumb />
       </div>
       <div className="rounded-lg border border-line bg-surface p-3">
         <div className="asset-list">

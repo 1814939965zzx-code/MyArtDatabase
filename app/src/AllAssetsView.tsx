@@ -3,6 +3,8 @@
 import {
   AlertTriangle,
   Check,
+  ChevronLeft,
+  ChevronRight,
   FolderPlus,
   ImageIcon,
   Images,
@@ -88,6 +90,8 @@ export function AllAssetsView({
   readOnly?: boolean;
 }) {
   const [selectedAssetId, setSelectedAssetId] = useState<string | null>(null);
+  // 全部素材库详情里左右切换的顺序：打开时按当前筛选结果快照，切换前先保存当前素材
+  const [detailNav, setDetailNav] = useState<string[] | null>(null);
   const [assignAssetId, setAssignAssetId] = useState<string | null>(null);
   const [selectedProjectIds, setSelectedProjectIds] = useState<string[]>([]);
   const [selectedTags, setSelectedTags] = useState<string[]>([]);
@@ -138,6 +142,7 @@ export function AllAssetsView({
   }, [assets, search, selectedTags]);
 
   const selectedAsset = assets.find((asset) => asset.id === selectedAssetId) ?? null;
+  const detailNavIndex = detailNav && selectedAssetId ? detailNav.indexOf(selectedAssetId) : -1;
   const detailImage = useProgressiveImage(selectedAsset?.thumbnailUrl ?? null, selectedAsset?.originalUrl ?? null);
   const assignAsset = assets.find((asset) => asset.id === assignAssetId) ?? null;
   const assignedIds = new Set(assignAsset?.projects.map((project) => project.id) ?? []);
@@ -161,7 +166,26 @@ export function AllAssetsView({
 
   async function closeAssetDetail() {
     const saved = await metadataEditorRef.current?.save();
-    if (saved !== false) setSelectedAssetId(null);
+    if (saved !== false) {
+      setSelectedAssetId(null);
+      setDetailNav(null);
+    }
+  }
+
+  /** 打开详情：记录当前筛选结果顺序，供左右箭头切换素材。 */
+  function openAssetDetail(assetId: string) {
+    setDetailNav(filteredAssets.map((asset) => asset.id));
+    setSelectedAssetId(assetId);
+  }
+
+  /** 详情左右箭头：先保存当前素材的未提交修改，再切换到相邻素材。 */
+  async function switchAsset(offset: -1 | 1) {
+    if (!detailNav || detailNavIndex < 0) return;
+    const nextId = detailNav[detailNavIndex + offset];
+    if (!nextId) return;
+    if (await metadataEditorRef.current?.save() === false) return;
+    setError("");
+    setSelectedAssetId(nextId);
   }
 
   /** 转码失败后重新转码（原文件仍在，服务端置回 processing 并入队）。 */
@@ -211,6 +235,7 @@ export function AllAssetsView({
     try {
       await request(`/api/assets?id=${encodeURIComponent(asset.id)}`, { method: "DELETE" });
       setSelectedAssetId(null);
+      setDetailNav(null);
       setAssignAssetId(null);
       await onRefresh();
       onAssetTrashed?.({ id: asset.id, name: asset.name });
@@ -298,12 +323,11 @@ export function AllAssetsView({
             <AssetCard
               key={asset.id}
               asset={asset}
-              index={index}
               variant={view}
               roundedThumb
               thumbnailLoading={index > 7 ? "lazy" : "eager"}
               showProjectCount
-              onOpen={() => setSelectedAssetId(asset.id)}
+              onOpen={() => openAssetDetail(asset.id)}
             />
           ))}
         </div>
@@ -336,10 +360,36 @@ export function AllAssetsView({
               }
               return detailImage ? <span className="drawer-image-frame"><img key={detailImage} className="drawer-image" src={detailImage} alt={selectedAsset.name} onClick={(event) => event.stopPropagation()} /></span> : <span className="drawer-image-fallback" onClick={(event) => event.stopPropagation()}><ImageIcon size={40} /></span>;
             })()}
+            {detailNavIndex >= 0 && detailNav && detailNav.length > 1 ? (
+              <>
+                <button
+                  type="button"
+                  className="drawer-nav drawer-nav-prev"
+                  aria-label="上一张"
+                  title="上一张"
+                  disabled={detailNavIndex <= 0}
+                  onClick={(event) => { event.stopPropagation(); void switchAsset(-1); }}
+                  onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") event.stopPropagation(); }}
+                >
+                  <ChevronLeft size={22} aria-hidden />
+                </button>
+                <button
+                  type="button"
+                  className="drawer-nav drawer-nav-next"
+                  aria-label="下一张"
+                  title="下一张"
+                  disabled={detailNavIndex >= detailNav.length - 1}
+                  onClick={(event) => { event.stopPropagation(); void switchAsset(1); }}
+                  onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") event.stopPropagation(); }}
+                >
+                  <ChevronRight size={22} aria-hidden />
+                </button>
+              </>
+            ) : null}
           </div>
           <div className="drawer-panel">
             <div className="drawer-heading"><div><p className="mb-1 text-2xs font-bold uppercase tracking-[.15em] text-accent">GLOBAL ASSET</p><h2>素材详情</h2></div><IconButton label="关闭素材详情" onClick={() => void closeAssetDetail()}><X size={18} aria-hidden /></IconButton></div>
-            <div className="drawer-scroll">
+            <div key={selectedAsset.id} className="drawer-scroll">
               <div className="drawer-file"><small>文件名</small><span>{selectedAsset.fileName}</span></div>
               <div className="drawer-facts">
                 <span>{isVideoMime(selectedAsset.mimeType)

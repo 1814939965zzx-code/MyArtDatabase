@@ -31,11 +31,14 @@ export function ProjectCard({
           onEnter();
         }
       }}
-      className="group relative min-w-0 cursor-pointer overflow-hidden rounded-[10px] border border-line bg-surface transition-[transform,box-shadow,border-color] duration-150 hover:-translate-y-0.5 hover:border-line-strong hover:shadow-md focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+      className="group relative min-w-0 cursor-pointer overflow-hidden rounded-[10px] border border-line bg-surface transition-[box-shadow,border-color] duration-150 hover:border-line-strong hover:shadow-md focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
     >
       <div className="relative overflow-hidden bg-surface-sunken pt-[75%]">
         {thumbs.length ? (
-          <div className={cn("absolute inset-0 grid gap-0.5", single ? "grid-cols-1 grid-rows-1" : "grid-cols-2 grid-rows-2")}>
+          <div className={cn(
+            "absolute inset-0 grid gap-0.5 transition-transform duration-300 ease-out group-hover:scale-[1.025]",
+            single ? "grid-cols-1 grid-rows-1" : "grid-cols-2 grid-rows-2",
+          )}>
             {thumbs.map((url) => (
               <img
                 key={url}

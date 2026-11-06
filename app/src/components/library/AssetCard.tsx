@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import { ImageIcon, Star } from "lucide-react";
+import { ImageIcon, Star, Video } from "lucide-react";
 import { formatDuration, isVideoMime, transcodePercent } from "../../assetMedia";
 import { cn } from "../../ui";
 import { TagRow } from "./TagRow";
@@ -18,7 +18,6 @@ export type AssetCardAsset = {
 
 export type AssetCardProps = {
   asset: AssetCardAsset;
-  index?: number;
   variant?: "grid" | "list";
   selected?: boolean;
   selectable?: boolean;
@@ -37,10 +36,13 @@ export type AssetCardProps = {
   className?: string;
 };
 
-/** 素材卡：网格/列表共用，支持转码进度、项目引用数、选择态与底部动作。 */
+/**
+ * 素材卡：网格/列表共用，支持转码进度、项目引用数、选择态与底部动作。
+ * hover 保留投影 + 图片轻微放大；只对 transform 做过渡，不做卡片位移，
+ * 也不再给图片加 filter/对比度过渡（filter 与 transform 同时动画会产生重影/像换了一张缩略图）。
+ */
 export function AssetCard({
   asset,
-  index,
   variant = "grid",
   selected = false,
   selectable = false,
@@ -75,7 +77,7 @@ export function AssetCard({
             src={asset.thumbnailUrl}
             alt=""
             loading={thumbnailLoading}
-            className="size-full object-cover saturate-[.8] transition duration-300 group-hover:scale-[1.025] group-hover:saturate-100"
+            className="size-full object-cover transition-transform duration-300 ease-out group-hover:scale-[1.025]"
           />
         ) : (
           <span className="grid size-full place-items-center text-faint">
@@ -83,15 +85,19 @@ export function AssetCard({
           </span>
         )}
 
+        {/* 素材类型标签（图片/视频）固定在左上角，替代没有语义的数字编号 */}
+        <span
+          role="img"
+          className="absolute left-2 top-2 z-10 grid size-6 place-items-center rounded-full bg-ink-panel/75 text-white"
+          aria-label={video ? "视频素材" : "图片素材"}
+          title={video ? "视频" : "图片"}
+        >
+          {video ? <Video size={12} aria-hidden /> : <ImageIcon size={12} aria-hidden />}
+        </span>
+
         {favorite ? (
           <span className="absolute right-2 top-2 z-10 grid size-6 place-items-center rounded-full bg-ink-panel/75 text-white" aria-label="已收藏" title="已收藏">
             <Star size={12} fill="currentColor" aria-hidden />
-          </span>
-        ) : null}
-
-        {typeof index === "number" ? (
-          <span className="absolute left-2 top-2 bg-ink-panel/75 px-1.5 py-1 text-2xs tracking-[.08em] text-white">
-            {String(index + 1).padStart(2, "0")}
           </span>
         ) : null}
 
@@ -103,7 +109,7 @@ export function AssetCard({
             aria-label={`选择 ${asset.name}`}
             onChange={(event) => onCheckedChange?.(event.target.checked)}
             onClick={(event) => event.stopPropagation()}
-            className="absolute left-2 top-2 z-10 size-4 cursor-pointer accent-success disabled:cursor-not-allowed"
+            className="absolute right-2 top-2 z-10 size-4 cursor-pointer accent-success disabled:cursor-not-allowed"
           />
         ) : null}
 
@@ -135,14 +141,34 @@ export function AssetCard({
   );
 
   const rootClass = cn(
-    "asset-card group relative w-full overflow-hidden border border-line bg-surface text-left transition-[transform,box-shadow,border-color] duration-150",
+    "asset-card group relative w-full overflow-hidden border border-line bg-surface text-left transition-shadow duration-150",
     "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent",
-    onOpen && "cursor-pointer hover:-translate-y-0.5 hover:shadow-md",
+    onOpen && "cursor-pointer hover:shadow-md",
     selected && "border-sage shadow-[0_0_0_1px_var(--color-sage)]",
     className,
   );
 
   if (onOpen) {
+    // 选择态卡片内部会放 checkbox（交互元素不能嵌在 button 里），改用 role=button 容器。
+    if (selectable) {
+      return (
+        <div
+          role="button"
+          tabIndex={0}
+          onClick={onOpen}
+          onKeyDown={(event) => {
+            if (event.target !== event.currentTarget) return;
+            if (event.key === "Enter" || event.key === " ") {
+              event.preventDefault();
+              onOpen();
+            }
+          }}
+          className={rootClass}
+        >
+          {content}
+        </div>
+      );
+    }
     return (
       <button type="button" onClick={onOpen} className={rootClass}>
         {content}

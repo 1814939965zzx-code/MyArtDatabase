@@ -72,7 +72,7 @@
   }
 
   /*
-   * 详情页左右切换箭头：只在维度预览入口出现（见 ArtDatabaseApp），
+   * 详情页左右切换箭头：维度预览和素材库（项目/全部）入口共用（见 ArtDatabaseApp / AllAssetsView），
    * 浮在图片两侧的深色底上，因此颜色取自 scrim/ink 而不是面板 token。
    */
   .drawer-nav {

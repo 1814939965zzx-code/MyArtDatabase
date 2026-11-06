@@ -6,10 +6,12 @@ import {
   ArrowLeft,
   ChevronLeft,
   ChevronRight,
+  FolderInput,
   Grid2X2,
   ImageIcon,
   LayoutGrid,
   List,
+  ListChecks,
   LoaderCircle,
   Menu,
   PanelLeftClose,
@@ -52,6 +54,7 @@ import { TopbarTabs } from "./components/layout/TopbarTabs";
 import { TopbarTitle } from "./components/layout/TopbarTitle";
 import { UserMenu } from "./components/layout/UserMenu";
 import { AssetCard } from "./components/library/AssetCard";
+import { ImportFromLibraryModal } from "./components/library/ImportFromLibraryModal";
 import { ViewToggle } from "./components/library/ViewToggle";
 import { Button, EmptyState, Field, IconButton, Input, Modal, SearchInput, Spinner, Tabs, Textarea, Toast, cn } from "./ui";
 import { VisualComponentsPage } from "./design/VisualComponentsPage";
@@ -211,15 +214,22 @@ export function ArtDatabaseApp({ user, onLogout }: { user: SessionUser; onLogout
     void dimSync.flush();
   }, [currentPreviewPage?.id, readOnly]);
   const [selectedAssetId, setSelectedAssetId] = useState<string | null>(null);
-  // 维度预览打开详情时传入的左右切换顺序（1D 全量 / 2D·3D 堆内）；其他入口保持为 null，不显示箭头
-  const [previewAssetNav, setPreviewAssetNav] = useState<string[] | null>(null);
+  // 详情左右切换顺序：维度预览传 1D 全量 / 2D·3D 堆内顺序，项目素材库传当前筛选结果顺序；
+  // 自由画板等其他入口保持为 null，不显示箭头。
+  const [detailNav, setDetailNav] = useState<string[] | null>(null);
   const [search, setSearch] = useState("");
   const [view, setView] = useState<"grid" | "list">("grid");
   const [surface, setSurface] = useState<"assets" | "preview" | "board">("preview");
   const [projectAssetCategory, setProjectAssetCategory] = useState<"all" | "favorites">("all");
-  // 详情页左右切换只在维度预览入口启用；索引按当前导航顺序实时计算，导航过期时自动不显示
-  const previewNavigation = surface === "preview" ? previewAssetNav : null;
-  const previewNavIndex = previewNavigation && selectedAssetId ? previewNavigation.indexOf(selectedAssetId) : -1;
+  // 项目素材库批量选择（从当前项目移除）：选择态只影响项目素材列表，不改变全局素材
+  const [projectSelectMode, setProjectSelectMode] = useState(false);
+  const [projectSelectedIds, setProjectSelectedIds] = useState<string[]>([]);
+  const projectCheckAllRef = useRef<HTMLInputElement>(null);
+  const [importOpen, setImportOpen] = useState(false);
+  const [importLoading, setImportLoading] = useState(false);
+  // 索引按当前导航顺序实时计算，导航过期时自动不显示
+  const detailNavigation = detailNav;
+  const detailNavIndex = detailNavigation && selectedAssetId ? detailNavigation.indexOf(selectedAssetId) : -1;
   const [projectTagFilter, setProjectTagFilter] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
   const [libraryLoading, setLibraryLoading] = useState(true);
@@ -402,20 +412,26 @@ export function ArtDatabaseApp({ user, onLogout }: { user: SessionUser; onLogout
     const saved = await metadataEditorRef.current?.save();
     if (saved !== false) {
       setSelectedAssetId(null);
-      setPreviewAssetNav(null);
+      setDetailNav(null);
     }
   }
 
   /** 维度预览打开素材详情：同时记下左右切换顺序，供详情页箭头使用。 */
   function openPreviewAsset(assetId: string, navigation?: string[] | null) {
-    setPreviewAssetNav(navigation ?? null);
+    setDetailNav(navigation && navigation.length ? navigation : null);
+    setSelectedAssetId(assetId);
+  }
+
+  /** 项目素材库打开详情：按当前筛选结果（含收藏分类）记录左右切换顺序。 */
+  function openLibraryAsset(assetId: string) {
+    setDetailNav(filteredAssets.map((asset) => asset.id));
     setSelectedAssetId(assetId);
   }
 
   /** 详情页左右箭头：先保存当前素材的未提交修改，再切换到相邻素材。 */
-  async function switchPreviewAsset(offset: -1 | 1) {
-    if (!previewNavigation || previewNavIndex < 0) return;
-    const nextId = previewNavigation[previewNavIndex + offset];
+  async function switchDetailAsset(offset: -1 | 1) {
+    if (!detailNavigation || detailNavIndex < 0) return;
+    const nextId = detailNavigation[detailNavIndex + offset];
     if (!nextId) return;
     if (await metadataEditorRef.current?.save() === false) return;
     setSelectedAssetId(nextId);
@@ -479,6 +495,29 @@ export function ArtDatabaseApp({ user, onLogout }: { user: SessionUser; onLogout
     () => (workspace?.assets ?? []).filter((asset) => asset.favorite).length,
     [workspace],
   );
+  // 批量选择：全选只作用于当前筛选结果，选中项在素材列表变化时自动清理
+  const allProjectAssetsSelected = filteredAssets.length > 0 && filteredAssets.every((asset) => projectSelectedIds.includes(asset.id));
+  const someProjectAssetsSelected = projectSelectedIds.length > 0 && !allProjectAssetsSelected;
+  useEffect(() => {
+    const existing = new Set((workspace?.assets ?? []).map((asset) => asset.id));
+    setProjectSelectedIds((current) => {
+      const next = current.filter((id) => existing.has(id));
+      return next.length === current.length ? current : next;
+    });
+  }, [workspace?.assets]);
+  useEffect(() => {
+    if (projectSelectMode && projectCheckAllRef.current) projectCheckAllRef.current.indeterminate = someProjectAssetsSelected;
+  }, [projectSelectMode, someProjectAssetsSelected]);
+  useEffect(() => {
+    if (surface === "assets") return;
+    // 离开素材库分类时退出选择模式，避免在预览/画板里留下隐藏的选中态
+    setProjectSelectMode((current) => current ? false : current);
+    setProjectSelectedIds((current) => current.length ? [] : current);
+  }, [surface]);
+  useEffect(() => {
+    // 搜索词、标签筛选或收藏分类变化后，选中项可能已不可见：清空选择，避免误删看不见的素材
+    setProjectSelectedIds((current) => current.length ? [] : current);
+  }, [search, projectTagFilter, projectAssetCategory]);
 
   // 有视频在转码时每 2 秒刷新工作区，驱动"转码中 X%"进度
   useTranscodePolling(activeArea === "project" ? workspace?.assets : [], () => {
@@ -498,7 +537,11 @@ export function ArtDatabaseApp({ user, onLogout }: { user: SessionUser; onLogout
     setActiveArea("project");
     setSelectedProjectId(project.id);
     setSelectedAssetId(null);
+    setDetailNav(null);
     setProjectAssetCategory("all");
+    setProjectSelectedIds([]);
+    setProjectSelectMode(false);
+    setImportOpen(false);
     setSidebarCollapsed(true);
     setSidebarOpen(false);
   }
@@ -507,6 +550,10 @@ export function ArtDatabaseApp({ user, onLogout }: { user: SessionUser; onLogout
   function returnHome() {
     setActiveArea("home");
     setSelectedAssetId(null);
+    setDetailNav(null);
+    setProjectSelectedIds([]);
+    setProjectSelectMode(false);
+    setImportOpen(false);
     setSidebarCollapsed(false);
     void loadProjects();
   }
@@ -859,11 +906,99 @@ export function ArtDatabaseApp({ user, onLogout }: { user: SessionUser; onLogout
     try {
       await apiFetch(`/api/project-assets?projectId=${encodeURIComponent(workspace.project.id)}&assetId=${encodeURIComponent(asset.id)}`, { method: "DELETE" });
       setSelectedAssetId(null);
+      setDetailNav(null);
       await Promise.all([loadProjects(workspace.project.id), loadWorkspace(workspace.project.id)]);
       setMessage("素材已从当前项目移除");
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "移除失败");
     }
+  }
+
+  function enterProjectSelectMode() {
+    setProjectSelectedIds([]);
+    setProjectSelectMode(true);
+  }
+
+  function exitProjectSelectMode() {
+    setProjectSelectMode(false);
+    setProjectSelectedIds([]);
+  }
+
+  function toggleProjectAssetSelection(assetId: string, checked: boolean) {
+    setProjectSelectedIds((current) => checked
+      ? (current.includes(assetId) ? current : [...current, assetId])
+      : current.filter((id) => id !== assetId));
+  }
+
+  /** 全选/取消全选只作用于当前筛选结果（收藏分类、搜索词、标签筛选都会生效）。 */
+  function toggleAllProjectAssets(checked: boolean) {
+    setProjectSelectedIds((current) => {
+      const visibleIds = filteredAssets.map((asset) => asset.id);
+      if (checked) return [...new Set([...current, ...visibleIds])];
+      return current.filter((id) => !visibleIds.includes(id));
+    });
+  }
+
+  /** 批量从当前项目移除素材：只删除项目引用，全局素材保留。 */
+  async function removeSelectedAssetsFromProject() {
+    if (!workspace || !projectSelectedIds.length) return;
+    const projectId = workspace.project.id;
+    const ids = [...projectSelectedIds];
+    if (!window.confirm(`从当前项目移除选中的 ${ids.length} 个素材？全局素材不会被删除。`)) return;
+    setBusy(true);
+    try {
+      const results = await Promise.allSettled(ids.map((assetId) =>
+        apiFetch(`/api/project-assets?projectId=${encodeURIComponent(projectId)}&assetId=${encodeURIComponent(assetId)}`, { method: "DELETE" }),
+      ));
+      const failedIds = ids.filter((_, index) => results[index]?.status === "rejected");
+      const ok = ids.length - failedIds.length;
+      try {
+        await Promise.all([loadProjects(), loadWorkspace(projectId), loadLibrary(true)]);
+      } catch {
+        // 删除已生效；刷新失败不改变结果提示，下一次进入页面会重新拉取
+      }
+      if (failedIds.length) {
+        // 失败项保留选中，方便直接重试
+        setProjectSelectedIds(failedIds);
+        setMessage(`已从当前项目移除 ${ok} 个素材，${failedIds.length} 个失败，可重试`);
+      } else {
+        setProjectSelectedIds([]);
+        setProjectSelectMode(false);
+        setMessage(`已从当前项目移除 ${ok} 个素材`);
+      }
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "批量移除失败");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  /** 打开导入面板前先刷新全局素材，避免拿到过期的素材列表。 */
+  async function openImportModal() {
+    if (importLoading) return;
+    setImportLoading(true);
+    try {
+      await loadLibrary(true);
+      setImportOpen(true);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "全部素材载入失败");
+    } finally {
+      setImportLoading(false);
+    }
+  }
+
+  /** 从全部素材导入到当前项目素材库：逐个建立项目引用（不复制素材）。 */
+  async function importAssetsFromLibrary(assetIds: string[]): Promise<number> {
+    if (!workspace) throw new Error("项目尚未载入，请刷新后重试");
+    const projectId = workspace.project.id;
+    const results = await Promise.allSettled(assetIds.map((assetId) =>
+      apiFetch("/api/project-assets", { method: "POST", body: JSON.stringify({ assetId, projectIds: [projectId] }) }),
+    ));
+    const ok = results.filter((result) => result.status === "fulfilled").length;
+    const failed = results.length - ok;
+    await Promise.all([loadProjects(), loadWorkspace(projectId), loadLibrary(true)]);
+    if (failed) throw new Error(`已导入 ${ok} 个素材，${failed} 个失败，请重试`);
+    return ok;
   }
 
   async function saveAssetMetadata(asset: Asset, update: AssetMetadataUpdate) {
@@ -1157,6 +1292,17 @@ export function ArtDatabaseApp({ user, onLogout }: { user: SessionUser; onLogout
                 className="w-[min(205px,27.5vw)] max-sm:w-auto max-sm:flex-1"
               />
             ) : null}
+            {activeArea === "project" && workspace && surface === "assets" && !readOnly ? (
+              <Button
+                variant="secondary"
+                size="sm"
+                icon={<FolderInput size={14} aria-hidden />}
+                loading={importLoading}
+                onClick={() => void openImportModal()}
+              >
+                从全部素材导入
+              </Button>
+            ) : null}
             {activeArea === "project" && workspace && !readOnly ? (
               <Button variant="primary" size="lg" icon={<Upload size={15} aria-hidden />} onClick={() => fileInputRef.current?.click()}>
                 上传素材
@@ -1229,8 +1375,40 @@ export function ArtDatabaseApp({ user, onLogout }: { user: SessionUser; onLogout
                 <h2 className="m-0 text-lg font-semibold text-ink">项目素材</h2>
                 <p className="mt-1 text-sm text-muted">{search || projectTagFilter.length || projectAssetCategory === "favorites" ? `找到 ${filteredAssets.length} 项` : "按维度整理与比较你的视觉参考"}</p>
               </div>
-              <div className="flex items-center gap-2.5">
-                {!readOnly ? <Button variant="secondary" size="sm" icon={<Tags size={14} aria-hidden />} onClick={() => setProjectTagManagerOpen(true)}>标签管理</Button> : null}
+              <div className="flex flex-wrap items-center justify-end gap-2.5">
+                {projectSelectMode ? (
+                  <>
+                    <label className="flex flex-none cursor-pointer items-center gap-2 text-sm text-muted">
+                      <input
+                        ref={projectCheckAllRef}
+                        type="checkbox"
+                        checked={allProjectAssetsSelected}
+                        disabled={busy || !filteredAssets.length}
+                        onChange={(event) => toggleAllProjectAssets(event.target.checked)}
+                        className="accent-sage"
+                      />
+                      全选
+                    </label>
+                    <span className="text-sm font-semibold text-success">已选 {projectSelectedIds.length} 项</span>
+                    <Button
+                      variant="danger"
+                      size="sm"
+                      icon={<Trash2 size={13} aria-hidden />}
+                      disabled={busy || !projectSelectedIds.length}
+                      onClick={() => void removeSelectedAssetsFromProject()}
+                    >
+                      从当前项目移除
+                    </Button>
+                    <Button variant="ghost" size="sm" disabled={busy} onClick={exitProjectSelectMode}>
+                      取消
+                    </Button>
+                  </>
+                ) : (
+                  <>
+                    {!readOnly && filteredAssets.length ? <Button variant="secondary" size="sm" icon={<ListChecks size={14} aria-hidden />} onClick={enterProjectSelectMode}>批量选择</Button> : null}
+                    {!readOnly ? <Button variant="secondary" size="sm" icon={<Tags size={14} aria-hidden />} onClick={() => setProjectTagManagerOpen(true)}>标签管理</Button> : null}
+                  </>
+                )}
                 <ViewToggle value={view} onChange={setView} />
               </div>
             </div>
@@ -1259,17 +1437,24 @@ export function ArtDatabaseApp({ user, onLogout }: { user: SessionUser; onLogout
 
             {filteredAssets.length ? (
               <div className={cn("asset-collection", view === "list" ? "asset-list" : "asset-grid")}>
-                {filteredAssets.map((asset, index) => (
-                  <AssetCard
-                    key={asset.id}
-                    asset={asset}
-                    index={index}
-                    variant={view}
-                    favorite={asset.favorite}
-                    thumbnailLoading={index > 3 ? "lazy" : "eager"}
-                    onOpen={() => setSelectedAssetId(asset.id)}
-                  />
-                ))}
+                {filteredAssets.map((asset, index) => {
+                  const checked = projectSelectMode && projectSelectedIds.includes(asset.id);
+                  return (
+                    <AssetCard
+                      key={asset.id}
+                      asset={asset}
+                      variant={view}
+                      selected={checked}
+                      selectable={projectSelectMode}
+                      checked={checked}
+                      onCheckedChange={(next) => toggleProjectAssetSelection(asset.id, next)}
+                      busy={busy}
+                      favorite={!projectSelectMode && asset.favorite}
+                      thumbnailLoading={index > 3 ? "lazy" : "eager"}
+                      onOpen={() => projectSelectMode ? toggleProjectAssetSelection(asset.id, !checked) : openLibraryAsset(asset.id)}
+                    />
+                  );
+                })}
               </div>
             ) : (
               <EmptyState
@@ -1279,7 +1464,7 @@ export function ArtDatabaseApp({ user, onLogout }: { user: SessionUser; onLogout
                   ? "换一个关键词或标签试试。"
                   : projectAssetCategory === "favorites"
                     ? "在素材详情点“收藏”，素材会出现在这里。"
-                    : readOnly ? "当前项目还没有素材。" : "拖入、粘贴或选择图片/视频开始。"}
+                    : readOnly ? "当前项目还没有素材。" : "拖入、粘贴或选择图片/视频开始，也可以从全部素材导入。"}
                 className="mx-[42px] max-md:mx-6"
                 action={readOnly ? undefined : (
                   <Button variant="primary" icon={<Upload size={15} aria-hidden />} onClick={() => fileInputRef.current?.click()}>
@@ -1287,7 +1472,7 @@ export function ArtDatabaseApp({ user, onLogout }: { user: SessionUser; onLogout
                   </Button>
                 )}
               />
-            )}</> : surface === "preview" ? <DimensionPages key={workspace.project.id} projectId={workspace.project.id} assets={workspace.assets} page={currentPreviewPage} onPageChange={setPreviewPage} onReceivePage={receivePreviewPage} revision={previewRevision} syncStatus={dimSync.status} onRetrySync={dimSync.retry} onMessage={setMessage} onSelectAsset={openPreviewAsset} onUpdateAssetDimensions={savePreviewDimensionValues} onAddDimension={() => setDimensionOpen(true)} onEditDimension={(dimension) => setEditingDimensionId(dimension.id)} readOnly={readOnly} /> : <BoardView key={workspace.project.id} projectId={workspace.project.id} assets={workspace.assets} onMessage={setMessage} onSelectAsset={setSelectedAssetId} readOnly={readOnly} />}
+            )}</> : surface === "preview" ? <DimensionPages key={workspace.project.id} projectId={workspace.project.id} assets={workspace.assets} page={currentPreviewPage} onPageChange={setPreviewPage} onReceivePage={receivePreviewPage} revision={previewRevision} syncStatus={dimSync.status} onRetrySync={dimSync.retry} onMessage={setMessage} onSelectAsset={openPreviewAsset} onUpdateAssetDimensions={savePreviewDimensionValues} onAddDimension={() => setDimensionOpen(true)} onEditDimension={(dimension) => setEditingDimensionId(dimension.id)} readOnly={readOnly} /> : <BoardView key={workspace.project.id} projectId={workspace.project.id} assets={workspace.assets} onMessage={setMessage} onSelectAsset={(assetId) => { setDetailNav(null); setSelectedAssetId(assetId); }} readOnly={readOnly} />}
           </>
         ) : (
           <EmptyState
@@ -1324,16 +1509,16 @@ export function ArtDatabaseApp({ user, onLogout }: { user: SessionUser; onLogout
               }
               return detailImage ? <span className="drawer-image-frame"><img key={detailImage} className="drawer-image" src={detailImage} alt={selectedAsset.name} onClick={(event) => event.stopPropagation()} /></span> : <span className="drawer-image-fallback" onClick={(event) => event.stopPropagation()}><ImageIcon size={40} /></span>;
             })()}
-            {previewNavIndex >= 0 && previewNavigation && previewNavigation.length > 1 ? (
+            {detailNavIndex >= 0 && detailNavigation && detailNavigation.length > 1 ? (
               <>
                 <button
                   type="button"
                   className="drawer-nav drawer-nav-prev"
                   aria-label="上一张"
                   title="上一张"
-                  disabled={previewNavIndex <= 0}
-                  onClick={(event) => { event.stopPropagation(); void switchPreviewAsset(-1); }}
-                  onKeyDown={(event) => event.stopPropagation()}
+                  disabled={detailNavIndex <= 0}
+                  onClick={(event) => { event.stopPropagation(); void switchDetailAsset(-1); }}
+                  onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") event.stopPropagation(); }}
                 >
                   <ChevronLeft size={22} aria-hidden />
                 </button>
@@ -1342,9 +1527,9 @@ export function ArtDatabaseApp({ user, onLogout }: { user: SessionUser; onLogout
                   className="drawer-nav drawer-nav-next"
                   aria-label="下一张"
                   title="下一张"
-                  disabled={previewNavIndex >= previewNavigation.length - 1}
-                  onClick={(event) => { event.stopPropagation(); void switchPreviewAsset(1); }}
-                  onKeyDown={(event) => event.stopPropagation()}
+                  disabled={detailNavIndex >= detailNavigation.length - 1}
+                  onClick={(event) => { event.stopPropagation(); void switchDetailAsset(1); }}
+                  onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") event.stopPropagation(); }}
                 >
                   <ChevronRight size={22} aria-hidden />
                 </button>
@@ -1368,7 +1553,7 @@ export function ArtDatabaseApp({ user, onLogout }: { user: SessionUser; onLogout
                 <IconButton label="关闭素材详情" onClick={() => void closeAssetDetail()}><X size={18} aria-hidden /></IconButton>
               </div>
             </div>
-            <div className="drawer-scroll">
+            <div key={selectedAsset.id} className="drawer-scroll">
               <div className="drawer-file"><small>文件名</small><span>{selectedAsset.fileName}</span></div>
               {selectedAsset.createdByName ? <div className="drawer-file"><small>上传者</small><span>{selectedAsset.createdByName}</span></div> : null}
               {selectedAsset.width || selectedAsset.fileSize || isVideoMime(selectedAsset.mimeType) ? (
@@ -1561,6 +1746,17 @@ export function ArtDatabaseApp({ user, onLogout }: { user: SessionUser; onLogout
             }}
           />
         : null; })() : null}
+
+      {importOpen && workspace ? (
+        <ImportFromLibraryModal
+          projectName={workspace.project.name}
+          assets={libraryAssets}
+          existingIds={new Set(workspace.assets.map((asset) => asset.id))}
+          onClose={() => setImportOpen(false)}
+          onImport={importAssetsFromLibrary}
+          onMessage={setMessage}
+        />
+      ) : null}
 
       {activeArea === "project" && uploadFile && workspace ? <UploadModal file={uploadFile} projectId={workspace.project.id} onClose={() => setUploadFile(null)} onComplete={async () => { await Promise.all([loadProjects(workspace.project.id), loadWorkspace(workspace.project.id), loadLibrary()]); }} onMessage={setMessage} /> : null}
 
