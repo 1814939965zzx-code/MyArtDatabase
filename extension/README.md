@@ -4,7 +4,7 @@
 
 ## 安装（zip 安装包方式，推荐）
 
-1. 拿到 `extension/release/artdb-extension-v0.1.1.zip`（或用 `extension/build.ps1` 重新打包）；
+1. 拿到 `extension/release/artdb-extension-v0.1.4.zip`（或用 `extension/build.ps1` 重新打包）；
 2. 解压到任意目录（如 `D:\artdb-extension`），确认该目录下有 `manifest.json`；
 3. 打开 Chrome 访问 `chrome://extensions/`，右上角开启「开发者模式」；
 4. 点「加载已解压的扩展程序」，选择**解压出的那个目录**（不是 zip）；
@@ -20,6 +20,12 @@
 4. 点「保存」→ 上传成功 toast「已保存到项目X」；视频上传后服务端自动转码为低码率 MP4（转码期间状态为"处理中"）。
 
 支持 Instagram：图片可直接右键（扩展会注入一条样式取消图片上方的透明覆盖层）；帖子/Reel 里的视频需要浏览器已登录 Instagram，扩展会调用 Instagram 媒体接口解析 mp4 直链后下载。该接口不是公开 API，Instagram 改版后可能失效，失败时会在页面内提示。
+
+Instagram 采集的来源链接默认使用素材所属的具体帖子或 Reel 地址，能够定位轮播项时附带 `img_index`，不再只记录主页地址；保存前仍可编辑。
+
+轮播帖只保存右键选中的当前项；如果无法定位，会提示打开该项后重试，不会改存组内其他视频。更新扩展源码后，在 `chrome://extensions/` 点击扩展的「重新加载」，再刷新 Instagram 页面使新脚本生效。
+
+Instagram 采集回归测试（仓库根目录执行）：`node --test extension/test/instagram-capture.test.mjs`。
 
 ## 文件说明
 

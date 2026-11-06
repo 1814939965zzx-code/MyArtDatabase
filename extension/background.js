@@ -268,6 +268,17 @@ async function captureFromContext(info, tabId) {
     }
   }
 
+  // Instagram 的 blob 视频、og 元信息和页面扫描结果可能属于另一轮播项/帖子。
+  // 只有内容脚本确认过的目标可以下载，失败时保留错误，不再跨目标兜底。
+  let instagram = false;
+  try {
+    const hostname = new URL(info.pageUrl).hostname;
+    instagram = hostname === "instagram.com" || hostname.endsWith(".instagram.com");
+  } catch { /* 缺失页面 URL 时仍遵守内容脚本的停止信号 */ }
+  if (instagram || resolved?.stopFallback) {
+    return { capture: null, resolved, srcUrl: "" };
+  }
+
   if (info.srcUrl) {
     const capture = await captureMedia(info, tabId);
     if (capture) return { capture, resolved, srcUrl: info.srcUrl };

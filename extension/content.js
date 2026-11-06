@@ -25,11 +25,20 @@
 
   function rememberPointer(event) {
     if (!(event.target instanceof Element)) return;
+    let media = mediaFromTarget(event.target, event.clientX, event.clientY)
+      || mediaFromPoint(event.clientX, event.clientY);
+    media = preferInstagramVideo(media, event.clientX, event.clientY);
+    const instagramTarget = media && isInstagram() ? instagramCarouselTarget(media) : null;
     lastPointer = {
       target: event.target,
       x: event.clientX,
       y: event.clientY,
       at: Date.now(),
+      media,
+      imageUrl: media?.tagName === "IMG" ? pickImageUrl(media) : "",
+      videoUrl: media?.tagName === "VIDEO" ? pickVideoDirectUrl(media) : "",
+      instagramTarget,
+      pageUrl: instagramTarget ? instagramPostUrl(instagramTarget) : location.href,
     };
   }
 
@@ -235,21 +244,45 @@
     return true;
   }
 
+  function mediaContainsPoint(media, x, y) {
+    if (!isUsableMedia(media)) return false;
+    const rect = media.getBoundingClientRect();
+    if (x < rect.left || x >= rect.right || y < rect.top || y >= rect.bottom) return false;
+    // 相邻轮播项也有完整的 bounding rect，但被祖先裁切；不能采集不可见的那一项。
+    for (let parent = media.parentElement; parent; parent = parent.parentElement) {
+      const style = getComputedStyle(parent);
+      if (style.display === "none" || style.visibility === "hidden" || Number(style.opacity) === 0) return false;
+      // 根元素的 overflow 作用于视口，不作用于其 getBoundingClientRect()。
+      // 页面滚动后 html 的 rect 会整体移出视口，不能据此排除屏幕里的视频。
+      if (parent === document.documentElement || parent === document.body || parent === document.scrollingElement) continue;
+      const bounds = parent.getBoundingClientRect();
+      if (/^(hidden|clip|scroll|auto)$/.test(style.overflowX)
+        && (x < bounds.left || x >= bounds.right)) return false;
+      if (/^(hidden|clip|scroll|auto)$/.test(style.overflowY)
+        && (y < bounds.top || y >= bounds.bottom)) return false;
+    }
+    return true;
+  }
+
+  function preferInstagramVideo(media, x, y) {
+    if (media?.tagName !== "IMG" || !isInstagram()) return media;
+    // 只在同一个轮播项内把视频封面换成视频，不能从整帖中挑到相邻项。
+    const container = media.closest("li") || media.parentElement;
+    return [...(container?.querySelectorAll("video") || [])]
+      .find((video) => mediaContainsPoint(video, x, y)) || media;
+  }
+
   function mediaFromTarget(target, x, y) {
     if (!(target instanceof Element)) return null;
     const direct = target.closest("img, video, picture");
     if (direct) {
-      if (direct.tagName === "PICTURE") return direct.querySelector("img");
-      return isUsableMedia(direct) ? direct : null;
+      const media = direct.tagName === "PICTURE" ? direct.querySelector("img") : direct;
+      return media && mediaContainsPoint(media, x, y) ? media : null;
     }
     // Instagram 的图片通常在 <a href="/p/..."> 里，命中容器时向下找一层
     const link = target.closest("a");
     if (link && typeof x === "number" && typeof y === "number") {
-      const media = link.querySelector("img, video");
-      if (media && isUsableMedia(media)) {
-        const rect = media.getBoundingClientRect();
-        if (x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom) return media;
-      }
+      return [...link.querySelectorAll("img, video")].find((media) => mediaContainsPoint(media, x, y)) || null;
     }
     return null;
   }
@@ -258,9 +291,7 @@
     if (!(element instanceof Element) || element === document.documentElement || element === document.body) return null;
     const matches = [];
     for (const media of element.querySelectorAll("img, video")) {
-      if (!isUsableMedia(media)) continue;
-      const rect = media.getBoundingClientRect();
-      if (x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom) matches.push(media);
+      if (mediaContainsPoint(media, x, y)) matches.push(media);
     }
     // 同一位置同时有封面图和 <video> 时优先视频，避免把视频封面当成图片保存
     return matches.find((media) => media.tagName === "VIDEO") || matches[0] || null;
@@ -279,8 +310,11 @@
     }
     for (const element of elements) {
       if (element.tagName === "IMG" || element.tagName === "VIDEO") {
-        if (isUsableMedia(element)) return element;
+        if (mediaContainsPoint(element, x, y)) return element;
       }
+    }
+    // 和 Eagle 一样优先使用命中栈里的媒体；容器向下查找只作后备。
+    for (const element of elements) {
       const media = mediaWithinPoint(element, x, y);
       if (media) return media;
     }
@@ -365,13 +399,35 @@
     return href.match(/\/(?:p|reel|reels)\/([^/?#]+)/)?.[1] || "";
   }
 
-  function instagramShortcode(element) {
-    const fromPath = parseInstagramShortcode(location.pathname);
-    if (fromPath) return fromPath;
-    const container = element?.closest('div[role="dialog"], article');
+  function instagramPostPath(element) {
+    const linked = element?.closest('a[href]')?.getAttribute("href") || "";
+    const container = element?.closest('article, div[role="dialog"]');
     const articleLink = container?.querySelector('a[href*="/p/"], a[href*="/reel/"], a[href*="/reels/"]');
-    return parseInstagramShortcode(articleLink?.getAttribute("href") || "")
-      || parseInstagramShortcode(document.querySelector('a[href*="/p/"], a[href*="/reel/"], a[href*="/reels/"]')?.getAttribute("href") || "");
+    for (const href of [linked, articleLink?.getAttribute("href") || "", location.pathname]) {
+      const match = href.match(/\/(p|reel|reels)\/([A-Za-z0-9_-]+)(?=\/|[?#]|$)/);
+      if (match) return `/${match[1] === "reels" ? "reel" : match[1]}/${match[2]}/`;
+    }
+    return "";
+  }
+
+  function instagramShortcode(element) {
+    return parseInstagramShortcode(instagramPostPath(element));
+  }
+
+  function instagramPostUrl(target) {
+    if (!target?.postPath) return location.href;
+    const url = new URL(target.postPath, "https://www.instagram.com");
+    const { position, layoutIndex, activeIndex, buttonCount, count, index, shortcode, pageShortcode, urlIndex } = target;
+    const selected = [
+      target.resolvedIndex,
+      Number.isInteger(position) && position >= 1 ? position - 1 : -1,
+      layoutIndex,
+      activeIndex,
+      buttonCount > 1 && count === buttonCount ? index : -1,
+      shortcode === pageShortcode && Number.isInteger(urlIndex) && urlIndex >= 1 ? urlIndex - 1 : -1,
+    ].find((value) => Number.isInteger(value) && value >= 0);
+    if (selected !== undefined) url.searchParams.set("img_index", String(selected + 1));
+    return url.href;
   }
 
   function instagramAppId() {
@@ -391,16 +447,64 @@
     return id.toString();
   }
 
-  function instagramCarouselIndex(video, length) {
-    const fromUrl = Number(new URLSearchParams(location.search).get("img_index"));
-    if (Number.isInteger(fromUrl) && fromUrl >= 1 && fromUrl <= length) return fromUrl - 1;
+  function instagramCarouselTarget(video) {
     const slide = video.closest("li");
-    if (slide?.parentElement) {
-      const slides = [...slide.parentElement.children].filter((child) => child.tagName === "LI");
-      const index = slides.indexOf(slide);
-      if (index >= 0 && index < length) return index;
+    const slides = slide?.parentElement
+      ? [...slide.parentElement.children].filter((child) => child.tagName === "LI" && child.querySelector("img, video"))
+      : [];
+    const rect = slide?.getBoundingClientRect();
+    const listRect = slide?.parentElement?.getBoundingClientRect();
+    // 主页真实结构：前置 1px 占位 li，实际项按 translateX(index * width) 绝对定位，
+    // 且只挂载相邻项。用布局偏移得到全局序号，不用兄弟节点的局部序号。
+    const offset = rect?.width > 8 && listRect && /^translateX\(/.test(slide.style?.transform || "")
+      ? (rect.left - listRect.left) / rect.width : NaN;
+    const layoutIndex = Number.isFinite(offset) && Math.abs(offset - Math.round(offset)) < 0.03
+      ? Math.round(offset) : -1;
+    const container = video.closest('article, div[role="dialog"]');
+    const buttons = [...(container?.querySelectorAll('button[aria-label^="Go to slide "]') || [])];
+    const active = buttons.filter((button) => button.getAttribute("aria-current") === "step"
+      || button.getAttribute("aria-current") === "true");
+    const activeIndex = active.length === 1
+      ? Number(active[0].getAttribute("aria-label").match(/(\d+)$/)?.[1]) - 1 : -1;
+    const videoRect = video.getBoundingClientRect();
+    const centerX = videoRect.left + videoRect.width / 2;
+    const centerY = videoRect.top + videoRect.height / 2;
+    return {
+      poster: video.poster,
+      position: Number(slide?.getAttribute("aria-posinset")),
+      index: slides.indexOf(slide),
+      count: slides.length,
+      layoutIndex,
+      activeIndex: mediaContainsPoint(video, centerX, centerY) ? activeIndex : -1,
+      buttonCount: buttons.length,
+      shortcode: instagramShortcode(video),
+      postPath: instagramPostPath(video),
+      pageShortcode: parseInstagramShortcode(location.pathname),
+      urlIndex: Number(new URLSearchParams(location.search).get("img_index")),
+    };
+  }
+
+  function instagramCarouselIndex(target, carousel) {
+    // 封面与接口图片按资源路径匹配，忽略 CDN 的签名/尺寸参数；优先于可能滞后的 URL 页码。
+    const poster = target.poster;
+    if (poster) {
+      const path = (url) => {
+        try { return new URL(url, location.href).pathname; } catch { return ""; }
+      };
+      const posterPath = path(poster);
+      const matches = carousel.map((media, index) => ({ media, index })).filter(({ media }) =>
+        posterPath && media?.image_versions2?.candidates?.some((image) => image?.url && path(image.url) === posterPath));
+      if (matches.length === 1) return matches[0].index;
     }
-    return 0;
+    const { position, index, count, layoutIndex, activeIndex, buttonCount, shortcode, pageShortcode, urlIndex } = target;
+    if (Number.isInteger(position) && position >= 1 && position <= carousel.length) return position - 1;
+    if (layoutIndex >= 0 && layoutIndex < carousel.length) return layoutIndex;
+    if (buttonCount === carousel.length && activeIndex >= 0 && activeIndex < carousel.length) return activeIndex;
+    // 虚拟化列表只保留相邻几项，局部序号不能当作全局序号；排除占位 li 后须项数完整。
+    if (count === carousel.length && index >= 0) return index;
+    if (shortcode && shortcode === pageShortcode
+      && Number.isInteger(urlIndex) && urlIndex >= 1 && urlIndex <= carousel.length) return urlIndex - 1;
+    return -1;
   }
 
   /**
@@ -408,9 +512,11 @@
    * 与 Eagle 扩展相同：用帖子短链换 media id，再带登录 cookie 调 Instagram
    * 自己的媒体接口取 video_versions（轮播则按 img_index / 当前 slide 取）。
    */
-  async function resolveInstagramVideo(video) {
-    const shortcode = instagramShortcode(video);
+  async function resolveInstagramVideo(video, capturedTarget = null) {
+    const target = capturedTarget || instagramCarouselTarget(video);
+    const shortcode = target.shortcode;
     if (!shortcode) throw new Error("无法识别 Instagram 帖子");
+    // 在请求之前固定右键目标的位置，避免等待接口期间切换轮播后解析到另一项。
     const appId = instagramAppId();
     if (!appId) throw new Error("无法读取 Instagram appId，请刷新页面后重试");
     const mediaId = instagramMediaId(shortcode);
@@ -455,67 +561,59 @@
     }
     const carousel = Array.isArray(item.carousel_media) ? item.carousel_media : [];
     if (carousel.length) {
-      const index = instagramCarouselIndex(video, carousel.length);
-      const ordered = [carousel[index], ...carousel.filter((_, position) => position !== index)];
-      for (const media of ordered) {
-        const candidates = (Array.isArray(media?.video_versions) ? media.video_versions : [])
-          .filter((version) => version && typeof version.url === "string" && version.url)
-          .sort((a, b) => (Number(b.width) || 0) * (Number(b.height) || 0) - (Number(a.width) || 0) * (Number(a.height) || 0));
-        if (candidates[0]?.url) return candidates[0].url;
-      }
+      const index = instagramCarouselIndex(target, carousel);
+      if (index < 0) throw new Error("无法确定右键视频在轮播中的位置，请打开该项后重试");
+      target.resolvedIndex = index;
+      const media = carousel[index];
+      const candidates = (Array.isArray(media?.video_versions) ? media.video_versions : [])
+        .filter((version) => version && typeof version.url === "string" && version.url)
+        .sort((a, b) => (Number(b.width) || 0) * (Number(b.height) || 0) - (Number(a.width) || 0) * (Number(a.height) || 0));
+      if (candidates[0]?.url) return candidates[0].url;
+      throw new Error("右键选中的轮播项没有可下载的视频直链");
     }
     throw new Error("该 Instagram 帖子没有可下载的视频直链");
   }
 
   async function resolveMedia() {
     const recent = lastPointer && Date.now() - lastPointer.at <= POINTER_TTL_MS ? lastPointer : null;
-    let element = recent ? mediaFromTarget(recent.target, recent.x, recent.y) : null;
-    if (!element && recent) element = mediaFromPoint(recent.x, recent.y);
+    let element = recent?.media || null;
     // 只有在拿不到右键上下文时才兜底整页（例如内容脚本是点击菜单后才补注入的旧标签页）；
     // 正常右键点在空白处时不应随便保存页面里最大的图片。
-    if (!element && !recent) element = largestVisibleMedia();
+    if (!element && !recent && !isInstagram()) element = largestVisibleMedia();
     if (!element) return { ok: false, error: "这里没有可保存的图片或视频" };
 
-    // Instagram Reel 的可见封面可能是 <img>，下面才是 <video>；优先视频
-    if (element.tagName === "IMG" && isInstagram() && recent) {
-      const pointed = mediaFromPoint(recent.x, recent.y);
-      if (pointed?.tagName === "VIDEO") element = pointed;
-    }
-
     if (element.tagName === "IMG") {
-      const srcUrl = pickImageUrl(element);
+      const srcUrl = recent?.imageUrl || pickImageUrl(element);
       if (!srcUrl) return { ok: false, error: "没有找到图片地址" };
       return {
         ok: true,
         kind: "image",
         srcUrl,
-        pageUrl: location.href,
+        pageUrl: recent?.pageUrl || location.href,
         suggestedName: (element.alt || "").trim().slice(0, 120),
       };
     }
 
     if (element.tagName === "VIDEO") {
-      const direct = pickVideoDirectUrl(element);
-      if (direct) return { ok: true, kind: "video", srcUrl: direct, pageUrl: location.href };
+      const direct = recent ? recent.videoUrl : pickVideoDirectUrl(element);
+      if (direct) return { ok: true, kind: "video", srcUrl: direct, pageUrl: recent?.pageUrl || location.href };
 
       if (isInstagram()) {
         try {
-          const url = await resolveInstagramVideo(element);
+          const url = await resolveInstagramVideo(element, recent?.instagramTarget);
           if (url) {
-            const shortcode = instagramShortcode(element);
+            const shortcode = recent?.instagramTarget?.shortcode || instagramShortcode(element);
             return {
               ok: true,
               kind: "video",
               srcUrl: url,
-              pageUrl: location.href,
+              pageUrl: instagramPostUrl(recent?.instagramTarget),
               suggestedName: shortcode ? `instagram-${shortcode}` : "",
             };
           }
         } catch (error) {
-          // 接口失败时仍尝试 og:video 兜底
-          const fallback = findMetaVideoUrl();
-          if (fallback) return { ok: true, kind: "video", srcUrl: fallback, pageUrl: location.href };
-          throw error;
+          // og:video 只代表整帖，不能证明属于右键的轮播项。
+          return { ok: false, stopFallback: true, error: error.message };
         }
       }
 
