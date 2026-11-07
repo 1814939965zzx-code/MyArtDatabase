@@ -526,13 +526,28 @@ assert.equal((await originalAfterRejectedReplacement.arrayBuffer()).byteLength, 
 assert.equal((await readdir(path.join(tmp, "media", "blobs"))).length, 1, "替换失败不得留下新文件或删除当前文件");
 
 // 10.5) AI 打标：精确复用 / 模糊候选 AI 裁决复用 / 裁决失败退化为新建
-const aiResult1 = await json(await post(`${base}/api/assets/ai-tags`, { id: "asset-01" }));
+// 示例数据的图片是公网外链（picsum.photos），AI 打标会让服务端现场下载；先换成本地合成图，
+// 否则用例会随公网可用性随机失败，且失败点与 AI 逻辑无关。
+const aiSeedBuffer = await sharp({ create: { width: 900, height: 700, channels: 3, background: { r: 214, g: 132, b: 60 } } }).jpeg().toBuffer();
+for (const id of ["asset-01", "asset-02"]) {
+  const aiSeedForm = new FormData();
+  aiSeedForm.set("id", id);
+  aiSeedForm.set("file", new File([aiSeedBuffer], `${id}.jpg`, { type: "image/jpeg" }));
+  const aiSeedRes = await fetch(`${base}/api/assets/image`, { method: "POST", body: aiSeedForm });
+  assert.equal(aiSeedRes.status, 200, `AI 打标前应能把示例素材 ${id} 换成本地图片，实际 ${aiSeedRes.status}`);
+}
+
+const aiRes1 = await post(`${base}/api/assets/ai-tags`, { id: "asset-01" });
+const aiResult1 = await aiRes1.json();
+assert.equal(aiRes1.status, 200, `AI 打标应 200，实际 ${aiRes1.status}：${JSON.stringify(aiResult1)}`);
 assert.equal(aiResult1.reused, 1, "暖色应被裁决复用");
 assert.equal(aiResult1.created, 1, "测试词语应按新建落库");
 assert.equal(aiResult1.dropped, 0, "不应超上限丢弃");
 assert.deepEqual(aiResult1.tags, ["建筑", "氛围", "灰调", "测试词语", "暖色"], "人工标签在前、AI 新标签追加在后");
 
-const aiResult2 = await json(await post(`${base}/api/assets/ai-tags`, { id: "asset-02" }));
+const aiRes2 = await post(`${base}/api/assets/ai-tags`, { id: "asset-02" });
+const aiResult2 = await aiRes2.json();
+assert.equal(aiRes2.status, 200, `AI 打标（裁决降级路径）应 200，实际 ${aiRes2.status}：${JSON.stringify(aiResult2)}`);
 assert.equal(aiResult2.created, 1, "裁决失败时机械臂应退化为新建");
 assert.deepEqual(aiResult2.tags, ["机械", "红色", "工业", "机械臂"]);
 
