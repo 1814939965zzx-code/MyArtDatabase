@@ -10,6 +10,7 @@ CREATE TABLE IF NOT EXISTS projects (
   id TEXT PRIMARY KEY NOT NULL,
   name TEXT NOT NULL,
   description TEXT NOT NULL DEFAULT '',
+  archived_at TEXT,
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
@@ -201,6 +202,9 @@ const SCHEMA_VERSION = 8;
  * v7：插件令牌。新增 api_tokens（浏览器扩展等外部客户端以 Bearer 令牌认证），
  *     只存 token_hash 不存明文；CREATE TABLE IF NOT EXISTS 已覆盖新旧库。
  * v8：转码进度可视化。assets 新增 transcode_progress（0～100 整数，图片恒为 0）。
+ *
+ * 公告拆分为登录页公告与站内全局公告属于数据迁移、不占用 schema 版本，
+ * 由 migrateAnnouncementScopes 幂等执行（user_version 留给维度 Page 的 v9）。
  */
 function migrateSchema(db) {
   const { user_version: version } = db.prepare("PRAGMA user_version").get();
@@ -322,6 +326,11 @@ function migrateSchema(db) {
     if (!projectAssetColumns.includes("favorite")) {
       db.exec("ALTER TABLE project_assets ADD COLUMN favorite INTEGER NOT NULL DEFAULT 0");
     }
+    // 项目归档：archived_at 为空表示未归档；归档项目从主页隐藏，进入“已归档项目”
+    const projectColumns = db.prepare("PRAGMA table_info(projects)").all().map((column) => column.name);
+    if (!projectColumns.includes("archived_at")) {
+      db.exec("ALTER TABLE projects ADD COLUMN archived_at TEXT");
+    }
   }
   db.exec(`PRAGMA user_version = ${Math.max(version, SCHEMA_VERSION)}`);
 }
@@ -381,6 +390,32 @@ function seed(db) {
   }
 }
 
+/**
+ * 公告拆分为两份独立设置（登录页公告 / 站内全局公告）。
+ * 旧库只有一份 announcement.text/enabled，历史上只用于登录页，因此整份迁到登录页公告，
+ * 站内全局公告从空开始。迁移后删除旧键，重复启动不会重复迁移。
+ */
+function migrateAnnouncementScopes(db) {
+  const read = (key) => db.prepare("SELECT value, updated_at AS updatedAt FROM app_settings WHERE key = ?").get(key);
+  const legacyText = read("announcement.text");
+  const legacyEnabled = read("announcement.enabled");
+  if (!legacyText && !legacyEnabled) return;
+  const upsert = db.prepare(`
+    INSERT INTO app_settings (key, value, updated_at) VALUES (?, ?, COALESCE(?, CURRENT_TIMESTAMP))
+    ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
+  `);
+  db.exec("BEGIN");
+  try {
+    if (!read("announcement.login.text") && legacyText) upsert.run("announcement.login.text", legacyText.value, legacyText.updatedAt);
+    if (!read("announcement.login.enabled") && legacyEnabled) upsert.run("announcement.login.enabled", legacyEnabled.value, legacyEnabled.updatedAt);
+    db.prepare("DELETE FROM app_settings WHERE key IN ('announcement.text', 'announcement.enabled')").run();
+    db.exec("COMMIT");
+  } catch (error) {
+    db.exec("ROLLBACK");
+    throw error;
+  }
+}
+
 export function openDatabase(dbPath, { seedDemo = false } = {}) {
   if (dbPath !== ":memory:") mkdirSync(path.dirname(dbPath), { recursive: true });
   const db = new DatabaseSync(dbPath);
@@ -389,6 +424,7 @@ export function openDatabase(dbPath, { seedDemo = false } = {}) {
   // 旧版本限制同一素材在一张画板只能出现一次。事务迁移保留全部既有元素，
   // 只移除该唯一约束，使每次放置都由独立的 canvas_items.id 表示。
   migrateSchema(db);
+  migrateAnnouncementScopes(db);
   allowRepeatedCanvasAssets(db);
   // 示例数据只允许在开发模式或显式开启时写入；生产环境绝不自动写入，
   // 否则空库/路径配置错误会被静默伪装成“示例素材库”。

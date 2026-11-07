@@ -237,6 +237,40 @@ assert.ok(projects.projects.length >= 1, "应有种子项目");
 assert.ok(Array.isArray(projects.projects[0].thumbnails), "项目列表应返回封面缩略图数组");
 assert.ok(projects.projects[0].thumbnails.length <= 4, "封面缩略图最多 4 张");
 
+// 1b) 项目归档：归档状态回显、恢复，以及删除归档项目时的级联清理
+const archiveCreated = await json(await post(`${base}/api/projects`, { name: "归档测试项目", description: "仅用于归档测试" }));
+const archiveProjectId = archiveCreated.project.id;
+assert.equal((await post(`${base}/api/dimensions`, { projectId: archiveProjectId, leftLabel: "左端", rightLabel: "右端" })).status, 201, "归档测试项目应能创建维度");
+assert.equal((await post(`${base}/api/canvases`, { projectId: archiveProjectId, name: "归档测试画板" })).status, 201, "归档测试项目应能创建画板");
+const archivedProject = await json(await fetch(`${base}/api/projects`, {
+  method: "PATCH",
+  headers: { "content-type": "application/json" },
+  body: JSON.stringify({ id: archiveProjectId, name: "归档测试项目", description: "仅用于归档测试", archived: true }),
+}));
+assert.ok(archivedProject.project.archivedAt, "归档后应返回 archivedAt");
+const projectsAfterArchive = await json(await fetch(`${base}/api/projects`));
+assert.ok(!projectsAfterArchive.projects.some((project) => project.id === archiveProjectId), "默认项目列表不应包含归档项目");
+const projectsIncludingArchive = await json(await fetch(`${base}/api/projects?includeArchived=1`));
+assert.ok(projectsIncludingArchive.projects.find((project) => project.id === archiveProjectId)?.archivedAt, "includeArchived=1 应回显归档状态");
+const unarchivedProject = await json(await fetch(`${base}/api/projects`, {
+  method: "PATCH",
+  headers: { "content-type": "application/json" },
+  body: JSON.stringify({ id: archiveProjectId, name: "归档测试项目", description: "仅用于归档测试", archived: false }),
+}));
+assert.equal(unarchivedProject.project.archivedAt, null, "恢复后 archivedAt 应为空");
+await fetch(`${base}/api/projects`, {
+  method: "PATCH",
+  headers: { "content-type": "application/json" },
+  body: JSON.stringify({ id: archiveProjectId, name: "归档测试项目", description: "仅用于归档测试", archived: true }),
+});
+assert.equal((await fetch(`${base}/api/projects?id=${archiveProjectId}`, { method: "DELETE" })).status, 200, "归档项目应可删除");
+const projectsAfterArchiveDelete = await json(await fetch(`${base}/api/projects`));
+assert.ok(!projectsAfterArchiveDelete.projects.some((project) => project.id === archiveProjectId), "删除后项目列表不应包含归档项目");
+const canvasesAfterArchiveDelete = await json(await fetch(`${base}/api/canvases?projectId=${archiveProjectId}`));
+assert.deepEqual(canvasesAfterArchiveDelete.canvases, [], "删除项目应级联清空画板");
+const pagesAfterArchiveDelete = await fetch(`${base}/api/preview-pages?projectId=${archiveProjectId}`);
+assert.equal(pagesAfterArchiveDelete.status, 404, "删除项目后维度 Page 接口应返回项目不存在");
+
 // 2) 工作区
 const ws = await json(await fetch(`${base}/api/workspace?projectId=project-visual-direction`));
 assert.equal(ws.project.name, "机器人视觉方向");
@@ -693,19 +727,42 @@ assert.equal((await memberFetch(`${base}/api/ai-config`)).status, 403, "成员�
 assert.equal((await memberFetch(`${base}/api/tags`)).status, 200, "成员应能维护标签字典");
 assert.equal((await memberFetch(`${base}/api/assets?id=asset-01&mode=permanent`, { method: "DELETE" })).status, 409, "成员应能彻底删除素材（有引用时被拒）");
 
-// 14.5) 登录页公告：未登录可读 / 仅管理员可写 / 启用开关
-const anonAnnouncement = await json(await originalFetch(`${base}/api/announcement`));
-assert.deepEqual(anonAnnouncement, { text: "", enabled: false, updatedAt: null }, "未登录应能读取公告（初始为空）");
-assert.equal((await memberFetch(`${base}/api/announcement`, { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ text: "成员写的公告", enabled: true }) })).status, 403, "成员写公告应 403");
-const annSave = await fetch(`${base}/api/announcement`, { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ text: "周五维护公告", enabled: true }) });
-assert.equal(annSave.status, 200, "管理员应能保存公告");
-const annAfter = await json(await originalFetch(`${base}/api/announcement`));
-assert.equal(annAfter.text, "周五维护公告", "公开读取应回显公告内容");
-assert.equal(annAfter.enabled, true, "公开读取应回显启用状态");
-assert.ok(annAfter.updatedAt, "公告应记录更新时间");
-await fetch(`${base}/api/announcement`, { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ text: "周五维护公告", enabled: false }) });
-const annDisabled = await json(await originalFetch(`${base}/api/announcement`));
-assert.equal(annDisabled.enabled, false, "关闭后 enabled 应为 false");
+// 14.5) 公告：登录页公告与站内全局公告是两份独立设置
+const emptyAnnouncement = { text: "", enabled: false, updatedAt: null };
+const putAnnouncement = (scope, body) => fetch(`${base}/api/announcement?scope=${scope}`, {
+  method: "PUT",
+  headers: { "content-type": "application/json" },
+  body: JSON.stringify(body),
+});
+assert.deepEqual(await json(await originalFetch(`${base}/api/announcement?scope=login`)), emptyAnnouncement, "未登录应能读取登录页公告（初始为空）");
+assert.deepEqual(await json(await originalFetch(`${base}/api/announcement?scope=global`)), emptyAnnouncement, "未登录应能读取全局公告（初始为空）");
+assert.deepEqual(await json(await originalFetch(`${base}/api/announcement`)), emptyAnnouncement, "缺省 scope 应按登录页公告读取");
+assert.equal((await originalFetch(`${base}/api/announcement?scope=unknown`)).status, 400, "未知公告类型应 400");
+assert.equal((await memberFetch(`${base}/api/announcement?scope=login`, { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ text: "成员写的公告", enabled: true }) })).status, 403, "成员写登录页公告应 403");
+assert.equal((await memberFetch(`${base}/api/announcement?scope=global`, { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ text: "成员写的公告", enabled: true }) })).status, 403, "成员写全局公告应 403");
+
+const loginSave = await putAnnouncement("login", { text: "周一登录页维护公告", enabled: true });
+assert.equal(loginSave.status, 200, "管理员应能保存登录页公告");
+const loginAfter = await json(await originalFetch(`${base}/api/announcement?scope=login`));
+assert.equal(loginAfter.text, "周一登录页维护公告", "登录页公告应回显内容");
+assert.equal(loginAfter.enabled, true, "登录页公告应回显启用状态");
+assert.ok(loginAfter.updatedAt, "公告应记录更新时间");
+assert.deepEqual(await json(await originalFetch(`${base}/api/announcement?scope=global`)), emptyAnnouncement, "保存登录页公告不应影响全局公告");
+
+const globalSave = await putAnnouncement("global", { text: "周三站内公告", enabled: true });
+assert.equal(globalSave.status, 200, "管理员应能保存全局公告");
+const globalAfter = await json(await originalFetch(`${base}/api/announcement?scope=global`));
+assert.equal(globalAfter.text, "周三站内公告", "全局公告应回显内容");
+assert.equal(globalAfter.enabled, true, "全局公告应回显启用状态");
+const loginUntouched = await json(await originalFetch(`${base}/api/announcement?scope=login`));
+assert.equal(loginUntouched.text, "周一登录页维护公告", "保存全局公告不应覆盖登录页公告");
+assert.equal(loginUntouched.enabled, true, "保存全局公告不应改变登录页公告的启用状态");
+
+await putAnnouncement("global", { text: "周三站内公告", enabled: false });
+const globalDisabled = await json(await originalFetch(`${base}/api/announcement?scope=global`));
+assert.equal(globalDisabled.enabled, false, "关闭全局公告后 enabled 应为 false");
+assert.equal((await json(await originalFetch(`${base}/api/announcement?scope=login`))).enabled, true, "关闭全局公告不应影响登录页公告");
+assert.equal((await putAnnouncement("unknown", { text: "x", enabled: true })).status, 400, "未知公告类型写入应 400");
 
 // 管理员修改自己的显示名与密码
 const selfPatch = await json(await fetch(`${base}/api/auth/me`, {
@@ -1047,5 +1104,5 @@ assert.match(extZip.headers.get("content-disposition") || "", /attachment/, "扩
 const zipBytes = Buffer.from(await extZip.arrayBuffer());
 assert.equal(zipBytes.slice(0, 2).toString(), "PK", "下载内容应为 zip 文件");
 
-console.log("✓ 全部通过：项目 / 工作区 / 上传 / 缩略图 / 原图 / 去重 / 改元数据 / 改维度名称 / 画板迁移与重复实例 / 安全替换图片 / 旧库标签迁移 / AI 打标(复用·裁决·降级·上传前建议) / 标签管理(重命名·合并·删除·清理) / AI 服务配置(状态·保存·掩码·测试连接·模型列表·环境变量覆盖) / 回收站(软删-列出-恢复-彻底删) / 登录页公告(公开读取·仅管理员可写·启用开关) / 账号系统(首次初始化·登录·权限隔离·成员管理·停用踢下线·重置密码·删除保留素材·登录审计·退出) / 视频(上传·异步转码·进度·时长·封面·Range/206·同类型替换·AI 拦截) / 扩展图片格式(GIF·SVG·AVIF·拒绝未知类型)");
+console.log("✓ 全部通过：项目 / 工作区 / 上传 / 缩略图 / 原图 / 去重 / 改元数据 / 改维度名称 / 画板迁移与重复实例 / 安全替换图片 / 旧库标签迁移 / AI 打标(复用·裁决·降级·上传前建议) / 标签管理(重命名·合并·删除·清理) / AI 服务配置(状态·保存·掩码·测试连接·模型列表·环境变量覆盖) / 回收站(软删-列出-恢复-彻底删) / 公告(登录页·全局两份独立·公开读取·仅管理员可写·启用开关) / 账号系统(首次初始化·登录·权限隔离·成员管理·停用踢下线·重置密码·删除保留素材·登录审计·退出) / 视频(上传·异步转码·进度·时长·封面·Range/206·同类型替换·AI 拦截) / 扩展图片格式(GIF·SVG·AVIF·拒绝未知类型)");
 process.exit(0);

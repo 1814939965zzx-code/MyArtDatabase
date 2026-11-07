@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState } from "react";
-import { ChevronDown, KeyRound, LogOut, Megaphone, Palette, UserCog, Users } from "lucide-react";
+import { ChevronDown, KeyRound, LogIn, LogOut, Megaphone, Palette, UserCog, Users } from "lucide-react";
 import { MenuItem, MenuPanel, MenuSeparator } from "../../ui";
 
-export type UserMenuAction = "account" | "tokens" | "members" | "announcement" | "components" | "logout";
+export type UserMenuAction = "account" | "tokens" | "members" | "loginAnnouncement" | "announcement" | "components" | "logout";
 
 /** 顶部用户菜单：触发器 + 下拉项；点击外部与 Esc 关闭。 */
 export function UserMenu({
@@ -74,14 +74,26 @@ export function UserMenu({
               <MenuItem icon={<Users size={15} aria-hidden />} onClick={() => pick("members")}>
                 成员管理
               </MenuItem>
-              <MenuItem icon={<Megaphone size={15} aria-hidden />} onClick={() => pick("announcement")}>
-                登录页公告
-              </MenuItem>
               <MenuItem icon={<Palette size={15} aria-hidden />} onClick={() => pick("components")}>
                 视觉组件
               </MenuItem>
             </>
           ) : null}
+          {/* 登录页公告与全局公告是两份独立设置，管理员分别编辑；成员/游客只能查看站内全局公告 */}
+          {role === "admin" ? (
+            <>
+              <MenuItem icon={<LogIn size={15} aria-hidden />} onClick={() => pick("loginAnnouncement")}>
+                登录页公告
+              </MenuItem>
+              <MenuItem icon={<Megaphone size={15} aria-hidden />} onClick={() => pick("announcement")}>
+                全局公告
+              </MenuItem>
+            </>
+          ) : (
+            <MenuItem icon={<Megaphone size={15} aria-hidden />} onClick={() => pick("announcement")}>
+              当前公告
+            </MenuItem>
+          )}
           <MenuSeparator />
           <MenuItem danger icon={<LogOut size={15} aria-hidden />} onClick={() => pick("logout")}>
             退出登录

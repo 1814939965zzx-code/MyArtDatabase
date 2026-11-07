@@ -1,8 +1,9 @@
 "use client";
 
 import { Check, KeyRound, Merge, Pencil, Trash2, X } from "lucide-react";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AiConfigModal } from "./AiConfigModal";
+import { DeletionToast } from "./DeletionToast";
 import { Badge, Button, EmptyState, IconButton, InlineMessage, Input, Modal, SearchInput, Spinner, Tag, cn } from "./ui";
 
 export type TagEntry = {
@@ -58,6 +59,13 @@ export function TagManager({
   const [mergeKeptId, setMergeKeptId] = useState<string | null>(null);
   const [mergeAssets, setMergeAssets] = useState<MergeAsset[] | null>(null);
   const [aiConfigOpen, setAiConfigOpen] = useState(false);
+  const [pendingDeletion, setPendingDeletion] = useState<{
+    token: string; tag: TagEntry; index: number; seconds: number;
+  } | null>(null);
+  const deleteTimer = useRef<number | null>(null);
+  const pendingTagId = useRef<string | null>(null);
+  const pendingDeletionRef = useRef(pendingDeletion);
+  pendingDeletionRef.current = pendingDeletion;
 
   const load = useCallback(async () => {
     try {
@@ -65,7 +73,7 @@ export function TagManager({
       const visible = isProject && projectTags
         ? data.tags.filter((tag) => projectTags.includes(tag.name))
         : data.tags;
-      setTags(visible);
+      setTags(pendingTagId.current ? visible.filter((tag) => tag.id !== pendingTagId.current) : visible);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "标签载入失败");
     } finally {
@@ -76,6 +84,28 @@ export function TagManager({
   useEffect(() => {
     void load();
   }, [load]);
+
+  // 删除标签的 5 秒撤销窗口倒计时
+  useEffect(() => {
+    if (!pendingDeletion) return;
+    const token = pendingDeletion.token;
+    const interval = window.setInterval(() => {
+      setPendingDeletion((current) => current?.token === token
+        ? { ...current, seconds: Math.max(1, current.seconds - 1) }
+        : current);
+    }, 1000);
+    return () => window.clearInterval(interval);
+  }, [pendingDeletion?.token]);
+
+  // 关闭标签管理时仍要兑现删除
+  useEffect(() => () => {
+    if (deleteTimer.current === null) return;
+    window.clearTimeout(deleteTimer.current);
+    deleteTimer.current = null;
+    const pending = pendingDeletionRef.current;
+    if (!pending) return;
+    void request(`/api/tags?id=${encodeURIComponent(pending.tag.id)}`, { method: "DELETE" }).then(onChanged).catch(() => undefined);
+  }, []);
 
   const filtered = useMemo(() => {
     const query = keyword.trim().toLowerCase();
@@ -181,24 +211,69 @@ export function TagManager({
     }
   }
 
-  async function removeTag(tag: TagEntry) {
-    const usageNote = tag.usageCount ? `它正被 ${tag.usageCount} 个素材使用，删除后这些素材将不再拥有该标签。` : "它目前没有任何素材使用。";
-    if (!window.confirm(`删除标签“${tag.name}”？${usageNote}\n\n此操作会从所有素材移除该标签并移出标签字典，无法撤销。`)) return;
-    setBusy(true);
+  /** 删除标签：立即从列表隐藏，5 秒撤销窗口结束后才提交服务端删除。 */
+  function removeTag(tag: TagEntry) {
+    if (busy || pendingDeletion) return;
+    const index = tags.findIndex((entry) => entry.id === tag.id);
+    setTags((current) => current.filter((entry) => entry.id !== tag.id));
     setError("");
+    pendingTagId.current = tag.id;
+    const pending = {
+      token: `tag:${tag.id}:${Date.now()}`,
+      tag,
+      index: index >= 0 ? index : 0,
+      seconds: 5,
+    };
+    setPendingDeletion(pending);
+    deleteTimer.current = window.setTimeout(() => {
+      deleteTimer.current = null;
+      setPendingDeletion(null);
+      void commitTagDeletion(pending);
+    }, 5000);
+  }
+
+  async function commitTagDeletion(pending: NonNullable<typeof pendingDeletion>) {
+    setBusy(true);
     try {
-      await request(`/api/tags?id=${encodeURIComponent(tag.id)}`, { method: "DELETE" });
+      await request(`/api/tags?id=${encodeURIComponent(pending.tag.id)}`, { method: "DELETE" });
+      pendingTagId.current = null;
       await load();
       onChanged();
     } catch (reason) {
+      pendingTagId.current = null;
+      setTags((current) => {
+        if (current.some((tag) => tag.id === pending.tag.id)) return current;
+        const next = [...current];
+        next.splice(Math.min(pending.index, next.length), 0, pending.tag);
+        return next;
+      });
       setError(reason instanceof Error ? reason.message : "删除失败");
     } finally {
       setBusy(false);
+      setPendingDeletion((current) => current?.token === pending.token ? null : current);
     }
   }
 
+  function undoTagDeletion() {
+    const pending = pendingDeletion;
+    if (!pending) return;
+    if (deleteTimer.current !== null) {
+      window.clearTimeout(deleteTimer.current);
+      deleteTimer.current = null;
+    }
+    pendingTagId.current = null;
+    setTags((current) => {
+      if (current.some((tag) => tag.id === pending.tag.id)) return current;
+      const next = [...current];
+      next.splice(Math.min(pending.index, next.length), 0, pending.tag);
+      return next;
+    });
+    setPendingDeletion(null);
+    setError("");
+  }
+
   async function cleanupUnused() {
-    if (!window.confirm(`清理未使用标签？将删除 ${unusedCount} 个没有任何素材引用的标签。`)) return;
+    if (busy || pendingDeletion) return;
     setBusy(true);
     setError("");
     try {
@@ -259,7 +334,7 @@ export function TagManager({
               variant="ghost"
               size="sm"
               icon={<Trash2 size={13} aria-hidden />}
-              disabled={busy || !unusedCount}
+              disabled={busy || !unusedCount || Boolean(pendingDeletion)}
               onClick={() => void cleanupUnused()}
             >
               清理未使用
@@ -349,7 +424,7 @@ export function TagManager({
                                 <Merge size={13} aria-hidden />
                               </IconButton>
                             ) : null}
-                            <IconButton size="sm" variant="danger" label={`删除 ${tag.name}`} disabled={busy} onClick={() => void removeTag(tag)}>
+                            <IconButton size="sm" variant="danger" label={`删除 ${tag.name}`} disabled={busy || Boolean(pendingDeletion)} onClick={() => void removeTag(tag)}>
                               <Trash2 size={13} aria-hidden />
                             </IconButton>
                           </div>
@@ -437,6 +512,13 @@ export function TagManager({
         ) : null}
       </Modal>
       {aiConfigOpen ? <AiConfigModal onClose={() => setAiConfigOpen(false)} /> : null}
+      {pendingDeletion ? (
+        <DeletionToast
+          label={`标签“${pendingDeletion.tag.name}”`}
+          seconds={pendingDeletion.seconds}
+          onUndo={undoTagDeletion}
+        />
+      ) : null}
     </>
   );
 }

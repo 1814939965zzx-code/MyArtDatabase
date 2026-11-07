@@ -32,7 +32,10 @@ import { formatDuration, isVideoMime, transcodePercent, useTranscodePolling, vid
 import type { SessionUser } from "./AuthGate";
 import { AccountSettingsModal } from "./AccountSettingsModal";
 import { AllAssetsView, type LibraryAsset } from "./AllAssetsView";
+import { AnnouncementBanner } from "./components/layout/AnnouncementBanner";
 import { AnnouncementModal } from "./AnnouncementModal";
+import { AnnouncementViewerModal } from "./AnnouncementViewerModal";
+import { ArchivedProjectsView } from "./ArchivedProjectsView";
 import { AssetMetadataEditor, type AssetMetadataEditorHandle, type AssetMetadataUpdate } from "./AssetMetadataEditor";
 import { AssetImageReplacement } from "./AssetImageReplacement";
 import { BoardView } from "./BoardView";
@@ -66,6 +69,7 @@ type Project = {
   description: string;
   assetCount: number;
   dimensionCount: number;
+  archivedAt?: string | null;
   thumbnails?: string[];
 };
 
@@ -114,7 +118,22 @@ type PendingDeletion =
       dimensionValues: Record<string, number>; selectedIds: string[];
       seconds: number;
     }
-  | { token: string; kind: "asset"; assetId: string; name: string; seconds: number };
+  /** 彻底删除素材（回收站单个/批量）：立即从回收站隐藏，5 秒后才提交服务端删除。 */
+  | { token: string; kind: "trash"; assets: TrashedAsset[]; seconds: number }
+  /** 删除项目：立即从列表隐藏，5 秒后才提交服务端删除。 */
+  | { token: string; kind: "project"; project: Project; index: number; seconds: number };
+
+type Announcement = { text: string; enabled: boolean; updatedAt?: string | null };
+
+/** 公告版本指纹：管理员改内容或重新保存后，之前关闭过公告的浏览器应再次看到。 */
+function announcementDismissKey(announcement: Announcement): string {
+  const source = `${announcement.updatedAt || ""}|${announcement.text}`;
+  let hash = 5381;
+  for (let index = 0; index < source.length; index += 1) {
+    hash = ((hash << 5) + hash) ^ source.charCodeAt(index);
+  }
+  return `artdatabase:announcement:dismissed:${(hash >>> 0).toString(36)}`;
+}
 
 /** 撤销窗口内服务端快照仍带着待删除维度：合并前先剥掉，避免刷新把维度带回来。 */
 function withoutDimension(page: PreviewPage, dimensionId: string): PreviewPage {
@@ -137,7 +156,7 @@ export function ArtDatabaseApp({ user, onLogout }: { user: SessionUser; onLogout
   const [projects, setProjects] = useState<Project[]>([]);
   const [libraryAssets, setLibraryAssets] = useState<LibraryAsset[]>([]);
   const [trashAssets, setTrashAssets] = useState<TrashedAsset[]>([]);
-  const [activeArea, setActiveArea] = useState<"home" | "library" | "project" | "trash" | "components">("home");
+  const [activeArea, setActiveArea] = useState<"home" | "library" | "project" | "trash" | "archived" | "components">("home");
   const [selectedProjectId, setSelectedProjectId] = useState("");
   const [workspace, setWorkspace] = useState<Workspace | null>(null);
   const [previewPage, setPreviewPage] = useState<PreviewPage | null>(null);
@@ -253,7 +272,10 @@ export function ArtDatabaseApp({ user, onLogout }: { user: SessionUser; onLogout
   const [accountOpen, setAccountOpen] = useState(false);
   const [tokenSettingsOpen, setTokenSettingsOpen] = useState(false);
   const [userManagerOpen, setUserManagerOpen] = useState(false);
-  const [announcementOpen, setAnnouncementOpen] = useState(false);
+  // 公告面板：登录页公告（login）与站内全局公告（global）是两份独立设置，按入口分别打开
+  const [announcementPanel, setAnnouncementPanel] = useState<null | { scope: "login" | "global"; readOnly: boolean }>(null);
+  const [announcement, setAnnouncement] = useState<Announcement | null>(null);
+  const [announcementDismissed, setAnnouncementDismissed] = useState(false);
   const [currentUser, setCurrentUser] = useState<SessionUser>(user);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const metadataEditorRef = useRef<AssetMetadataEditorHandle>(null);
@@ -262,6 +284,9 @@ export function ArtDatabaseApp({ user, onLogout }: { user: SessionUser; onLogout
   const deletionTimers = useRef(new Map<string, number>());
   // 已本地移除、但服务端删除还没提交的维度（pageId → dimensionIds）：刷新合并时先剥掉
   const pendingDimensionDeletions = useRef(new Map<string, Set<string>>());
+  // 等待撤销窗口的回收站素材 / 项目：刷新列表时先过滤，避免 5 秒内又出现在界面上
+  const pendingTrashIds = useRef(new Set<string>());
+  const pendingProjectIds = useRef(new Set<string>());
   const availableTags = useMemo(
     () => tagDict.filter((tag) => tag.usageCount > 0).map((tag) => tag.name).sort((a, b) => a.localeCompare(b, "zh-CN")),
     [tagDict],
@@ -272,13 +297,15 @@ export function ArtDatabaseApp({ user, onLogout }: { user: SessionUser; onLogout
   );
 
   async function loadProjects(preferredId?: string) {
-    const data = await apiFetch<{ projects: Project[] }>("/api/projects");
-    setProjects(data.projects);
+    const data = await apiFetch<{ projects: Project[] }>("/api/projects?includeArchived=1");
+    const visible = data.projects.filter((project) => !pendingProjectIds.current.has(project.id));
+    const active = visible.filter((project) => !project.archivedAt);
+    setProjects(visible);
     setSelectedProjectId((current) => {
       const next = preferredId || current;
-      return data.projects.some((project) => project.id === next)
+      return active.some((project) => project.id === next)
         ? next
-        : data.projects[0]?.id || "";
+        : active[0]?.id || "";
     });
   }
 
@@ -317,7 +344,7 @@ export function ArtDatabaseApp({ user, onLogout }: { user: SessionUser; onLogout
     if (!quiet) setTrashLoading(true);
     try {
       const data = await apiFetch<{ assets: TrashedAsset[] }>("/api/trash");
-      setTrashAssets(data.assets);
+      setTrashAssets(data.assets.filter((asset) => !pendingTrashIds.current.has(asset.id)));
     } finally {
       setTrashLoading(false);
     }
@@ -330,6 +357,63 @@ export function ArtDatabaseApp({ user, onLogout }: { user: SessionUser; onLogout
     } catch {
       // 联想词载入失败不阻塞页面
     }
+  }
+
+  async function refreshAnnouncement() {
+    try {
+      // 站内只读全局公告；登录页公告单独一份，不进入站内状态
+      const data = await apiFetch<Announcement>("/api/announcement?scope=global");
+      let dismissed = false;
+      try {
+        dismissed = window.localStorage.getItem(announcementDismissKey(data)) === "1";
+      } catch {
+        dismissed = false;
+      }
+      // 同一次更新里写入公告与关闭状态，避免已关闭公告的浏览器先闪一下再消失
+      setAnnouncement(data);
+      setAnnouncementDismissed(dismissed);
+    } catch {
+      // 公告读取失败不阻塞页面
+    }
+  }
+
+  useEffect(() => {
+    // 初始读取全局公告
+    void refreshAnnouncement();
+    // 切回标签/窗口聚焦时刷新，管理员刚发布的公告无需手动刷新页面
+    const refresh = () => { if (document.visibilityState === "visible") void refreshAnnouncement(); };
+    document.addEventListener("visibilitychange", refresh);
+    window.addEventListener("focus", refresh);
+    return () => {
+      document.removeEventListener("visibilitychange", refresh);
+      window.removeEventListener("focus", refresh);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!announcement) {
+      setAnnouncementDismissed(false);
+      return;
+    }
+    try {
+      setAnnouncementDismissed(window.localStorage.getItem(announcementDismissKey(announcement)) === "1");
+    } catch {
+      setAnnouncementDismissed(false);
+    }
+  }, [announcement]);
+
+  function dismissAnnouncement() {
+    if (!announcement) return;
+    try {
+      window.localStorage.setItem(announcementDismissKey(announcement), "1");
+    } catch {
+      // 隐私模式/禁用存储时只在本次会话隐藏
+    }
+    setAnnouncementDismissed(true);
+  }
+
+  function openAnnouncementPanel(scope: "login" | "global") {
+    setAnnouncementPanel({ scope, readOnly: currentUser.role !== "admin" });
   }
 
   useEffect(() => {
@@ -524,13 +608,21 @@ export function ArtDatabaseApp({ user, onLogout }: { user: SessionUser; onLogout
     if (workspace) void loadWorkspace(workspace.project.id);
   });
 
+  const activeProjects = useMemo(() => projects.filter((project) => !project.archivedAt), [projects]);
   const filteredProjects = useMemo(() => {
     const keyword = search.trim().toLocaleLowerCase("zh-CN");
-    if (!keyword) return projects;
-    return projects.filter((project) =>
-      [project.name, project.description].some((text) => text.toLocaleLowerCase("zh-CN").includes(keyword)),
+    return activeProjects.filter((project) =>
+      !keyword || [project.name, project.description].some((text) => text.toLocaleLowerCase("zh-CN").includes(keyword)),
     );
-  }, [projects, search]);
+  }, [activeProjects, search]);
+
+  const archivedProjects = useMemo(() => projects.filter((project) => Boolean(project.archivedAt)), [projects]);
+  const filteredArchivedProjects = useMemo(() => {
+    const keyword = search.trim().toLocaleLowerCase("zh-CN");
+    return archivedProjects.filter((project) =>
+      !keyword || [project.name, project.description].some((text) => text.toLocaleLowerCase("zh-CN").includes(keyword)),
+    );
+  }, [archivedProjects, search]);
 
   /** 从主页进入项目：收起侧边栏，只保留项目工作区。 */
   function openProject(project: Project) {
@@ -615,25 +707,108 @@ export function ArtDatabaseApp({ user, onLogout }: { user: SessionUser; onLogout
     }
   }
 
-  async function deleteProject(projectOverride?: Project) {
-    const target = projectOverride ?? editingProject;
-    if (!target || !window.confirm(`确定删除“${target.name}”吗？项目中的分类数据会同时删除。`)) return;
+  /** 归档项目：从主页隐藏，进入“已归档项目”；不删除任何素材、维度或画板。 */
+  async function archiveProject(project: Project) {
     setBusy(true);
     try {
-      await apiFetch(`/api/projects?id=${encodeURIComponent(target.id)}`, { method: "DELETE" });
+      const data = await apiFetch<{ project: Project }>("/api/projects", {
+        method: "PATCH",
+        body: JSON.stringify({ id: project.id, name: project.name, description: project.description, archived: true }),
+      });
+      if (!data.project?.archivedAt) {
+        throw new Error("归档状态未保存，请确认服务端已更新并重启后重试");
+      }
+      const archivedAt = data.project.archivedAt;
+      setProjects((current) => current.map((entry) => entry.id === project.id ? { ...entry, archivedAt } : entry));
+      await loadProjects();
       setEditOpen(false);
       setEditingProject(null);
-      if (workspace?.project.id === target.id) {
+      if (workspace?.project.id === project.id) {
         setWorkspace(null);
         setSelectedProjectId("");
+        setActiveArea("home");
       }
-      await loadProjects();
-      setMessage("项目已删除");
+      setMessage("项目已归档，可在“已归档项目”中恢复或删除");
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : "删除失败");
+      setMessage(error instanceof Error ? error.message : "归档失败");
     } finally {
       setBusy(false);
     }
+  }
+
+  /** 从“已归档项目”恢复：重新回到主页项目列表。 */
+  async function unarchiveProject(project: Project) {
+    setBusy(true);
+    try {
+      await apiFetch("/api/projects", {
+        method: "PATCH",
+        body: JSON.stringify({ id: project.id, name: project.name, description: project.description, archived: false }),
+      });
+      setProjects((current) => current.map((entry) => entry.id === project.id ? { ...entry, archivedAt: null } : entry));
+      await loadProjects();
+      setMessage("项目已恢复");
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "恢复失败");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  /** 删除项目：立即从列表隐藏，5 秒撤销窗口结束后才提交服务端删除。 */
+  function deleteProject(projectOverride?: Project) {
+    const target = projectOverride ?? editingProject;
+    if (!target) return;
+    const index = projects.findIndex((project) => project.id === target.id);
+    pendingProjectIds.current.add(target.id);
+    setMessage(null);
+    setProjects((current) => current.filter((project) => project.id !== target.id));
+    setEditOpen(false);
+    setEditingProject(null);
+    if (workspace?.project.id === target.id) {
+      setWorkspace(null);
+      setSelectedProjectId("");
+      setActiveArea("home");
+    }
+    const pending: Extract<PendingDeletion, { kind: "project" }> = {
+      token: `project:${target.id}:${Date.now()}`,
+      kind: "project",
+      project: target,
+      index: index >= 0 ? index : 0,
+      seconds: 5,
+    };
+    setPendingDeletion(pending);
+    startDeletionTimer(pending.token, () => { void commitProjectDeletion(pending); });
+  }
+
+  async function commitProjectDeletion(pending: Extract<PendingDeletion, { kind: "project" }>) {
+    try {
+      await apiFetch(`/api/projects?id=${encodeURIComponent(pending.project.id)}`, { method: "DELETE" });
+      pendingProjectIds.current.delete(pending.project.id);
+      await loadProjects();
+      setMessage("项目已删除");
+    } catch (error) {
+      pendingProjectIds.current.delete(pending.project.id);
+      setProjects((current) => {
+        if (current.some((project) => project.id === pending.project.id)) return current;
+        const next = [...current];
+        next.splice(Math.min(pending.index, next.length), 0, pending.project);
+        return next;
+      });
+      setMessage(error instanceof Error ? error.message : "删除项目失败");
+    }
+  }
+
+  function undoProjectDeletion(pending: Extract<PendingDeletion, { kind: "project" }>) {
+    cancelDeletionTimer(pending.token);
+    pendingProjectIds.current.delete(pending.project.id);
+    setProjects((current) => {
+      if (current.some((project) => project.id === pending.project.id)) return current;
+      const next = [...current];
+      next.splice(Math.min(pending.index, next.length), 0, pending.project);
+      return next;
+    });
+    setPendingDeletion((current) => current?.token === pending.token ? null : current);
+    setMessage("已撤销删除");
   }
 
   async function addDimension(event: FormEvent<HTMLFormElement>) {
@@ -765,30 +940,10 @@ export function ArtDatabaseApp({ user, onLogout }: { user: SessionUser; onLogout
     setMessage("已撤销删除");
   }
 
-  /** 素材软删除已即时提交到回收站，撤销窗口只负责提供“恢复”入口。 */
-  function scheduleAssetDeletion(asset: { id: string; name: string }) {
-    const pending: Extract<PendingDeletion, { kind: "asset" }> = {
-      token: `asset:${asset.id}:${Date.now()}`,
-      kind: "asset",
-      assetId: asset.id,
-      name: asset.name,
-      seconds: 5,
-    };
-    setMessage(null);
-    setPendingDeletion(pending);
-    startDeletionTimer(pending.token, () => { /* 已进入回收站，倒计时结束即不可撤销 */ });
-  }
-
-  async function undoAssetDeletion(pending: Extract<PendingDeletion, { kind: "asset" }>) {
-    cancelDeletionTimer(pending.token);
-    setPendingDeletion((current) => current?.token === pending.token ? null : current);
-    try {
-      await apiFetch("/api/assets/restore", { method: "POST", body: JSON.stringify({ id: pending.assetId }) });
-      await Promise.all([loadLibrary(true), loadProjects()]);
-      setMessage("已撤销删除");
-    } catch (error) {
-      setMessage(error instanceof Error ? error.message : "撤销删除失败");
-    }
+  /** 素材软删除已即时提交到回收站：可随时在回收站恢复，不再显示 5 秒倒计时。 */
+  function handleAssetTrashed(asset: { id: string; name: string }) {
+    setMessage(`已将“${asset.name}”移入回收站，可在回收站恢复`);
+    void Promise.all([loadTrash(true), loadProjects()]);
   }
 
   function setLocalDimensionValue(assetId: string, dimensionId: string, value: number) {
@@ -902,13 +1057,13 @@ export function ArtDatabaseApp({ user, onLogout }: { user: SessionUser; onLogout
   }
 
   async function removeAssetFromProject(asset: Asset) {
-    if (!workspace || !window.confirm(`从当前项目移除“${asset.name}”？全局素材不会被删除。`)) return;
+    if (!workspace) return;
     try {
       await apiFetch(`/api/project-assets?projectId=${encodeURIComponent(workspace.project.id)}&assetId=${encodeURIComponent(asset.id)}`, { method: "DELETE" });
       setSelectedAssetId(null);
       setDetailNav(null);
       await Promise.all([loadProjects(workspace.project.id), loadWorkspace(workspace.project.id)]);
-      setMessage("素材已从当前项目移除");
+      setMessage("素材已从当前项目移除，可在全部素材重新导入");
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "移除失败");
     }
@@ -944,7 +1099,6 @@ export function ArtDatabaseApp({ user, onLogout }: { user: SessionUser; onLogout
     if (!workspace || !projectSelectedIds.length) return;
     const projectId = workspace.project.id;
     const ids = [...projectSelectedIds];
-    if (!window.confirm(`从当前项目移除选中的 ${ids.length} 个素材？全局素材不会被删除。`)) return;
     setBusy(true);
     try {
       const results = await Promise.allSettled(ids.map((assetId) =>
@@ -1075,42 +1229,61 @@ export function ArtDatabaseApp({ user, onLogout }: { user: SessionUser; onLogout
     }
   }
 
-  async function purgeTrashAsset(asset: TrashedAsset) {
-    const referenceNote = asset.projects.length
-      ? `\n\n它目前被 ${asset.projects.length} 个项目引用，这些引用和相关画板内容也会一并移除。`
-      : "";
-    if (!window.confirm(`永久删除“${asset.name}”？${referenceNote}\n\n此操作会删除原始图片文件和数据库记录，无法恢复。`)) return;
-    setBusy(true);
-    try {
-      await apiFetch(`/api/assets?id=${encodeURIComponent(asset.id)}&mode=permanent&force=true`, { method: "DELETE" });
-      await Promise.all([loadTrash(true), loadLibrary(), loadProjects()]);
-      setMessage("素材已永久删除");
-    } catch (error) {
-      setMessage(error instanceof Error ? error.message : "永久删除失败");
-    } finally {
-      setBusy(false);
+  /** 永久删除：立即从回收站隐藏，5 秒撤销窗口结束后才提交服务端删除。 */
+  function purgeTrashAssets(assetsToPurge: TrashedAsset[]) {
+    if (!assetsToPurge.length) return;
+    const ids = new Set(assetsToPurge.map((asset) => asset.id));
+    for (const id of ids) pendingTrashIds.current.add(id);
+    setMessage(null);
+    setTrashAssets((current) => current.filter((asset) => !ids.has(asset.id)));
+    const pending: Extract<PendingDeletion, { kind: "trash" }> = {
+      token: `trash:${Date.now()}`,
+      kind: "trash",
+      assets: assetsToPurge,
+      seconds: 5,
+    };
+    setPendingDeletion(pending);
+    startDeletionTimer(pending.token, () => { void commitTrashPurge(pending); });
+  }
+
+  async function commitTrashPurge(pending: Extract<PendingDeletion, { kind: "trash" }>) {
+    const results = await Promise.allSettled(pending.assets.map((asset) =>
+      apiFetch(`/api/assets?id=${encodeURIComponent(asset.id)}&mode=permanent&force=true`, { method: "DELETE" }),
+    ));
+    const failed = pending.assets.filter((_, index) => results[index]?.status === "rejected");
+    for (const asset of pending.assets) pendingTrashIds.current.delete(asset.id);
+    await Promise.all([loadTrash(true), loadLibrary(), loadProjects()]);
+    if (failed.length) {
+      setTrashAssets((current) => [...failed, ...current.filter((asset) => !failed.some((item) => item.id === asset.id))]);
+      setMessage(`已永久删除 ${pending.assets.length - failed.length} 个素材，${failed.length} 个失败`);
+    } else {
+      setMessage(pending.assets.length === 1 ? "素材已永久删除" : `已永久删除 ${pending.assets.length} 个素材`);
     }
   }
 
-  async function purgeTrashAssets(assetsToPurge: TrashedAsset[]) {
-    if (!assetsToPurge.length) return;
-    const referenced = assetsToPurge.filter((asset) => asset.projects.length).length;
-    const referenceNote = referenced ? `\n\n其中 ${referenced} 个素材仍被项目引用，这些引用和相关画板内容也会一并移除。` : "";
-    if (!window.confirm(`永久删除选中的 ${assetsToPurge.length} 个素材？${referenceNote}\n\n此操作会删除原始图片文件和数据库记录，无法恢复。`)) return;
-    setBusy(true);
-    try {
-      const results = await Promise.allSettled(assetsToPurge.map((asset) =>
-        apiFetch(`/api/assets?id=${encodeURIComponent(asset.id)}&mode=permanent&force=true`, { method: "DELETE" }),
-      ));
-      const ok = results.filter((result) => result.status === "fulfilled").length;
-      const failed = results.length - ok;
-      await Promise.all([loadTrash(true), loadLibrary(), loadProjects()]);
-      setMessage(failed ? `已永久删除 ${ok} 个素材，${failed} 个失败` : `已永久删除 ${ok} 个素材`);
-    } catch (error) {
-      setMessage(error instanceof Error ? error.message : "永久删除失败");
-    } finally {
-      setBusy(false);
+  function undoTrashPurge(pending: Extract<PendingDeletion, { kind: "trash" }>) {
+    cancelDeletionTimer(pending.token);
+    for (const asset of pending.assets) pendingTrashIds.current.delete(asset.id);
+    setTrashAssets((current) => {
+      const existing = new Set(current.map((asset) => asset.id));
+      return [...pending.assets.filter((asset) => !existing.has(asset.id)), ...current];
+    });
+    setPendingDeletion((current) => current?.token === pending.token ? null : current);
+    setMessage("已撤销删除");
+  }
+
+  function pendingDeletionLabel(pending: PendingDeletion): string {
+    if (pending.kind === "dimension") return `维度“${pending.dimension.leftLabel} — ${pending.dimension.rightLabel}”`;
+    if (pending.kind === "trash") {
+      return pending.assets.length === 1 ? `素材“${pending.assets[0].name}”` : `回收站中的 ${pending.assets.length} 个素材`;
     }
+    return `项目“${pending.project.name}”`;
+  }
+
+  function undoPendingDeletion(pending: PendingDeletion) {
+    if (pending.kind === "dimension") undoDimensionDeletion(pending);
+    else if (pending.kind === "trash") undoTrashPurge(pending);
+    else undoProjectDeletion(pending);
   }
 
   return (
@@ -1139,7 +1312,7 @@ export function ArtDatabaseApp({ user, onLogout }: { user: SessionUser; onLogout
             <SidebarNavItem
               icon={<Archive size={16} aria-hidden />}
               title="项目"
-              subtitle={`${projects.length} 个独立空间`}
+              subtitle={`${activeProjects.length} 个独立空间`}
               active={activeArea === "home"}
               onClick={() => {
                 setActiveArea("home");
@@ -1175,7 +1348,7 @@ export function ArtDatabaseApp({ user, onLogout }: { user: SessionUser; onLogout
 
           <div className="mt-6 flex items-center justify-between px-2.5 pb-2 pt-1 text-2xs uppercase tracking-[.12em] text-white/50">
             <span>项目</span>
-            <span>{projects.length}</span>
+            <span>{activeProjects.length}</span>
           </div>
           {!readOnly ? (
             <button
@@ -1188,19 +1361,33 @@ export function ArtDatabaseApp({ user, onLogout }: { user: SessionUser; onLogout
           ) : null}
 
           {!readOnly ? (
-            <SidebarNavItem
-              className="mt-auto"
-              icon={<Trash2 size={16} aria-hidden />}
-              title="回收站"
-              subtitle={`${trashAssets.length} 个已删除素材`}
-              active={activeArea === "trash"}
-              onClick={() => {
-                setActiveArea("trash");
-                setSelectedAssetId(null);
-                setSidebarOpen(false);
-                void loadTrash();
-              }}
-            />
+            <>
+              <SidebarNavItem
+                className="mt-auto"
+                icon={<Archive size={16} aria-hidden />}
+                title="已归档项目"
+                subtitle={`${archivedProjects.length} 个已归档`}
+                active={activeArea === "archived"}
+                onClick={() => {
+                  setActiveArea("archived");
+                  setSelectedAssetId(null);
+                  setSidebarOpen(false);
+                  void loadProjects();
+                }}
+              />
+              <SidebarNavItem
+                icon={<Trash2 size={16} aria-hidden />}
+                title="回收站"
+                subtitle={`${trashAssets.length} 个已删除素材`}
+                active={activeArea === "trash"}
+                onClick={() => {
+                  setActiveArea("trash");
+                  setSelectedAssetId(null);
+                  setSidebarOpen(false);
+                  void loadTrash();
+                }}
+              />
+            </>
           ) : null}
         </aside>
       ) : null}
@@ -1263,6 +1450,8 @@ export function ArtDatabaseApp({ user, onLogout }: { user: SessionUser; onLogout
               </div>
             ) : activeArea === "home" ? (
               <TopbarTitle title="项目" count={filteredProjects.length} />
+            ) : activeArea === "archived" ? (
+              <TopbarTitle title="已归档项目" count={filteredArchivedProjects.length} />
             ) : activeArea === "library" ? (
               <TopbarTitle title="全部素材" count={libraryAssets.length} />
             ) : activeArea === "trash" ? (
@@ -1287,8 +1476,8 @@ export function ArtDatabaseApp({ user, onLogout }: { user: SessionUser; onLogout
               <SearchInput
                 value={search}
                 onValueChange={setSearch}
-                placeholder={activeArea === "home" ? "搜索项目名称或说明" : "搜索名称、文件或标签"}
-                aria-label={activeArea === "home" ? "搜索项目" : "搜索素材"}
+                placeholder={activeArea === "home" || activeArea === "archived" ? "搜索项目名称或说明" : "搜索名称、文件或标签"}
+                aria-label={activeArea === "home" || activeArea === "archived" ? "搜索项目" : "搜索素材"}
                 className="w-[min(205px,27.5vw)] max-sm:w-auto max-sm:flex-1"
               />
             ) : null}
@@ -1315,7 +1504,8 @@ export function ArtDatabaseApp({ user, onLogout }: { user: SessionUser; onLogout
                 if (action === "account") setAccountOpen(true);
                 else if (action === "tokens") setTokenSettingsOpen(true);
                 else if (action === "members") setUserManagerOpen(true);
-                else if (action === "announcement") setAnnouncementOpen(true);
+                else if (action === "loginAnnouncement") openAnnouncementPanel("login");
+                else if (action === "announcement") openAnnouncementPanel("global");
                 else if (action === "components") {
                   setActiveArea("components");
                   setSelectedAssetId(null);
@@ -1326,30 +1516,48 @@ export function ArtDatabaseApp({ user, onLogout }: { user: SessionUser; onLogout
           </div>
         </header>
 
-        {activeArea === "trash" ? (
+        {announcement?.enabled && announcement.text.trim() && !announcementDismissed ? (
+          <AnnouncementBanner
+            text={announcement.text}
+            canEdit={currentUser.role === "admin"}
+            onEdit={() => setAnnouncementPanel({ scope: "global", readOnly: false })}
+            onDismiss={dismissAnnouncement}
+          />
+        ) : null}
+
+        {activeArea === "archived" ? (
+          <ArchivedProjectsView
+            projects={filteredArchivedProjects}
+            search={search}
+            loading={loading}
+            busy={busy}
+            onRestore={(project) => void unarchiveProject(project)}
+            onDelete={(project) => deleteProject(project)}
+          />
+        ) : activeArea === "trash" ? (
           <TrashView
             assets={trashAssets}
             search={search}
             loading={trashLoading}
             busy={busy}
             onRestore={(asset) => void restoreTrashAsset(asset)}
-            onPurge={(asset) => void purgeTrashAsset(asset)}
+            onPurge={(asset) => purgeTrashAssets([asset])}
             onRestoreMany={(assets) => void restoreTrashAssets(assets)}
-            onPurgeMany={(assets) => void purgeTrashAssets(assets)}
+            onPurgeMany={(assets) => purgeTrashAssets(assets)}
           />
         ) : activeArea === "components" ? (
           <VisualComponentsPage />
         ) : activeArea === "library" ? (
           <AllAssetsView
             assets={libraryAssets}
-            projects={projects}
+            projects={activeProjects}
             search={search}
             view={view}
             loading={libraryLoading}
             onViewChange={setView}
             onRefresh={async () => { await Promise.all([loadLibrary(), loadProjects()]); }}
             onMessage={setMessage}
-            onAssetTrashed={scheduleAssetDeletion}
+            onAssetTrashed={handleAssetTrashed}
             readOnly={readOnly}
           />
         ) : activeArea === "home" ? (
@@ -1361,6 +1569,7 @@ export function ArtDatabaseApp({ user, onLogout }: { user: SessionUser; onLogout
             onEnter={openProject}
             onNewProject={() => setCreateOpen(true)}
             onRename={(project) => { setEditingProject(project); setEditOpen(true); }}
+            onArchive={(project) => void archiveProject(project)}
             onDelete={(project) => void deleteProject(project)}
           />
         ) : loading && !workspace ? (
@@ -1692,10 +1901,13 @@ export function ArtDatabaseApp({ user, onLogout }: { user: SessionUser; onLogout
               <Textarea id="edit-project-description" name="description" maxLength={240} rows={3} defaultValue={editingProject.description} />
             </Field>
             <div className="flex flex-wrap items-center gap-3 border-t border-line-soft pt-3">
+              <Button variant="secondary" size="sm" icon={<Archive size={15} aria-hidden />} onClick={() => void archiveProject(editingProject)} disabled={busy}>
+                归档项目
+              </Button>
               <Button variant="danger" size="sm" icon={<Trash2 size={15} aria-hidden />} onClick={() => void deleteProject()} disabled={busy}>
                 删除项目
               </Button>
-              <span className="text-xs text-muted">素材原文件不会被删除</span>
+              <span className="text-xs text-muted">归档不会删除内容；删除会清空项目数据，素材原文件不会被删除</span>
             </div>
           </form>
         </Modal>
@@ -1797,21 +2009,24 @@ export function ArtDatabaseApp({ user, onLogout }: { user: SessionUser; onLogout
         />
       ) : null}
 
-      {announcementOpen ? (
-        <AnnouncementModal onClose={() => setAnnouncementOpen(false)} />
+      {announcementPanel ? (
+        announcementPanel.readOnly ? (
+          <AnnouncementViewerModal onClose={() => setAnnouncementPanel(null)} />
+        ) : (
+          <AnnouncementModal
+            scope={announcementPanel.scope}
+            onClose={() => setAnnouncementPanel(null)}
+            onSaved={() => { if (announcementPanel.scope === "global") void refreshAnnouncement(); }}
+          />
+        )
       ) : null}
 
       {message ? <Toast open>{message}</Toast> : null}
       {pendingDeletion ? (
         <DeletionToast
-          label={pendingDeletion.kind === "dimension"
-            ? `维度“${pendingDeletion.dimension.leftLabel} — ${pendingDeletion.dimension.rightLabel}”`
-            : `素材“${pendingDeletion.name}”`}
+          label={pendingDeletionLabel(pendingDeletion)}
           seconds={pendingDeletion.seconds}
-          onUndo={() => {
-            if (pendingDeletion.kind === "dimension") undoDimensionDeletion(pendingDeletion);
-            else void undoAssetDeletion(pendingDeletion);
-          }}
+          onUndo={() => undoPendingDeletion(pendingDeletion)}
         />
       ) : null}
     </main>

@@ -5,12 +5,12 @@
 import { AlignCenter, AlignLeft, AlignRight, ArrowDownToLine, ArrowUpToLine, Bold, Check, ChevronDown, Circle, Eye, EyeOff, Frame, ImagePlus, Italic, Maximize2, Minimize2, Minus, MousePointer2, MoveHorizontal, MoveVertical, MoveUpRight, Pencil, Plus, Square, Strikethrough, Tag as TagIcon, Trash2, Type, Underline } from "lucide-react";
 import { DragEvent, KeyboardEvent, MouseEvent, PointerEvent, useEffect, useRef, useState, type CSSProperties } from "react";
 import { notifyUnauthorized } from "./api";
+import { DeletionToast } from "./DeletionToast";
 import { newSyncId, useBoardSync, type SyncFrame, type SyncItem } from "./sync/boardSync";
 import { useViewportGestures } from "./useViewportGestures";
 import {
   Badge,
   Button,
-  ConfirmDialog,
   EmptyState,
   IconButton,
   Input,
@@ -68,8 +68,13 @@ type MarqueeState = { pointerId: number; startX: number; startY: number; current
 type SnapGuides = { vertical: number[]; horizontal: number[] };
 type LegacyFrameSettings = { name: string; width: number; height: number };
 type DrawState = { pointerId: number; tool: Tool; start: Point; current: Point; points: Point[] };
-// Ctrl/Cmd+Z 撤销栈：只记录移动类操作（元素移动与 Frame 移动，含整组移动）
-type BoardUndoEntry = { canvasId: string; frameSnapshots: PageFrame[]; itemSnapshots: CanvasItem[] };
+// Ctrl/Cmd+Z 撤销栈：记录移动与删除（元素/Frame，含整组移动与批量删除）
+type BoardUndoEntry = {
+  kind: "move" | "delete";
+  canvasId: string;
+  frameSnapshots: PageFrame[];
+  itemSnapshots: CanvasItem[];
+};
 
 const DEFAULT_FRAME_WIDTH = 1920;
 const DEFAULT_FRAME_HEIGHT = 1080;
@@ -177,7 +182,14 @@ export function BoardView({ projectId, assets, onMessage, onSelectAsset, readOnl
   const [frameNameDraft, setFrameNameDraft] = useState("");
   const [frameMenu, setFrameMenu] = useState<{ frameId: string; x: number; y: number } | null>(null);
   const [itemMenu, setItemMenu] = useState<{ itemId: string; x: number; y: number } | null>(null);
-  const [confirmFrameDeleteIds, setConfirmFrameDeleteIds] = useState<string[]>([]);
+  // 删除画板 Page：立即隐藏并切走，5 秒撤销窗口结束后才提交服务端删除
+  const [pendingCanvasDeletion, setPendingCanvasDeletion] = useState<{
+    token: string; canvas: CanvasSummary; index: number; seconds: number;
+  } | null>(null);
+  const canvasDeleteTimer = useRef<number | null>(null);
+  const pendingCanvasIds = useRef(new Set<string>());
+  const pendingCanvasDeletionRef = useRef(pendingCanvasDeletion);
+  pendingCanvasDeletionRef.current = pendingCanvasDeletion;
   // 正在被拖动（移动/缩放）的 Frame：其尺寸文本只在拖动时显示
   const [frameDragId, setFrameDragId] = useState<string | null>(null);
   // ---- 标记元素（与图片混排，仅有一键隐藏开关） ----
@@ -207,7 +219,7 @@ export function BoardView({ projectId, assets, onMessage, onSelectAsset, readOnl
   const batchRef = useRef(false);
   const creatingDefaultPage = useRef(false);
   const viewportRef = useRef<HTMLDivElement>(null);
-  // ---- 撤销：移动操作栈，固定跟随当前 Page ----
+  // ---- 撤销：移动/删除操作栈，固定跟随当前 Page ----
   const undoStack = useRef<BoardUndoEntry[]>([]);
   const undoRef = useRef<() => void>(() => {});
   // 正在进行的 canvas-items 保存数量：撤销前等待写入完成，避免撤销 PATCH 与保存 PATCH 乱序
@@ -341,7 +353,15 @@ export function BoardView({ projectId, assets, onMessage, onSelectAsset, readOnl
 
   async function loadCanvases(preferredId?: string) {
     const data = await json<{ canvases: CanvasSummary[] }>(`/api/canvases?projectId=${encodeURIComponent(projectId)}`);
-    if (!data.canvases.length) {
+    const visible = data.canvases.filter((entry) => !pendingCanvasIds.current.has(entry.id));
+    if (!visible.length) {
+      if (pendingCanvasIds.current.size) {
+        // 正在撤销窗口内的最后一页：先不要自动补新 Page，等 5 秒后真正删除再补
+        setCanvases([]);
+        setCanvasId("");
+        setLoading(false);
+        return;
+      }
       if (readOnly) { setCanvases([]); setCanvasId(""); setLoading(false); return; }
       if (creatingDefaultPage.current) return;
       creatingDefaultPage.current = true;
@@ -352,10 +372,10 @@ export function BoardView({ projectId, assets, onMessage, onSelectAsset, readOnl
         return;
       } finally { creatingDefaultPage.current = false; }
     }
-    setCanvases(data.canvases);
+    setCanvases(visible);
     setCanvasId((current) => {
       const candidate = preferredId || current;
-      return data.canvases.some((entry) => entry.id === candidate) ? candidate : data.canvases[0]?.id || "";
+      return visible.some((entry) => entry.id === candidate) ? candidate : visible[0]?.id || "";
     });
   }
 
@@ -494,6 +514,27 @@ export function BoardView({ projectId, assets, onMessage, onSelectAsset, readOnl
     void loadCanvas(canvasId).catch((error) => onMessage(error instanceof Error ? error.message : "Page 载入失败"));
   }, [canvasId, readOnly]);
 
+  // 删除画板 Page 的 5 秒撤销窗口倒计时
+  useEffect(() => {
+    if (!pendingCanvasDeletion) return;
+    const token = pendingCanvasDeletion.token;
+    const interval = window.setInterval(() => {
+      setPendingCanvasDeletion((current) => current?.token === token
+        ? { ...current, seconds: Math.max(1, current.seconds - 1) }
+        : current);
+    }, 1000);
+    return () => window.clearInterval(interval);
+  }, [pendingCanvasDeletion?.token]);
+
+  // 组件卸载时仍要兑现删除，不能让撤销窗口把删除吞掉
+  useEffect(() => () => {
+    if (canvasDeleteTimer.current === null) return;
+    window.clearTimeout(canvasDeleteTimer.current);
+    canvasDeleteTimer.current = null;
+    const pending = pendingCanvasDeletionRef.current;
+    if (pending) void json(`/api/canvases?id=${encodeURIComponent(pending.canvas.id)}`, { method: "DELETE" });
+  }, [projectId]);
+
   // 拉取时机：进入页面 / 切回标签 / 窗口聚焦时拉一次，停留期间 30 秒兜底；有未同步改动时不覆盖本地。
   useEffect(() => {
     if (!canvasId) return;
@@ -531,7 +572,7 @@ export function BoardView({ projectId, assets, onMessage, onSelectAsset, readOnl
     const down = (event: globalThis.KeyboardEvent) => {
       if (event.code === "Space" && !editable(event.target)) { event.preventDefault(); setSpaceHeld(true); }
       if (readOnly) {
-        if (event.key === "Escape") { setFrameMenu(null); setItemMenu(null); setConfirmFrameDeleteIds([]); }
+        if (event.key === "Escape") { setFrameMenu(null); setItemMenu(null); }
         return;
       }
       // Ctrl/Cmd+Z：撤销最近一次移动（元素 / Frame / 整组移动）；输入框内保留浏览器原生撤销
@@ -542,7 +583,7 @@ export function BoardView({ projectId, assets, onMessage, onSelectAsset, readOnl
         undoRef.current();
         return;
       }
-      if (event.key === "Escape") { setFrameMenu(null); setItemMenu(null); setConfirmFrameDeleteIds([]); if (drawRef.current) drawRef.current = null; setDrawPreview(null); frameDrawRef.current = null; setFrameDraft(null); setFrameMode(false); setTool("pointer"); }
+      if (event.key === "Escape") { setFrameMenu(null); setItemMenu(null); if (drawRef.current) drawRef.current = null; setDrawPreview(null); frameDrawRef.current = null; setFrameDraft(null); setFrameMode(false); setTool("pointer"); }
       if (event.key === "Delete" || event.key === "Backspace") {
         if (editable(event.target)) return;
         if (!selectedItemIds.length && !selectedFrameIds.length) return;
@@ -663,14 +704,69 @@ export function BoardView({ projectId, assets, onMessage, onSelectAsset, readOnl
     } catch (error) { onMessage(error instanceof Error ? error.message : "保存失败"); }
   }
 
-  async function deleteCanvas() {
-    if (readOnly) return;
-    if (!canvas || !window.confirm(`删除 Page“${canvas.name}”？其中的画板布局也会删除。`)) return;
+  /** 删除画板 Page：立即隐藏并切到相邻 Page，5 秒撤销窗口结束后才提交服务端删除。 */
+  function deleteCanvas() {
+    if (readOnly || !canvas || pendingCanvasDeletion) return;
+    const target = canvases.find((entry) => entry.id === canvas.id);
+    if (!target) return;
+    const index = canvases.findIndex((entry) => entry.id === target.id);
+    const remaining = canvases.filter((entry) => entry.id !== target.id);
+    const nextId = remaining[Math.min(index, remaining.length - 1)]?.id || "";
+    pendingCanvasIds.current.add(target.id);
+    setCanvases(remaining);
+    setCanvasId(nextId);
+    setCanvas(null); setItems([]); clearFrameSelection(); setFrameMenu(null); setItemMenu(null);
+    const pending = {
+      token: `canvas:${target.id}:${Date.now()}`,
+      canvas: target,
+      index: index >= 0 ? index : 0,
+      seconds: 5,
+    };
+    setPendingCanvasDeletion(pending);
+    canvasDeleteTimer.current = window.setTimeout(() => {
+      canvasDeleteTimer.current = null;
+      setPendingCanvasDeletion(null);
+      void commitCanvasDeletion(pending);
+    }, 5000);
+  }
+
+  async function commitCanvasDeletion(pending: NonNullable<typeof pendingCanvasDeletion>) {
     try {
-      await json(`/api/canvases?id=${encodeURIComponent(canvas.id)}`, { method: "DELETE" });
-      setCanvas(null); setItems([]); setCanvasId(""); clearFrameSelection();
-      await loadCanvases(); onMessage("Page 已删除");
-    } catch (error) { onMessage(error instanceof Error ? error.message : "删除失败"); }
+      await json(`/api/canvases?id=${encodeURIComponent(pending.canvas.id)}`, { method: "DELETE" });
+      pendingCanvasIds.current.delete(pending.canvas.id);
+      await loadCanvases();
+      onMessage(`Page“${pending.canvas.name}”已删除`);
+    } catch (error) {
+      pendingCanvasIds.current.delete(pending.canvas.id);
+      setCanvases((current) => {
+        if (current.some((entry) => entry.id === pending.canvas.id)) return current;
+        const next = [...current];
+        next.splice(Math.min(pending.index, next.length), 0, pending.canvas);
+        return next;
+      });
+      onMessage(error instanceof Error ? error.message : "删除 Page 失败");
+    } finally {
+      setPendingCanvasDeletion((current) => current?.token === pending.token ? null : current);
+    }
+  }
+
+  function undoCanvasDeletion() {
+    const pending = pendingCanvasDeletion;
+    if (!pending) return;
+    if (canvasDeleteTimer.current !== null) {
+      window.clearTimeout(canvasDeleteTimer.current);
+      canvasDeleteTimer.current = null;
+    }
+    pendingCanvasIds.current.delete(pending.canvas.id);
+    setCanvases((current) => {
+      if (current.some((entry) => entry.id === pending.canvas.id)) return current;
+      const next = [...current];
+      next.splice(Math.min(pending.index, next.length), 0, pending.canvas);
+      return next;
+    });
+    setCanvasId(pending.canvas.id);
+    setPendingCanvasDeletion(null);
+    onMessage("已撤销删除");
   }
 
   function startPageRename(entry: CanvasSummary) { if (readOnly) return; setEditingPageId(entry.id); setPageNameDraft(entry.name); }
@@ -861,7 +957,7 @@ export function BoardView({ projectId, assets, onMessage, onSelectAsset, readOnl
       return current ? current.x !== frame.x || current.y !== frame.y : false;
     });
     const itemSnapshots = collectItemUndoSnapshots(active.itemSnapshots);
-    if (frameSnapshots.length || itemSnapshots.length) pushUndo({ canvasId, frameSnapshots, itemSnapshots });
+    if (frameSnapshots.length || itemSnapshots.length) pushUndo({ kind: "move", canvasId, frameSnapshots, itemSnapshots });
     if (active.group) { void persistMovedFrameItems(active); return; }
     void persistFrameItems(active.frameIds[0], active.itemStarts);
   }
@@ -907,14 +1003,12 @@ export function BoardView({ projectId, assets, onMessage, onSelectAsset, readOnl
     setItemMenu({ itemId: item.id, x: event.clientX, y: event.clientY });
   }
 
-  /** 请求删除一批 Frame：含素材时先弹确认，空 Frame 直接删除。供右键单删 / Delete 键 / 底部工具条调用 */
+  /** 请求删除一批 Frame：直接删除，Ctrl+Z 可撤销恢复（含其中的素材布局）。 */
   function requestFrameDeletionMany(frameIds: string[]) {
     const ids = frameIds.filter((id) => frames.some((entry) => entry.id === id));
     if (!ids.length) return;
     setFrameMenu(null);
-    const hasItems = ids.some((id) => items.some((item) => item.parentFrameId === id));
-    if (hasItems) setConfirmFrameDeleteIds(ids);
-    else void deleteFrames(ids);
+    void deleteFrames(ids);
   }
   function requestFrameDeletion(frameId: string) { requestFrameDeletionMany([frameId]); }
 
@@ -922,22 +1016,26 @@ export function BoardView({ projectId, assets, onMessage, onSelectAsset, readOnl
     if (!canvasId || !canvas) return;
     const set = new Set(frameIds);
     const targetFrames = frames.filter((entry) => set.has(entry.id));
-    if (!targetFrames.length) { setConfirmFrameDeleteIds([]); return; }
+    if (!targetFrames.length) return;
     const frameItems = items.filter((item) => item.parentFrameId && set.has(item.parentFrameId));
     savingRef.current += 1;
     try {
       if (frameItems.length) await submitCanvasOps(frameItems.map((item) => ({ op: "delete" as const, id: item.id })));
       const removedIds = new Set(frameItems.map((item) => item.id));
-      persistFrames({ ...framesByCanvas, [canvasId]: frames.filter((entry) => !set.has(entry.id)) });
+      const nextFrames = { ...framesByCanvas, [canvasId]: frames.filter((entry) => !set.has(entry.id)) };
+      framesByCanvasRef.current = nextFrames;
+      itemsRef.current = itemsRef.current.filter((item) => !removedIds.has(item.id));
+      persistFrames(nextFrames);
       setItems((current) => current.filter((item) => !removedIds.has(item.id)));
-      clearFrameSelection(); selectItems([]); setFrameMenu(null); setConfirmFrameDeleteIds([]);
-      undoStack.current = []; // 删除属于破坏性操作，清空移动撤销栈避免撤销到已删除对象
+      clearFrameSelection(); selectItems([]); setFrameMenu(null);
+      // 删除本身也进撤销栈：Ctrl+Z 恢复被删的 Frame 与其中的素材布局
+      pushUndo({ kind: "delete", canvasId, frameSnapshots: targetFrames, itemSnapshots: frameItems });
       if (frameItems.length) await loadCanvases(canvasId);
       onMessage(targetFrames.length === 1
         ? (frameItems.length ? `Frame 已删除，${frameItems.length} 个素材仍保留在项目素材中` : "空 Frame 已删除")
         : `已删除 ${targetFrames.length} 个 Frame，其中 ${frameItems.length} 个素材的画板布局一并移除（素材原文件仍保留）`);
     } catch (error) {
-      setFrameMenu(null); setConfirmFrameDeleteIds([]);
+      setFrameMenu(null);
       onMessage(error instanceof Error ? error.message : "删除 Frame 失败");
     } finally { savingRef.current -= 1; }
   }
@@ -1048,7 +1146,7 @@ export function BoardView({ projectId, assets, onMessage, onSelectAsset, readOnl
     }
     // 落点立即入栈，保证松手后马上按 Ctrl/Cmd+Z 也能撤销；保存失败时保留本地值，由同步状态提示，不回滚
     const undoSnapshots = active.mode === "move" ? collectItemUndoSnapshots(active.itemSnapshots) : [];
-    const undoEntry: BoardUndoEntry | null = undoSnapshots.length ? { canvasId, frameSnapshots: [], itemSnapshots: undoSnapshots } : null;
+    const undoEntry: BoardUndoEntry | null = undoSnapshots.length ? { kind: "move", canvasId, frameSnapshots: [], itemSnapshots: undoSnapshots } : null;
     if (undoEntry) pushUndo(undoEntry);
     savingRef.current += 1;
     try {
@@ -1080,12 +1178,14 @@ export function BoardView({ projectId, assets, onMessage, onSelectAsset, readOnl
   async function deleteCanvasItems(itemIds: string[]) {
     if (!canvas) return;
     const uniqueIds = [...new Set(itemIds)];
+    const removed = items.filter((item) => uniqueIds.includes(item.id));
     try {
       await submitCanvasOps(uniqueIds.map((id) => ({ op: "delete" as const, id })));
       const removedIds = new Set(uniqueIds);
+      itemsRef.current = itemsRef.current.filter((item) => !removedIds.has(item.id));
       setItems((current) => current.filter((item) => !removedIds.has(item.id)));
       selectItems(selectedItemIds.filter((id) => !removedIds.has(id))); setItemMenu(null);
-      undoStack.current = []; // 删除属于破坏性操作，清空移动撤销栈避免撤销到已删除对象
+      if (removed.length) pushUndo({ kind: "delete", canvasId, frameSnapshots: [], itemSnapshots: removed });
       onMessage(uniqueIds.some((id) => annotationItems.some((item) => item.id === id)) ? `已删除 ${uniqueIds.length} 个元素` : `已从画板删除 ${uniqueIds.length} 张图片，素材原文件仍保留在项目素材中`);
     } catch (error) { onMessage(error instanceof Error ? error.message : "删除失败"); }
   }
@@ -1295,7 +1395,7 @@ export function BoardView({ projectId, assets, onMessage, onSelectAsset, readOnl
     }
     // 落点立即入栈；保存失败时保留本地值，由同步状态提示
     const undoSnapshots = active.mode === "move" ? collectItemUndoSnapshots(active.itemSnapshots) : [];
-    const undoEntry: BoardUndoEntry | null = undoSnapshots.length ? { canvasId, frameSnapshots: [], itemSnapshots: undoSnapshots } : null;
+    const undoEntry: BoardUndoEntry | null = undoSnapshots.length ? { kind: "move", canvasId, frameSnapshots: [], itemSnapshots: undoSnapshots } : null;
     if (undoEntry) pushUndo(undoEntry);
     savingRef.current += 1;
     try {
@@ -1378,7 +1478,7 @@ export function BoardView({ projectId, assets, onMessage, onSelectAsset, readOnl
     return best?.id ?? null;
   }
 
-  /** 记录一次可撤销的移动；栈上限 50，超出丢弃最早的记录。 */
+  /** 记录一次可撤销的移动/删除；栈上限 50，超出丢弃最早的记录。 */
   function pushUndo(entry: BoardUndoEntry) {
     undoStack.current.push(entry);
     if (undoStack.current.length > 50) undoStack.current.shift();
@@ -1401,7 +1501,38 @@ export function BoardView({ projectId, assets, onMessage, onSelectAsset, readOnl
     if (savingRef.current > 0) await waitForPendingSaves();
     const entry = undoStack.current.pop();
     if (!entry || entry.canvasId !== canvasIdRef.current) return;
-    // 只撤销仍然存在的对象：期间被删除的元素/Frame 直接跳过（删除操作本身不入撤销栈）
+
+    if (entry.kind === "delete") {
+      // 删除撤销：把服务端已删掉的元素重新插回，并恢复 Frame 快照
+      await waitForPendingSaves();
+      const existingItemIds = new Set(itemsRef.current.map((item) => item.id));
+      const existingFrameIds = new Set(framesByCanvasRef.current[entry.canvasId]?.map((frame) => frame.id) ?? []);
+      const framesToRestore = entry.frameSnapshots.filter((frame) => !existingFrameIds.has(frame.id));
+      const itemsToRestore = entry.itemSnapshots.filter((item) => !existingItemIds.has(item.id));
+      if (!framesToRestore.length && !itemsToRestore.length) return;
+      try {
+        savingRef.current += 1;
+        if (framesToRestore.length) {
+          const currentFrames = framesByCanvasRef.current[entry.canvasId] ?? [];
+          const next = { ...framesByCanvasRef.current, [entry.canvasId]: [...currentFrames, ...framesToRestore] };
+          framesByCanvasRef.current = next;
+          persistFrames(next);
+        }
+        if (itemsToRestore.length) {
+          itemsRef.current = [...itemsRef.current, ...itemsToRestore];
+          setItems((current) => [...current, ...itemsToRestore]);
+          await submitCanvasOps(itemsToRestore.map((item) => ({ op: "insert" as const, item })));
+        }
+        onMessage("已撤销删除");
+      } catch (error) {
+        onMessage(error instanceof Error ? error.message : "撤销删除失败");
+      } finally {
+        savingRef.current -= 1;
+      }
+      return;
+    }
+
+    // 只撤销仍然存在的对象：期间被删除的元素/Frame 直接跳过
     const existingItemIds = new Set(itemsRef.current.map((item) => item.id));
     const existingFrameIds = new Set(framesByCanvasRef.current[entry.canvasId]?.map((frame) => frame.id) ?? []);
     const frameSnapshots = entry.frameSnapshots.filter((frame) => existingFrameIds.has(frame.id));
@@ -1689,7 +1820,7 @@ export function BoardView({ projectId, assets, onMessage, onSelectAsset, readOnl
                 <Check size={13} aria-hidden />
                 素材布局已同步
               </span>
-              <IconButton size="sm" label="删除 Page" onClick={() => void deleteCanvas()}>
+              <IconButton size="sm" label="删除 Page" disabled={Boolean(pendingCanvasDeletion)} onClick={() => void deleteCanvas()}>
                 <Trash2 size={15} aria-hidden />
               </IconButton>
             </>
@@ -1937,38 +2068,23 @@ export function BoardView({ projectId, assets, onMessage, onSelectAsset, readOnl
           {frameMenu ? <div className="fixed z-[20000] min-w-[148px] rounded-sm border border-line-strong bg-white p-1 shadow-lg" role="menu" style={{ left: frameMenu.x, top: frameMenu.y }} onPointerDown={(event) => event.stopPropagation()}><MenuItem danger icon={<Trash2 size={14} aria-hidden />} onClick={() => requestFrameDeletion(frameMenu.frameId)}>删除 Frame</MenuItem></div> : null}
           {itemMenu ? <div className="fixed z-[20000] min-w-[148px] rounded-sm border border-line-strong bg-white p-1 shadow-lg" role="menu" style={{ left: itemMenu.x, top: itemMenu.y }} onPointerDown={(event) => event.stopPropagation()}><MenuItem danger icon={<Trash2 size={14} aria-hidden />} onClick={() => void deleteCanvasItems(selectedItemIds.includes(itemMenu.itemId) ? selectedItemIds : [itemMenu.itemId])}>删除</MenuItem></div> : null}
           {!readOnly ? (
-            <div className="pointer-events-none absolute bottom-3 left-[calc(180px+50%)] z-[10010] -translate-x-1/2 rounded-sm border border-line bg-surface/90 px-2 py-1.5 text-2xs text-muted">V 选择 · T 文本 · R 矩形 · O 椭圆 · 隐藏标记 · 拖左侧素材到画板放置 · 拖标签批量插入 · 框选 · 空格 / 中键 + 拖动移动 Page · Ctrl+Z 撤销移动 · 双指平移 · 滚轮 / 捏合缩放</div>
+            <div className="pointer-events-none absolute bottom-3 left-[calc(180px+50%)] z-[10010] -translate-x-1/2 rounded-sm border border-line bg-surface/90 px-2 py-1.5 text-2xs text-muted">V 选择 · T 文本 · R 矩形 · O 椭圆 · 隐藏标记 · 拖左侧素材到画板放置 · 拖标签批量插入 · 框选 · 空格 / 中键 + 拖动移动 Page · Ctrl+Z 撤销移动/删除 · 双指平移 · 滚轮 / 捏合缩放</div>
           ) : null}
           <div className="absolute bottom-3.5 left-3.5 z-[10010] flex h-6 w-6 items-center justify-center rounded-full border border-line bg-surface/90 shadow-sm">
             <SyncStatusDot status={sync.status} pending={sync.pending} onRetry={sync.retry} />
           </div>
-          {confirmFrameDeleteIds.length ? (() => {
-            const victims = frames.filter((entry) => confirmFrameDeleteIds.includes(entry.id));
-            const affected = items.filter((item) => item.parentFrameId && confirmFrameDeleteIds.includes(item.parentFrameId)).length;
-            const single = victims.length === 1 ? victims[0] : null;
-            if (!victims.length) return null;
-            return (
-              <ConfirmDialog
-                open
-                onClose={() => setConfirmFrameDeleteIds([])}
-                onConfirm={() => void deleteFrames(confirmFrameDeleteIds)}
-                tone="danger"
-                title={single ? `删除“${single.name}”？` : `删除选中的 ${victims.length} 个 Frame？`}
-                description={
-                  <>
-                    {single ? `其中 ${affected} 个素材的画板布局会被移除。` : `选中的 Frame 中共有 ${affected} 个素材，其画板布局会一并移除。`}
-                    <span className="mt-2 block rounded-sm bg-surface-muted px-2 py-1.5 text-xs text-muted">素材原文件不会删除，仍会保留在左侧项目素材中。</span>
-                  </>
-                }
-                confirmText="确认删除"
-                cancelText="取消"
-              />
-            );
-          })() : null}
         </div>
       ) : readOnly ? (
         <EmptyState compact className="min-h-[570px]" icon={<ImagePlus size={29} aria-hidden />} title="还没有画板" description="当前项目还没有创建自由画板。" />
       ) : <EmptyState compact className="min-h-[570px]" icon={<ImagePlus size={29} aria-hidden />} title="正在创建默认 Page" description="默认 Page 是一块空白无限画布，可从左侧把素材拖入。" />}
+
+      {pendingCanvasDeletion ? (
+        <DeletionToast
+          label={`Page“${pendingCanvasDeletion.canvas.name}”`}
+          seconds={pendingCanvasDeletion.seconds}
+          onUndo={undoCanvasDeletion}
+        />
+      ) : null}
     </section>
   );
 }

@@ -8,6 +8,7 @@ export function AnnouncementFields({
   onTextChange,
   enabled,
   onEnabledChange,
+  enabledHint,
   maxLength = 2000,
   message,
 }: {
@@ -15,6 +16,8 @@ export function AnnouncementFields({
   onTextChange: (text: string) => void;
   enabled: boolean;
   onEnabledChange: (enabled: boolean) => void;
+  /** 启用开关里的补充说明，用来说明这份公告显示在哪（登录页 / 站内导航栏）。 */
+  enabledHint: string;
   maxLength?: number;
   message?: AnnouncementFieldsMessage;
 }) {
@@ -32,7 +35,7 @@ export function AnnouncementFields({
       </Field>
       <label className="flex cursor-pointer items-center gap-2 text-sm font-normal text-muted">
         <input type="checkbox" checked={enabled} onChange={(event) => onEnabledChange(event.target.checked)} className="accent-sage" />
-        启用（在登录页显示公告）
+        启用（{enabledHint}）
       </label>
     </>
   );

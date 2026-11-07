@@ -1,9 +1,10 @@
 import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { AlertTriangle, Box, Check, Pencil, Plus, Trash2 } from "lucide-react";
 import { apiFetch } from "./api";
+import { DeletionToast } from "./DeletionToast";
 import { DimensionPreview } from "./DimensionPreview";
 import { TagFilterBar } from "./TagFilterBar";
-import { Button, ConfirmDialog, EmptyState, Field, IconButton, Input, Modal, SearchInput, Spinner, Tabs, cn } from "./ui";
+import { Button, EmptyState, Field, IconButton, Input, Modal, SearchInput, Spinner, Tabs, cn } from "./ui";
 
 export type PageDimension = { id: string; projectId: string; pageId: string; leftLabel: string; rightLabel: string; sortOrder: number };
 export type PreviewPage = {
@@ -33,9 +34,16 @@ export function DimensionPages({ projectId, assets, page, onPageChange, onReceiv
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
-  const [edit, setEdit] = useState<"create" | "rename" | "delete" | null>(null);
+  const [edit, setEdit] = useState<"create" | "rename" | null>(null);
   const [editTargetId, setEditTargetId] = useState("");
   const [name, setName] = useState("");
+  const [pendingPageDeletion, setPendingPageDeletion] = useState<{
+    token: string; page: Summary; index: number; seconds: number;
+  } | null>(null);
+  const pageDeleteTimer = useRef<number | null>(null);
+  const pendingPageIds = useRef(new Set<string>());
+  const pendingPageDeletionRef = useRef(pendingPageDeletion);
+  pendingPageDeletionRef.current = pendingPageDeletion;
   const [picker, setPicker] = useState(false);
   const [search, setSearch] = useState("");
   const [tags, setTags] = useState<string[]>([]);
@@ -58,8 +66,9 @@ export function DimensionPages({ projectId, assets, page, onPageChange, onReceiv
     void (async () => {
       const data = await apiFetch<{ pages: Summary[] }>(`/api/preview-pages?projectId=${encodeURIComponent(projectId)}`);
       if (!active) return;
-      setPages(data.pages);
-      const id = data.pages.some((p) => p.id === pageId) ? pageId : data.pages[0]?.id || "";
+      const visiblePages = data.pages.filter((p) => !pendingPageIds.current.has(p.id));
+      setPages(visiblePages);
+      const id = visiblePages.some((p) => p.id === pageId) ? pageId : visiblePages[0]?.id || "";
       if (id !== pageId) { setPageId(id); return; }
       if (!id) { changeRef.current(null); setLoading(false); return; }
       const result = await apiFetch<{ page: PreviewPage }>(`/api/preview-page?projectId=${encodeURIComponent(projectId)}&pageId=${encodeURIComponent(id)}`);
@@ -97,6 +106,27 @@ export function DimensionPages({ projectId, assets, page, onPageChange, onReceiv
   }, [projectId, pageId]);
 
   const current = page?.projectId === projectId && page.id === pageId ? page : null;
+  // 删除 Page 的 5 秒撤销窗口：只做界面倒计时，服务端删除在倒计时结束后提交。
+  useEffect(() => {
+    if (!pendingPageDeletion) return;
+    const token = pendingPageDeletion.token;
+    const interval = window.setInterval(() => {
+      setPendingPageDeletion((current) => current?.token === token
+        ? { ...current, seconds: Math.max(1, current.seconds - 1) }
+        : current);
+    }, 1000);
+    return () => window.clearInterval(interval);
+  }, [pendingPageDeletion?.token]);
+
+  // 组件卸载（切项目/关页面）时仍要兑现删除，不能让撤销窗口把删除吞掉
+  useEffect(() => () => {
+    if (pageDeleteTimer.current === null) return;
+    window.clearTimeout(pageDeleteTimer.current);
+    pageDeleteTimer.current = null;
+    const pending = pendingPageDeletionRef.current;
+    if (!pending) return;
+    void apiFetch(`/api/preview-pages?projectId=${encodeURIComponent(projectId)}&pageId=${encodeURIComponent(pending.page.id)}`, { method: "DELETE" });
+  }, [projectId]);
   const pageAssets = useMemo(() => {
     const map = new Map((current?.assets ?? []).map((a) => [a.assetId, a.dimensionValues]));
     return assets.filter((a) => map.has(a.id)).map((a) => ({ ...a, dimensionValues: map.get(a.id)! }));
@@ -140,18 +170,71 @@ export function DimensionPages({ projectId, assets, page, onPageChange, onReceiv
     }
   }
 
-  async function deletePage() {
+  /** 删除 Page：立即从页签隐藏并切走，5 秒撤销窗口结束后才提交服务端删除。 */
+  function deletePage() {
+    if (busy || pendingPageDeletion) return;
+    const target = pages.find((p) => p.id === pageId);
+    if (!target) return;
+    const index = pages.findIndex((p) => p.id === target.id);
+    const remaining = pages.filter((p) => p.id !== target.id);
+    const nextId = remaining[Math.min(index, remaining.length - 1)]?.id || "";
+    pendingPageIds.current.add(target.id);
+    setPages(remaining);
+    setEdit(null);
+    switchPage(nextId);
+    const pending = {
+      token: `page:${target.id}:${Date.now()}`,
+      page: target,
+      index: index >= 0 ? index : 0,
+      seconds: 5,
+    };
+    setPendingPageDeletion(pending);
+    pageDeleteTimer.current = window.setTimeout(() => {
+      pageDeleteTimer.current = null;
+      setPendingPageDeletion(null);
+      void commitPageDeletion(pending);
+    }, 5000);
+  }
+
+  async function commitPageDeletion(pending: NonNullable<typeof pendingPageDeletion>) {
     setBusy(true);
     try {
-      await apiFetch(`/api/preview-pages?projectId=${encodeURIComponent(projectId)}&pageId=${encodeURIComponent(pageId)}`, { method: "DELETE" });
-      switchPage("");
-      setEdit(null);
+      await apiFetch(`/api/preview-pages?projectId=${encodeURIComponent(projectId)}&pageId=${encodeURIComponent(pending.page.id)}`, { method: "DELETE" });
+      pendingPageIds.current.delete(pending.page.id);
       setReload((v) => v + 1);
+      onMessage(`Page“${pending.page.name}”已删除`);
     } catch (reason) {
-      onMessage(reason instanceof Error ? reason.message : "删除失败");
+      pendingPageIds.current.delete(pending.page.id);
+      setPages((current) => {
+        if (current.some((p) => p.id === pending.page.id)) return current;
+        const next = [...current];
+        next.splice(Math.min(pending.index, next.length), 0, pending.page);
+        return next;
+      });
+      onMessage(reason instanceof Error ? reason.message : "删除 Page 失败");
     } finally {
       setBusy(false);
+      setPendingPageDeletion((current) => current?.token === pending.token ? null : current);
     }
+  }
+
+  function undoPageDeletion() {
+    const pending = pendingPageDeletion;
+    if (!pending) return;
+    if (pageDeleteTimer.current !== null) {
+      window.clearTimeout(pageDeleteTimer.current);
+      pageDeleteTimer.current = null;
+    }
+    pendingPageIds.current.delete(pending.page.id);
+    setPages((current) => {
+      if (current.some((p) => p.id === pending.page.id)) return current;
+      const next = [...current];
+      next.splice(Math.min(pending.index, next.length), 0, pending.page);
+      return next;
+    });
+    setPageId(pending.page.id);
+    setPendingPageDeletion(null);
+    onMessage("已撤销删除");
   }
 
   async function addAssets() {
@@ -231,7 +314,7 @@ export function DimensionPages({ projectId, assets, page, onPageChange, onReceiv
             >
               <Pencil size={14} aria-hidden />
             </IconButton>
-            <IconButton variant="solid" size="sm" label="删除当前 Page" disabled={!current || loading} onClick={() => setEdit("delete")}>
+            <IconButton variant="solid" size="sm" label="删除当前 Page" disabled={!current || loading || Boolean(pendingPageDeletion)} onClick={() => deletePage()}>
               <Trash2 size={14} aria-hidden />
             </IconButton>
             <Button
@@ -310,7 +393,7 @@ export function DimensionPages({ projectId, assets, page, onPageChange, onReceiv
         />
       )}
 
-      {edit && edit !== "delete" ? (
+      {edit ? (
         <Modal
           open
           onClose={closePageDialog}
@@ -335,19 +418,6 @@ export function DimensionPages({ projectId, assets, page, onPageChange, onReceiv
             </Field>
           </form>
         </Modal>
-      ) : null}
-
-      {edit === "delete" ? (
-        <ConfirmDialog
-          open
-          onClose={closePageDialog}
-          onConfirm={() => void deletePage()}
-          tone="danger"
-          title="删除 Page？"
-          description={`删除“${current?.name ?? ""}”及其中的维度和位置数据？项目素材和其他 Page 不受影响。`}
-          confirmText="删除 Page"
-          busy={busy}
-        />
       ) : null}
 
       {picker ? (
@@ -417,6 +487,14 @@ export function DimensionPages({ projectId, assets, page, onPageChange, onReceiv
             ) : null}
           </div>
         </Modal>
+      ) : null}
+
+      {pendingPageDeletion ? (
+        <DeletionToast
+          label={`Page“${pendingPageDeletion.page.name}”`}
+          seconds={pendingPageDeletion.seconds}
+          onUndo={undoPageDeletion}
+        />
       ) : null}
     </div>
   );

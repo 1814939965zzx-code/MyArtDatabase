@@ -87,6 +87,7 @@ export function AnnouncementSpecimen() {
         onTextChange={setText}
         enabled={enabled}
         onEnabledChange={setEnabled}
+        enabledHint="在登录页显示公告"
         message={message}
       />
       <div className="flex justify-end gap-2">

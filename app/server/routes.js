@@ -113,9 +113,11 @@ function attachTagArrays(db, assets) {
 }
 
 // ---- 项目 ----
-function listProjects({ db }) {
+function listProjects(request, { db }) {
+  const includeArchived = new URL(request.url).searchParams.get("includeArchived") === "1";
   const rows = db.prepare(`
     SELECT p.id, p.name, p.description,
+      p.archived_at AS archivedAt,
       p.created_at AS createdAt, p.updated_at AS updatedAt,
       COUNT(DISTINCT a.id) AS assetCount,
       (SELECT COUNT(*) FROM preview_dimensions pd JOIN preview_pages pp ON pp.id = pd.page_id WHERE pp.project_id = p.id) AS dimensionCount
@@ -124,7 +126,7 @@ function listProjects({ db }) {
     LEFT JOIN assets a ON a.id = pa.asset_id AND a.deleted_at IS NULL
     GROUP BY p.id
     ORDER BY p.updated_at DESC, assetCount DESC, p.created_at DESC
-  `).all();
+  `).all().filter((row) => includeArchived || !row.archivedAt);
   // 每个项目取前 4 张素材缩略图作为主页封面拼图
   const covers = db.prepare(`
     SELECT pa.project_id AS projectId, a.id,
@@ -164,11 +166,16 @@ async function updateProject(request, { db }) {
   const id = cleanText(payload.id, 80);
   const name = cleanText(payload.name, 50);
   const description = cleanText(payload.description, 240);
+  const archived = typeof payload.archived === "boolean" ? payload.archived : null;
   if (!id || !name) return Response.json({ error: "缺少项目 ID 或名称" }, { status: 400 });
-  const result = db.prepare("UPDATE projects SET name = ?, description = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?")
-    .run(name, description, id);
+  const result = archived === null
+    ? db.prepare("UPDATE projects SET name = ?, description = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?")
+      .run(name, description, id)
+    : db.prepare("UPDATE projects SET name = ?, description = ?, archived_at = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?")
+      .run(name, description, archived ? new Date().toISOString() : null, id);
   if (!result.changes) return Response.json({ error: "项目不存在" }, { status: 404 });
-  return Response.json({ project: { id, name, description } });
+  const row = db.prepare("SELECT id, name, description, archived_at AS archivedAt FROM projects WHERE id = ?").get(id);
+  return Response.json({ project: row });
 }
 
 function deleteProject(request, { db }) {
@@ -1347,22 +1354,41 @@ async function updateMe(request, { db, user }) {
   return Response.json({ user: toUserPayload(fresh) });
 }
 
-// ---- 登录页公告 ----
+// ---- 公告：登录页公告与站内全局公告是两份独立设置 ----
 const ANNOUNCEMENT_TEXT_MAX = 2000;
+/**
+ * scope → app_settings 键前缀。
+ * login：只在未登录的登录页展示；global：只在登录后的站内导航栏下方展示。
+ * 两者内容与启用开关各自独立，改动一份不影响另一份。
+ */
+const ANNOUNCEMENT_SCOPES = {
+  login: "announcement.login",
+  global: "announcement.global",
+};
 
-/** 登录页公告：公开读取（登录页在未登录时展示）。 */
-function getAnnouncement({ db }) {
+/** 解析公告类型：缺省按登录页公告处理（兼容旧调用），未知类型返回 null。 */
+function announcementKeyPrefix(url) {
+  const scope = url.searchParams.get("scope") ?? "login";
+  return Object.hasOwn(ANNOUNCEMENT_SCOPES, scope) ? ANNOUNCEMENT_SCOPES[scope] : null;
+}
+
+/** 公告读取：公开接口，登录页与站内按 scope 各取一份。 */
+function getAnnouncement(url, { db }) {
+  const prefix = announcementKeyPrefix(url);
+  if (!prefix) return Response.json({ error: "未知的公告类型" }, { status: 400 });
   const read = (key) => db.prepare("SELECT value FROM app_settings WHERE key = ?").get(key)?.value ?? "";
-  const row = db.prepare("SELECT updated_at AS updatedAt FROM app_settings WHERE key = 'announcement.text'").get();
+  const row = db.prepare("SELECT updated_at AS updatedAt FROM app_settings WHERE key = ?").get(`${prefix}.text`);
   return Response.json({
-    text: read("announcement.text"),
-    enabled: read("announcement.enabled") === "1",
+    text: read(`${prefix}.text`),
+    enabled: read(`${prefix}.enabled`) === "1",
     updatedAt: row?.updatedAt ?? null,
   });
 }
 
-/** 更新登录页公告：仅管理员。 */
+/** 更新指定类型的公告：仅管理员。 */
 async function updateAnnouncement(request, { db }) {
+  const prefix = announcementKeyPrefix(new URL(request.url));
+  if (!prefix) return Response.json({ error: "未知的公告类型" }, { status: 400 });
   const payload = await request.json();
   const text = cleanText(payload.text, ANNOUNCEMENT_TEXT_MAX);
   const enabled = payload.enabled === true;
@@ -1371,8 +1397,8 @@ async function updateAnnouncement(request, { db }) {
     ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = CURRENT_TIMESTAMP
   `);
   transaction(db, () => {
-    upsert.run("announcement.text", text);
-    upsert.run("announcement.enabled", enabled ? "1" : "0");
+    upsert.run(`${prefix}.text`, text);
+    upsert.run(`${prefix}.enabled`, enabled ? "1" : "0");
   });
   return Response.json({ ok: true });
 }
@@ -1508,8 +1534,8 @@ export async function handleApi(request, ctx) {
     // 健康检查：部署脚本与运维巡检使用，无需登录
     if (pathname === "/api/health" && method === "GET") return Response.json({ ok: true });
 
-    // 登录页公告：未登录即可读取（登录页展示用）
-    if (pathname === "/api/announcement" && method === "GET") return getAnnouncement(ctx);
+    // 公告读取：公开接口（登录页读 scope=login，站内读 scope=global）
+    if (pathname === "/api/announcement" && method === "GET") return getAnnouncement(url, ctx);
 
     // 公开的账号接口
     if (pathname === "/api/auth/status" && method === "GET") return authStatus(request, ctx);
@@ -1539,7 +1565,7 @@ export async function handleApi(request, ctx) {
     if (pathname === "/api/auth/tokens" && method === "POST") return await createToken(request, ctx);
     if (pathname === "/api/auth/tokens" && method === "DELETE") return revokeToken(request, ctx);
 
-    // 管理员专属：用户管理、登录审计、AI 服务配置、登录页公告
+    // 管理员专属：用户管理、登录审计、AI 服务配置、公告写入
     if (pathname.startsWith("/api/users") || pathname === "/api/login-logs" || (pathname === "/api/announcement" && method === "PUT")) {
       const denied = requireAdmin(ctx);
       if (denied) return denied;
@@ -1560,7 +1586,7 @@ export async function handleApi(request, ctx) {
       if (pathname === "/api/ai-config" && method === "POST") return await saveAiConfigEndpoint(request);
     }
 
-    if (pathname === "/api/projects" && method === "GET") return listProjects(ctx);
+    if (pathname === "/api/projects" && method === "GET") return listProjects(request, ctx);
     if (pathname === "/api/projects" && method === "POST") return await createProject(request, ctx);
     if (pathname === "/api/projects" && method === "PATCH") return await updateProject(request, ctx);
     if (pathname === "/api/projects" && method === "DELETE") return deleteProject(request, ctx);

@@ -21,6 +21,7 @@ export function HomeView({
   onEnter,
   onNewProject,
   onRename,
+  onArchive,
   onDelete,
 }: {
   projects: HomeProject[];
@@ -30,6 +31,7 @@ export function HomeView({
   onEnter: (project: HomeProject) => void;
   onNewProject: () => void;
   onRename: (project: HomeProject) => void;
+  onArchive: (project: HomeProject) => void;
   onDelete: (project: HomeProject) => void;
 }) {
   if (loading) {
@@ -81,6 +83,7 @@ export function HomeView({
               readOnly={readOnly}
               onEnter={() => onEnter(project)}
               onRename={() => onRename(project)}
+              onArchive={() => onArchive(project)}
               onDelete={() => onDelete(project)}
             />
           ))}

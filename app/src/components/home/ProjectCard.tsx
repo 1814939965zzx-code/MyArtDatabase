@@ -7,12 +7,14 @@ export function ProjectCard({
   project,
   onEnter,
   onRename,
+  onArchive,
   onDelete,
   readOnly = false,
 }: {
   project: HomeProject;
   onEnter: () => void;
   onRename: () => void;
+  onArchive?: () => void;
   onDelete: () => void;
   readOnly?: boolean;
 }) {
@@ -68,6 +70,19 @@ export function ProjectCard({
               <Pencil size={13} aria-hidden />
               重命名
             </button>
+            {onArchive ? (
+              <button
+                type="button"
+                onClick={(event) => {
+                  event.stopPropagation();
+                  onArchive();
+                }}
+                className="inline-flex h-7 items-center gap-1.5 rounded-md border border-white/35 bg-ink-panel/80 px-2 text-xs text-white backdrop-blur transition-colors hover:bg-ink-panel"
+              >
+                <Archive size={13} aria-hidden />
+                归档
+              </button>
+            ) : null}
             <button
               type="button"
               onClick={(event) => {

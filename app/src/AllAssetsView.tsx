@@ -84,7 +84,7 @@ export function AllAssetsView({
   onViewChange: (view: "grid" | "list") => void;
   onRefresh: () => Promise<void>;
   onMessage: (message: string) => void;
-  /** 删除已生效后交给上层开启 5 秒撤销窗口（恢复仍走 /api/assets/restore）。 */
+  /** 删除已生效后通知上层刷新回收站；软删除可随时在回收站恢复，不显示倒计时撤销。 */
   onAssetTrashed?: (asset: { id: string; name: string }) => void;
   /** 游客只读：隐藏替换/删除/AI/添加项目等写入口，Metadata 只读展示。 */
   readOnly?: boolean;

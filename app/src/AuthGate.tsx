@@ -36,8 +36,8 @@ export function AuthGate() {
   }, []);
 
   useEffect(() => {
-    // 登录页公告：未登录即可读取；失败时静默隐藏公告
-    apiFetch<{ text: string; enabled: boolean }>("/api/announcement")
+    // 登录页公告：未登录即可读取；与登录后的站内全局公告是两份独立设置
+    apiFetch<{ text: string; enabled: boolean }>("/api/announcement?scope=login")
       .then(setAnnouncement)
       .catch(() => setAnnouncement(null));
   }, []);
