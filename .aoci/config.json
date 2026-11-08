@@ -193,7 +193,9 @@
       }
     ]
   },
-  "installed_agents": [],
+  "installed_agents": [
+    "codex"
+  ],
   "automation": {
     "mode": "auto"
   },
