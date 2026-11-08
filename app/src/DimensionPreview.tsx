@@ -8,7 +8,7 @@ import { useViewportGestures } from "./useViewportGestures";
 import { displayDimensionValue } from "./dimensionScale";
 import { gridClusterCell, gridClusterKey, gridDivisionsFor, gridMinimumSpacing, gridTicksFor, orderByViewDepth, orderStackGrid, orderStackMembers, PREVIEW_ASSET_WIDTH, previewAssetAspectRatio as aspectRatioFor, stackPreviewMembers, zoomPanAtPointer } from "./previewGrid";
 
-type Dimension = { id: string; leftLabel: string; rightLabel: string };
+type Dimension = { id: string; leftLabel: string; rightLabel: string; description?: string };
 type Asset = { id: string; name: string; thumbnailUrl: string | null; mimeType?: string; dimensionValues: Record<string, number>; width?: number; height?: number };
 type CameraDrag = { pointerId: number; startX: number; startY: number; rotateX: number; rotateZ: number; assetId?: string; moved: boolean };
 type ViewPan = { pointerId: number; startX: number; startY: number; panX: number; panY: number };
@@ -1794,7 +1794,7 @@ export function DimensionPreview({
                 key={dimension.id}
                 role="button"
                 tabIndex={0}
-                title={axisLetter ? (axisLetter === "x" ? "此维度对应预览的横轴 X" : axisLetter === "y" ? "此维度对应预览的纵轴 Y" : "此维度对应预览的第三轴 Z") : undefined}
+                title={[axisLetter ? (axisLetter === "x" ? "此维度对应预览的横轴 X" : axisLetter === "y" ? "此维度对应预览的纵轴 Y" : "此维度对应预览的第三轴 Z") : "", dimension.description].filter(Boolean).join("\n") || undefined}
                 onClick={() => { if (!disabled) toggleDimension(dimension.id); }}
                 onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); if (!disabled) toggleDimension(dimension.id); } }}
               >

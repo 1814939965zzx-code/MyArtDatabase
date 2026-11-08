@@ -1,23 +1,47 @@
 import { randomUUID } from "node:crypto";
-import { AiError, parseJsonFromContent, prepareAssetImageDataUri, readAiConfig, requestVisionJson } from "./ai.js";
+import { AiError, parseJsonFromContent, prepareAssetImageDataUri, readAiConfig, requestTextCompletion, requestVisionJson } from "./ai.js";
 
 const MAX_DIMENSIONS = 20;
 const MAX_IMAGES = 200;
-const MAX_TOKENS = 2_000;
+const MAX_TOKENS = 4_000;
 const DEFAULT_TIMEOUT_MS = 60_000;
 const JOB_TTL_MS = 10 * 60 * 1000;
 const JOB_EVENT_LIMIT = 2_000;
 
 const DIMENSION_SYSTEM = [
-  "你是图片素材的维度标注助手。用户会给你一张图片，以及当前维度 Page 的维度列表。",
-  "请只判断这一张图片在每个维度上的位置，并输出 JSON。",
-  "要求：",
-  "- 每个维度输出 -100 到 100 的整数；",
-  "- -100 表示完全靠近左端，100 表示完全靠近右端；0 表示中性、无法判断或与该维度无关；",
-  "- 必须使用整数，不要小数；",
-  "- 每个维度都要给出，不要遗漏；",
-  "- 只输出 JSON，不要解释、不要 Markdown 代码块。",
-  "输出格式：{\"values\":{\"d1\":-30,\"d2\":40}}",
+  "你是视觉素材的维度标注员。你会看到一张图片和若干条连续属性轴。",
+  "请逐轴判断图片的位置，只依据画面可见特征，不猜测图片之外的信息。",
+  "",
+  "判断范围：",
+  "- 默认评价整张图片的整体视觉效果，不只评价某个局部物体。",
+  "- 综合考虑画面占比、视觉显著性和视觉中心；局部细节不能自动代表整体。",
+  "- 若维度明确限定了主体、背景或其他对象，则只评价该对象。",
+  "- 各维度独立判断，允许多个维度同向，不追求分数均匀分布。",
+  "",
+  "每个维度按以下顺序判断：",
+  "1. 理解左右端含义，确认当前画面是否适用。",
+  "2. 分别寻找支持左端和右端的可见证据。",
+  "3. 比较证据，先确定方向，再确定程度。",
+  "4. 依据不足时不要强行选择方向。",
+  "",
+  "评分标尺：",
+  "0：两端均衡、真正中性、无法判断或不适用。",
+  "±1～±20：略有倾向，差异较弱。",
+  "±21～±40：有可辨认的倾向，但另一端特征仍较明显。",
+  "±41～±60：明显偏向一端。",
+  "±61～±80：强烈偏向一端，反向特征较少。",
+  "±81～±100：接近该端的典型极端表现，仅在证据非常充分时使用。",
+  "负数表示偏向左端，正数表示偏向右端。",
+  "以上范围表示属性程度，不表示判断信心。",
+  "无法可靠确定方向时给 0，不用极端分数表达不确定性。",
+  "",
+  "输出要求：",
+  "- 每个输入维度都必须输出，严格使用对应的 d 编号。",
+  "- 每个维度先给一句简短的可见依据，再给 -100～100 的整数。",
+  "- 依据必须对应当前维度，不能用其他维度的特征代替。",
+  "- 不照搬示例分数，不添加未提供的维度。",
+  "- 只输出 JSON，不输出 Markdown 或 JSON 外的文字。",
+  "- JSON 包含 reasons 和 values 两个对象：reasons 的每个 d 编号对应一句依据，values 的相同 d 编号对应整数分数。",
 ].join("\n");
 
 /** pageId → { kind: "single" | "batch", id }；同一 Page 同时只允许一个 AI 维度操作。 */
@@ -46,12 +70,18 @@ function transaction(db, work) {
 }
 
 function buildPrompt(dimensions) {
-  const lines = dimensions.map((dimension, index) => `- d${index + 1}：左端「${dimension.leftLabel}」 ↔ 右端「${dimension.rightLabel}」`);
+  const lines = dimensions.flatMap((dimension, index) => {
+    const base = `- d${index + 1}：左端「${dimension.leftLabel}」 ↔ 右端「${dimension.rightLabel}」`;
+    const description = String(dimension.description || "").trim();
+    return description ? [base, `  说明：${description}`] : [base];
+  });
   return [
     "当前维度：",
     ...lines,
     "",
-    "请为每个维度给出一个 -100 到 100 的整数，只输出 JSON：{\"values\":{\"d1\":-30,\"d2\":40}}",
+    "每个维度的“说明”是用户给出的判断标准，必须优先遵守；没有说明时按两端名称判断。",
+    "只输出包含 reasons 和 values 的 JSON。两个对象都必须逐一包含上述全部 d 编号，不添加其他编号。",
+    "reasons 中每项是一句简短的可见依据，values 中每项是 -100 到 100 的整数。",
   ].join("\n");
 }
 
@@ -81,7 +111,7 @@ function getPage(db, projectId, pageId) {
 
 function getDimensions(db, pageId) {
   return db.prepare(
-    "SELECT id, left_label AS leftLabel, right_label AS rightLabel FROM preview_dimensions WHERE page_id = ? ORDER BY sort_order, id",
+    "SELECT id, left_label AS leftLabel, right_label AS rightLabel, description FROM preview_dimensions WHERE page_id = ? ORDER BY sort_order, id",
   ).all(pageId);
 }
 
@@ -122,6 +152,7 @@ function loadTargets(db, pageId, assetId, dimensions, mode) {
         lastRev: row.lastRev,
         leftLabel: dimension.leftLabel,
         rightLabel: dimension.rightLabel,
+        description: dimension.description || "",
       };
     })
     .filter(Boolean);
@@ -136,14 +167,19 @@ function currentTargetsAtSend(db, pageId, assetId, targets) {
     `SELECT dimension_id AS dimensionId, last_rev AS lastRev FROM preview_dimension_values WHERE page_id = ? AND asset_id = ? AND dimension_id IN (${placeholders})`,
   ).all(pageId, assetId, ...ids).map((row) => [row.dimensionId, row.lastRev]));
   const dimensions = new Map(db.prepare(
-    `SELECT id, left_label AS leftLabel, right_label AS rightLabel FROM preview_dimensions WHERE page_id = ? AND id IN (${placeholders})`,
+    `SELECT id, left_label AS leftLabel, right_label AS rightLabel, description FROM preview_dimensions WHERE page_id = ? AND id IN (${placeholders})`,
   ).all(pageId, ...ids).map((dimension) => [dimension.id, dimension]));
 
   return targets
     .filter((target) => values.get(target.dimensionId) === target.lastRev && dimensions.has(target.dimensionId))
     .map((target) => {
       const dimension = dimensions.get(target.dimensionId);
-      return { ...target, leftLabel: dimension.leftLabel, rightLabel: dimension.rightLabel };
+      return {
+        ...target,
+        leftLabel: dimension.leftLabel,
+        rightLabel: dimension.rightLabel,
+        description: dimension.description || "",
+      };
     });
 }
 
@@ -159,7 +195,7 @@ async function analyzeTargets({ config, db, store, assetId, targets, signal }) {
     system: DIMENSION_SYSTEM,
     text: promptText,
     dataUri,
-    maxTokens: Math.min(MAX_TOKENS, 200 + targets.length * 40),
+    maxTokens: Math.min(MAX_TOKENS, 400 + targets.length * 160),
     timeoutMs: timeoutMs(),
     signal,
   });
@@ -177,7 +213,9 @@ function applyCandidates(db, pageId, assetId, candidates, targets) {
       skipped.push({ dimensionId: candidate.dimensionId, reason: "dimension_not_in_page" });
       continue;
     }
-    if (current.leftLabel !== target.leftLabel || current.rightLabel !== target.rightLabel) {
+    if (current.leftLabel !== target.leftLabel
+      || current.rightLabel !== target.rightLabel
+      || (current.description || "") !== (target.description || "")) {
       skipped.push({ dimensionId: candidate.dimensionId, reason: "dimension_changed" });
       continue;
     }
@@ -509,6 +547,53 @@ async function handleStop(request, ctx) {
     abortJob(job);
   }
   return Response.json({ ok: true, status: job.status });
+}
+
+const DESCRIPTION_SYSTEM = [
+  "你是素材库的维度定义助手。用户会给出一个连续维度轴的两端名称。",
+  "请写一段 80～160 字的中文说明，供之后视觉模型判断图片在该维度上的位置。",
+  "要求：",
+  "- 解释左端、右端分别指什么，列出可观察的视觉特征（颜色、明暗、主体、构图、材质、风格、情绪等）；",
+  "- 说明中间值表示程度，不是分类；",
+  "- 避免空泛评价，不要只写“高级”“好看”而不给依据；",
+  "- 不要重复“左端/右端”的字样，不要标题、引号、Markdown。",
+  "只输出说明正文。",
+].join("\n");
+
+/** 让模型根据维度两端名称生成一段可编辑的说明。 */
+export async function generateDimensionDescription(request, ctx) {
+  if (ctx.user?.role === "guest") return bad("游客只能浏览，不能进行此操作", 403);
+  const payload = await request.json().catch(() => null);
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) return bad("请求内容必须是 JSON 对象");
+  const leftLabel = clean(payload.leftLabel, 24);
+  const rightLabel = clean(payload.rightLabel, 24);
+  if (!leftLabel || !rightLabel || leftLabel === rightLabel) return bad("请填写不相同的维度两端名称");
+  const config = readAiConfig();
+  if (!config) return bad("未配置 AI 服务，请先联系管理员在「AI 服务配置」中设置");
+  try {
+    const content = await requestTextCompletion(config, {
+      system: DESCRIPTION_SYSTEM,
+      text: `维度：左端「${leftLabel}」 ↔ 右端「${rightLabel}」\n请写一段说明。`,
+      maxTokens: 320,
+      temperature: 0.3,
+      timeoutMs: 30_000,
+    });
+    const description = clean(
+      content
+        .replace(/^```(?:text|markdown)?\s*/i, "")
+        .replace(/```$/i, "")
+        .replace(/^说明[:：]\s*/i, "")
+        .replace(/^["'“”`]+|["'“”`]+$/g, "")
+        .replace(/\s+/g, " "),
+      500,
+    );
+    if (!description) return bad("AI 没有返回可用的说明", 502);
+    return Response.json({ description });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    const status = error instanceof AiError ? (message.includes("超时") ? 504 : error.status) : 500;
+    return bad(message || "生成维度说明失败", status);
+  }
 }
 
 /**

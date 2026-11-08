@@ -80,13 +80,17 @@ const aiMock = createServer((req, res) => {
       res.writeHead(200, { "content-type": "application/json" });
       res.end(JSON.stringify({ choices: [{ message: { content } }] }));
     };
-    if (system.includes("维度标注助手")) {
+    if (system.includes("维度定义助手")) {
+      respond("冷色偏向蓝、青、灰等低饱和色，暖色偏向红、橙、黄等高饱和色；中间值表示冷暖程度。");
+      return;
+    }
+    if (system.includes("维度标注员")) {
       const content = payload.messages?.[1]?.content ?? [];
       const parts = Array.isArray(content) ? content : [];
       const imageCount = parts.filter((part) => part?.type === "image_url").length;
       const text = parts.find((part) => part?.type === "text")?.text ?? "";
       const aliases = [...text.matchAll(/^- (d\d+)：/gm)].map((match) => match[1]);
-      dimensionCalls.push({ aliases, imageCount });
+      dimensionCalls.push({ aliases, imageCount, text });
       dimensionInFlight += 1;
       dimensionMaxInFlight = Math.max(dimensionMaxInFlight, dimensionInFlight);
       let settled = false;
@@ -103,6 +107,7 @@ const aiMock = createServer((req, res) => {
         return;
       }
       const body = dimensionRaw ?? JSON.stringify({
+        reasons: Object.fromEntries(aliases.map((alias) => [alias, "画面可见特征略偏向该轴左端或右端"])),
         values: dimensionValues ?? Object.fromEntries(aliases.map((alias, index) => [alias, index === 0 ? -30 : 40])),
       });
       setTimeout(() => {
@@ -512,14 +517,32 @@ assert.equal(previewBad.failed[0].reason, "not_in_page", "不存在的素材应�
 
 // 9g) 单图 AI 维度标记：同步接口、值换算、用户修改优先、超时、权限、同 Page 锁
 {
+  const descriptionResponse = await post(`${base}/api/preview-dimensions/ai-description`, { leftLabel: "冷色", rightLabel: "暖色" });
+  assert.equal(descriptionResponse.status, 200, "AI 维度说明接口应 200");
+  const descriptionData = await json(descriptionResponse);
+  assert.ok(descriptionData.description.includes("暖色"), "AI 维度说明应返回说明正文");
+
   const singleUrl = `${base}/api/preview-pages/ai-dimensions/single`;
   const singleAssetId = asset.id;
   assert.equal((await post(`${base}/api/preview-page-assets`, { projectId: "project-visual-direction", pageId: previewPageId, assetIds: [singleAssetId] })).status, 200, "单图测试素材应能加入 Page");
+  const baseDimension = defaultPreview.page.dimensions[0];
+  const singleDescription = "冷色偏向蓝、青、灰，暖色偏向红、橙、黄；中间值表示冷暖程度。";
+  assert.equal((await fetch(`${base}/api/preview-dimensions`, {
+    method: "PATCH",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      projectId: "project-visual-direction",
+      pageId: previewPageId,
+      dimensions: [{ id: baseDimension.id, leftLabel: baseDimension.leftLabel, rightLabel: baseDimension.rightLabel, description: singleDescription }],
+    }),
+  })).status, 200, "维度说明应能保存");
+  const pageWithDescription = await json(await fetch(`${base}/api/preview-page?projectId=project-visual-direction&pageId=${previewPageId}`));
+  assert.equal(pageWithDescription.page.dimensions.find((dimension) => dimension.id === baseDimension.id).description, singleDescription, "读取 Page 应返回维度说明");
   const singleBody = (overrides = {}) => ({
     projectId: "project-visual-direction",
     pageId: previewPageId,
     assetId: singleAssetId,
-    dimensionIds: [previewDimensionId],
+    dimensionIds: [baseDimension.id],
     mode: "all",
     ...overrides,
   });
@@ -555,6 +578,7 @@ assert.equal(previewBad.failed[0].reason, "not_in_page", "不存在的素材应�
   assert.equal(dimensionCalls.length, 1, "应只发 1 次模型请求");
   assert.equal(dimensionCalls[0].imageCount, 1, "每次模型请求只能有 1 张图");
   assert.deepEqual(dimensionCalls[0].aliases, ["d1"], "提示词应包含 d1 别名");
+  assert.ok(dimensionCalls[0].text.includes(singleDescription), "提示词应包含维度说明");
   const allPage = await json(await fetch(`${base}/api/preview-page?projectId=project-visual-direction&pageId=${previewPageId}`));
   const allAsset = allPage.page.assets.find((entry) => entry.assetId === singleAssetId);
   assert.equal(allAsset.dimensionValues[previewDimensionId], 350, "单图结果应持久化");
@@ -630,7 +654,9 @@ assert.equal(previewBad.failed[0].reason, "not_in_page", "不存在的素材应�
   // 只用本地有原图的两个素材（asset-01 与本次上传的 asset），避免依赖种子素材的远程缩略图。
   const batchAssetIds = [previewAssetId, asset.id];
   assert.equal((await post(`${base}/api/preview-page-assets`, { projectId: "project-visual-direction", pageId: batchPageId, assetIds: batchAssetIds })).status, 200, "批量测试页应能加入 2 个素材");
-  const batchDimensionCreated = await json(await post(`${base}/api/preview-dimensions`, { projectId: "project-visual-direction", pageId: batchPageId, leftLabel: "左端", rightLabel: "右端" }));
+  const batchDescription = "左端偏冷、低饱和，右端偏暖、高饱和；中间值表示程度。";
+  const batchDimensionCreated = await json(await post(`${base}/api/preview-dimensions`, { projectId: "project-visual-direction", pageId: batchPageId, leftLabel: "左端", rightLabel: "右端", description: batchDescription }));
+  assert.equal(batchDimensionCreated.dimension.description, batchDescription, "创建维度应保存说明");
   const batchDimensionId = batchDimensionCreated.dimension.id;
 
   const jobUrl = `${base}/api/preview-pages/ai-dimensions/job?projectId=project-visual-direction&pageId=${batchPageId}&since=0`;
@@ -673,6 +699,7 @@ assert.equal(previewBad.failed[0].reason, "not_in_page", "不存在的素材应�
   assert.equal(finished.events.length, finished.job.applied, "每张成功图片应有一条 applied 事件");
   assert.equal(dimensionCalls.length, createdData.total, "每张图片应只发一次模型请求");
   assert.ok(dimensionCalls.every((call) => call.imageCount === 1), "批量请求也只能每次 1 张图");
+  assert.ok(dimensionCalls.every((call) => call.text.includes(batchDescription)), "批量提示词应包含维度说明");
   assert.ok(dimensionMaxInFlight >= 2, "默认应允许 2 张图并发请求");
   assert.ok(finished.events.every((event) => event.updates.length === 1 && event.updates[0].value === 350), "事件应带换算后的值");
   const batchPage = await json(await fetch(`${base}/api/preview-page?projectId=project-visual-direction&pageId=${batchPageId}`));

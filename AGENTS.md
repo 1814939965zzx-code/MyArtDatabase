@@ -41,6 +41,9 @@
 | `app/src/HomeView.tsx` | 主页（Figma 式项目卡片网格：封面拼图、重命名/删除、进入项目） |
 | `app/src/AllAssetsView.tsx` | 全局素材库 |
 | `app/src/DimensionPages.tsx` | 维度 Page 切换、增删改、项目素材多选加入 |
+| `app/src/DimensionCreateModal.tsx` | 添加维度：左右端名称、可选说明、AI 生成说明 |
+| `app/src/DimensionEditorModal.tsx` | 编辑维度：名称、说明、删除 |
+| `app/src/DimensionDescriptionEditor.tsx` | 维度说明编辑器：手填、AI 生成、字数与错误提示 |
 | `app/src/DimensionPreview.tsx` | 单个 Page 的一维、二维、三维预览与拖动交互 |
 | `app/src/AiDimensionDialog.tsx` | AI 维度标记确认框（单图/批量共用：维度多选、all/zero、数量与限制） |
 | `app/src/AiDimensionStatus.tsx` | 维度预览左下角批量 AI 进度胶囊（进度、超时、停止） |
@@ -56,8 +59,8 @@
 | `app/src/TokenSettingsModal.tsx` | 插件令牌面板（生成/吊销/复制令牌、浏览器扩展下载与使用说明） |
 | `app/server/routes.js` | 全部 `/api/*` 路由（含登录、用户管理、权限校验、插件令牌 CRUD） |
 | `app/server/auth.js` | 密码哈希（scrypt）、会话创建/解析、cookie、登录审计与插件令牌（创建/列表/吊销/Bearer 解析） |
-| `app/server/preview-pages.js` | 维度 Page 独立数据模型、v9 迁移与 Page/维度/素材引用/数值接口 |
-| `app/server/preview-ai.js` | 单图/批量 AI 维度标记：提示词、单图视觉请求、条件写库、2 路并发任务、超时与停止 |
+| `app/server/preview-pages.js` | 维度 Page 独立数据模型、v9 迁移与 Page/维度/素材引用/数值接口（维度含 description） |
+| `app/server/preview-ai.js` | 单图/批量 AI 维度标记：提示词（含维度说明）、单图视觉请求、条件写库、2 路并发任务、超时与停止；维度说明生成接口 |
 | `app/server/db.js` | SQLite 表结构、迁移与示例数据（含 users/sessions/login_logs/api_tokens） |
 | `app/server/tags.js` | 标签字典与素材-标签关联的共享读写 |
 | `app/server/ai.js` | AI 打标：配置读取、OpenAI 兼容调用、两轮标签复用裁决 |

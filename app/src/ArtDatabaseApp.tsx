@@ -44,6 +44,7 @@ import { BoardView } from "./BoardView";
 import { DeletionToast } from "./DeletionToast";
 import { DimensionControlsEditor, type DimensionControlsEditorHandle } from "./DimensionControlsEditor";
 import { DimensionEditorModal } from "./DimensionEditorModal";
+import { DimensionCreateModal, type DimensionDraft } from "./DimensionCreateModal";
 import { DimensionPages, type PageDimension, type PreviewPage } from "./DimensionPages";
 import { mergePreviewPage, useDimensionSync } from "./sync/dimensionSync";
 import { HomeView } from "./HomeView";
@@ -80,6 +81,7 @@ type Dimension = {
   projectId: string;
   leftLabel: string;
   rightLabel: string;
+  description: string;
   sortOrder: number;
 };
 
@@ -871,10 +873,8 @@ export function ArtDatabaseApp({ user, onLogout }: { user: SessionUser; onLogout
     setMessage("已撤销删除");
   }
 
-  async function addDimension(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    if (!workspace || !currentPreviewPage) return;
-    const form = new FormData(event.currentTarget);
+  async function createDimension(draft: DimensionDraft): Promise<boolean> {
+    if (!workspace || !currentPreviewPage) return false;
     setBusy(true);
     try {
       await apiFetch("/api/preview-dimensions", {
@@ -882,19 +882,35 @@ export function ArtDatabaseApp({ user, onLogout }: { user: SessionUser; onLogout
         body: JSON.stringify({
           projectId: workspace.project.id,
           pageId: currentPreviewPage.id,
-          leftLabel: form.get("leftLabel"),
-          rightLabel: form.get("rightLabel"),
+          leftLabel: draft.leftLabel,
+          rightLabel: draft.rightLabel,
+          description: draft.description,
         }),
       });
       await loadProjects(workspace.project.id);
       setPreviewRevision((v) => v + 1);
-      setDimensionOpen(false);
       setMessage("维度已添加，现有素材已置于中点");
+      return true;
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "添加失败");
+      return false;
     } finally {
       setBusy(false);
     }
+  }
+
+  async function generateDimensionDescription(leftLabel: string, rightLabel: string) {
+    if (!workspace || !currentPreviewPage) throw new Error("当前 Page 未载入");
+    const data = await apiFetch<{ description: string }>("/api/preview-dimensions/ai-description", {
+      method: "POST",
+      body: JSON.stringify({
+        projectId: workspace.project.id,
+        pageId: currentPreviewPage.id,
+        leftLabel,
+        rightLabel,
+      }),
+    });
+    return data.description;
   }
 
   /** 立即从本地移除维度（含选中轴与所有坐标），服务端删除在 5 秒撤销窗口结束后提交。 */
@@ -1023,7 +1039,7 @@ export function ArtDatabaseApp({ user, onLogout }: { user: SessionUser; onLogout
     dimSync.setValue(assetId, dimensionId, value);
   }
 
-  async function applyDimensionLabels(updates: Array<{ id: string; leftLabel: string; rightLabel: string }>) {
+  async function applyDimensionLabels(updates: Array<{ id: string; leftLabel: string; rightLabel: string; description: string }>) {
     if (!workspace || !currentPreviewPage || !updates.length) return;
     setBusy(true);
     try {
@@ -1036,10 +1052,12 @@ export function ArtDatabaseApp({ user, onLogout }: { user: SessionUser; onLogout
         ...current,
         dimensions: current.dimensions.map((dimension) => {
           const update = updateMap.get(dimension.id);
-          return update ? { ...dimension, leftLabel: update.leftLabel, rightLabel: update.rightLabel } : dimension;
+          return update
+            ? { ...dimension, leftLabel: update.leftLabel, rightLabel: update.rightLabel, description: update.description }
+            : dimension;
         }),
       } : current);
-      setMessage("维度名称已在当前 Page 更新");
+      setMessage("维度名称与说明已在当前 Page 更新");
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "维度名称修改失败");
       throw error;
@@ -2043,34 +2061,12 @@ export function ArtDatabaseApp({ user, onLogout }: { user: SessionUser; onLogout
       ) : null}
 
       {dimensionOpen && currentPreviewPage ? (
-        <Modal
-          open
+        <DimensionCreateModal
+          busy={busy}
           onClose={() => setDimensionOpen(false)}
-          eyebrow="DIMENSION"
-          title="添加分类维度"
-          description="维度仅属于当前 Page，最多同时选择 3 个坐标轴。"
-          footer={
-            <>
-              <Button onClick={() => setDimensionOpen(false)}>取消</Button>
-              <Button type="submit" form="add-dimension-form" variant="primary" loading={busy}>
-                {busy ? "添加中…" : "添加维度"}
-              </Button>
-            </>
-          }
-        >
-          <form id="add-dimension-form" className="flex flex-col gap-4" onSubmit={addDimension}>
-            <div className="grid gap-3 sm:grid-cols-[1fr_auto_1fr] sm:items-end">
-              <Field label="左端名称" required htmlFor="dimension-left">
-                <Input id="dimension-left" name="leftLabel" required maxLength={24} placeholder="例如：克制" />
-              </Field>
-              <span className="hidden pb-2 text-center text-muted sm:block">—</span>
-              <Field label="右端名称" required htmlFor="dimension-right">
-                <Input id="dimension-right" name="rightLabel" required maxLength={24} placeholder="例如：张扬" />
-              </Field>
-            </div>
-            <p className="m-0 text-xs text-muted">添加后，当前 Page 内的素材会先放在新维度中点。</p>
-          </form>
-        </Modal>
+          onCreate={createDimension}
+          onGenerateDescription={generateDimensionDescription}
+        />
       ) : null}
 
       {currentPreviewPage ? (() => { const editingDimension = currentPreviewPage.dimensions.find((dimension) => dimension.id === editingDimensionId); return editingDimension
@@ -2080,6 +2076,7 @@ export function ArtDatabaseApp({ user, onLogout }: { user: SessionUser; onLogout
             busy={busy}
             onClose={() => setEditingDimensionId(null)}
             onApplyLabels={applyDimensionLabels}
+            onGenerateDescription={generateDimensionDescription}
             onDelete={(dimension) => {
               setEditingDimensionId(null);
               const fullDimension = currentPreviewPage.dimensions.find((entry) => entry.id === dimension.id);

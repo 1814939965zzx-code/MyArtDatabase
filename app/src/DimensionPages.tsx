@@ -6,7 +6,7 @@ import { DimensionPreview } from "./DimensionPreview";
 import { TagFilterBar } from "./TagFilterBar";
 import { Button, EmptyState, Field, IconButton, Input, Modal, SearchInput, Spinner, Tabs, cn } from "./ui";
 
-export type PageDimension = { id: string; projectId: string; pageId: string; leftLabel: string; rightLabel: string; sortOrder: number };
+export type PageDimension = { id: string; projectId: string; pageId: string; leftLabel: string; rightLabel: string; description: string; sortOrder: number };
 export type PreviewPage = {
   id: string; projectId: string; name: string; selectedIds: string[];
   dimensions: PageDimension[];

@@ -3,9 +3,10 @@
 import { Trash2 } from "lucide-react";
 import { FormEvent, useRef, useState } from "react";
 import { Button, Input, Modal } from "./ui";
+import { DimensionDescriptionEditor } from "./DimensionDescriptionEditor";
 
-type Dimension = { id: string; leftLabel: string; rightLabel: string };
-type DimensionLabels = { id: string; leftLabel: string; rightLabel: string };
+type Dimension = { id: string; leftLabel: string; rightLabel: string; description?: string };
+type DimensionLabels = { id: string; leftLabel: string; rightLabel: string; description: string };
 
 export function DimensionEditorModal({
   dimension,
@@ -13,16 +14,19 @@ export function DimensionEditorModal({
   onClose,
   onApplyLabels,
   onDelete,
+  onGenerateDescription,
 }: {
   dimension: Dimension;
   busy: boolean;
   onClose: () => void;
   onApplyLabels: (updates: DimensionLabels[]) => Promise<void>;
   onDelete: (dimension: Dimension) => void;
+  onGenerateDescription: (leftLabel: string, rightLabel: string) => Promise<string>;
 }) {
   const formRef = useRef<HTMLFormElement>(null);
   const [leftLabel, setLeftLabel] = useState(dimension.leftLabel);
   const [rightLabel, setRightLabel] = useState(dimension.rightLabel);
+  const [description, setDescription] = useState(dimension.description ?? "");
   const [applying, setApplying] = useState(false);
 
   function cancel() {
@@ -40,8 +44,15 @@ export function DimensionEditorModal({
       return;
     }
 
-    const updates = leftLabel.trim() !== dimension.leftLabel || rightLabel.trim() !== dimension.rightLabel
-      ? [{ id: dimension.id, leftLabel: leftLabel.trim(), rightLabel: rightLabel.trim() }]
+    const updates = leftLabel.trim() !== dimension.leftLabel
+      || rightLabel.trim() !== dimension.rightLabel
+      || description.trim() !== (dimension.description ?? "")
+      ? [{
+        id: dimension.id,
+        leftLabel: leftLabel.trim(),
+        rightLabel: rightLabel.trim(),
+        description: description.trim(),
+      }]
       : [];
     if (!updates.length) {
       onClose();
@@ -63,9 +74,9 @@ export function DimensionEditorModal({
       open
       onClose={cancel}
       size="lg"
-      eyebrow="DIMENSION LABELS"
-      title="编辑维度名称"
-      description="名称修改仅对当前 Page 生效。"
+      eyebrow="DIMENSION"
+      title="编辑维度"
+      description="名称与说明仅对当前 Page 生效。"
       footer={
         <>
           <Button type="button" onClick={cancel} disabled={applying || busy}>
@@ -109,6 +120,15 @@ export function DimensionEditorModal({
             />
           </div>
         </div>
+
+        <DimensionDescriptionEditor
+          leftLabel={leftLabel}
+          rightLabel={rightLabel}
+          value={description}
+          onChange={setDescription}
+          disabled={applying || busy}
+          onGenerate={onGenerateDescription}
+        />
 
         <div className="flex flex-wrap items-center justify-between gap-3 border border-danger-border bg-danger-soft p-3">
           <Button

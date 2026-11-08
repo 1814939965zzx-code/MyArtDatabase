@@ -38,6 +38,7 @@ export function migratePreviewPages(db) {
       page_id TEXT NOT NULL REFERENCES preview_pages(id) ON DELETE CASCADE,
       left_label TEXT NOT NULL,
       right_label TEXT NOT NULL,
+      description TEXT NOT NULL DEFAULT '',
       sort_order INTEGER NOT NULL,
       UNIQUE(page_id, id)
     );
@@ -59,6 +60,8 @@ export function migratePreviewPages(db) {
     if (!pageColumns.includes("revision")) db.exec("ALTER TABLE preview_pages ADD COLUMN revision INTEGER NOT NULL DEFAULT 0");
     const valueColumns = db.prepare("PRAGMA table_info(preview_dimension_values)").all().map((column) => column.name);
     if (!valueColumns.includes("last_rev")) db.exec("ALTER TABLE preview_dimension_values ADD COLUMN last_rev INTEGER NOT NULL DEFAULT 0");
+    const dimensionColumns = db.prepare("PRAGMA table_info(preview_dimensions)").all().map((column) => column.name);
+    if (!dimensionColumns.includes("description")) db.exec("ALTER TABLE preview_dimensions ADD COLUMN description TEXT NOT NULL DEFAULT ''");
   }
   if (db.prepare("PRAGMA user_version").get().user_version >= 9) return;
   transaction(db, () => {
@@ -127,7 +130,7 @@ export async function handlePreviewPages(request, { db }) {
     return Response.json({ ok: true });
   }
   if (path === "/api/preview-page" && method === "GET") {
-    const dimensions = db.prepare(`SELECT d.id, p.project_id AS projectId, d.page_id AS pageId, d.left_label AS leftLabel, d.right_label AS rightLabel, d.sort_order AS sortOrder
+    const dimensions = db.prepare(`SELECT d.id, p.project_id AS projectId, d.page_id AS pageId, d.left_label AS leftLabel, d.right_label AS rightLabel, d.description, d.sort_order AS sortOrder
       FROM preview_dimensions d JOIN preview_pages p ON p.id = d.page_id WHERE d.page_id = ? ORDER BY d.sort_order, d.id`).all(pageId);
     const rows = db.prepare(`SELECT pa.asset_id AS assetId FROM preview_page_assets pa JOIN assets a ON a.id = pa.asset_id WHERE pa.page_id = ? AND a.deleted_at IS NULL`).all(pageId);
     const values = db.prepare("SELECT asset_id AS assetId, dimension_id AS dimensionId, value, last_rev AS lastRev FROM preview_dimension_values WHERE page_id = ?").all(pageId);
@@ -168,24 +171,25 @@ export async function handlePreviewPages(request, { db }) {
   }
   if (path === "/api/preview-dimensions" && method === "POST") {
     const leftLabel = clean(payload.leftLabel, 24), rightLabel = clean(payload.rightLabel, 24);
+    const description = clean(payload.description, 500);
     if (!leftLabel || !rightLabel || leftLabel === rightLabel) return bad("请填写不相同的维度两端名称");
     const id = randomUUID();
     transaction(db, () => {
       const { next } = db.prepare("SELECT COALESCE(MAX(sort_order), -1) + 1 AS next FROM preview_dimensions WHERE page_id = ?").get(pageId);
-      db.prepare("INSERT INTO preview_dimensions (id, page_id, left_label, right_label, sort_order) VALUES (?, ?, ?, ?, ?)").run(id, pageId, leftLabel, rightLabel, next);
+      db.prepare("INSERT INTO preview_dimensions (id, page_id, left_label, right_label, description, sort_order) VALUES (?, ?, ?, ?, ?, ?)").run(id, pageId, leftLabel, rightLabel, description, next);
       db.prepare(`INSERT INTO preview_dimension_values (page_id, asset_id, dimension_id, value)
         SELECT page_id, asset_id, ?, 500 FROM preview_page_assets WHERE page_id = ?`).run(id, pageId);
       const axes = JSON.parse(page.selected_axes);
       if (axes.length < 3) db.prepare("UPDATE preview_pages SET selected_axes = ? WHERE id = ?").run(JSON.stringify([...axes, id]), pageId);
     });
-    return Response.json({ dimension: { id, pageId, projectId, leftLabel, rightLabel } }, { status: 201 });
+    return Response.json({ dimension: { id, pageId, projectId, leftLabel, rightLabel, description } }, { status: 201 });
   }
   if (path === "/api/preview-dimensions" && method === "PATCH") {
     const updates = payload.dimensions;
     if (!Array.isArray(updates) || !updates.length || updates.some((d) => !d || !clean(d.leftLabel, 24) || !clean(d.rightLabel, 24) || clean(d.leftLabel, 24) === clean(d.rightLabel, 24))) return bad("请填写不相同的维度两端名称");
     if (updates.some((d) => !db.prepare("SELECT id FROM preview_dimensions WHERE page_id = ? AND id = ?").get(pageId, clean(d.id)))) return bad("维度不存在", 404);
     transaction(db, () => {
-      for (const d of updates) db.prepare("UPDATE preview_dimensions SET left_label = ?, right_label = ? WHERE page_id = ? AND id = ?").run(clean(d.leftLabel, 24), clean(d.rightLabel, 24), pageId, d.id);
+      for (const d of updates) db.prepare("UPDATE preview_dimensions SET left_label = ?, right_label = ?, description = ? WHERE page_id = ? AND id = ?").run(clean(d.leftLabel, 24), clean(d.rightLabel, 24), clean(d.description, 500), pageId, d.id);
     });
     return Response.json({ ok: true });
   }

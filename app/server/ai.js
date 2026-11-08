@@ -176,6 +176,22 @@ export async function requestVisionJson(config, { system, text, dataUri, maxToke
   return content;
 }
 
+/**
+ * 纯文本请求：用于“让 AI 生成维度说明”这类不需要图片的场景。
+ */
+export async function requestTextCompletion(config, { system, text, maxTokens = 300, temperature = 0.3, timeoutMs } = {}) {
+  return chatCompletions({
+    ...config,
+    temperature,
+    maxTokens,
+    timeoutMs,
+    messages: [
+      { role: "system", content: system },
+      { role: "user", content: text },
+    ],
+  });
+}
+
 /** 配置页“测试连接”：用当前生效配置发一次极小的文本请求。 */
 export async function testAiConnection() {
   const config = readAiConfig();

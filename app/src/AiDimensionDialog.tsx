@@ -8,6 +8,7 @@ export type AiDimensionDialogDimension = {
   id: string;
   leftLabel: string;
   rightLabel: string;
+  description?: string;
 };
 
 export type AiDimensionDialogAsset = {
@@ -127,10 +128,17 @@ export function AiDimensionDialog({
                   onChange={() => toggleDimension(dimension.id)}
                   disabled={busy}
                 />
-                <span className="grid min-w-0 flex-1 grid-cols-[1fr_auto_1fr] items-center gap-2">
-                  <b className="truncate text-left font-medium">{dimension.leftLabel}</b>
-                  <i className="not-italic text-faint">—</i>
-                  <b className="truncate text-right font-medium">{dimension.rightLabel}</b>
+                <span className="min-w-0 flex-1">
+                  <span className="grid min-w-0 grid-cols-[1fr_auto_1fr] items-center gap-2">
+                    <b className="truncate text-left font-medium">{dimension.leftLabel}</b>
+                    <i className="not-italic text-faint">—</i>
+                    <b className="truncate text-right font-medium">{dimension.rightLabel}</b>
+                  </span>
+                  {dimension.description ? (
+                    <span className="mt-0.5 block truncate text-2xs text-muted" title={dimension.description}>
+                      {dimension.description}
+                    </span>
+                  ) : null}
                 </span>
               </label>
             ))}
