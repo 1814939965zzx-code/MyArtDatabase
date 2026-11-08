@@ -44,6 +44,7 @@
   }
 
   .preview-workspace {
+    position: relative;
     min-width: 0;
     min-height: 0;
     height: 100%;
@@ -955,6 +956,93 @@
     .dimension-pages {
       margin-left: 18px;
       margin-right: 18px;
+    }
+  }
+
+  /* 批量 AI 维度任务：左下角胶囊（只属于维度预览） */
+  .ai-dimension-status {
+    position: absolute;
+    left: 16px;
+    bottom: 16px;
+    z-index: 30;
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    max-width: min(380px, calc(100% - 32px));
+    padding: 6px 7px 6px 10px;
+    border: 1px solid var(--color-line);
+    border-radius: 999px;
+    background: color-mix(in srgb, var(--color-surface) 92%, transparent);
+    color: var(--color-ink);
+    font-size: 12px;
+    box-shadow: 0 4px 14px rgb(0 0 0 / 0.08);
+    backdrop-filter: blur(6px);
+  }
+
+  .ai-dimension-status-text {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .ai-dimension-status-stop {
+    display: grid;
+    place-items: center;
+    flex: none;
+    width: 22px;
+    height: 22px;
+    border: 0;
+    border-radius: 999px;
+    background: var(--color-line-soft);
+    color: var(--color-muted);
+    cursor: pointer;
+  }
+
+  .ai-dimension-status-stop:hover {
+    background: var(--color-line);
+    color: var(--color-ink);
+  }
+
+  /* 正在被 AI 处理的图片：只锁这张图，不冻结整页 */
+  .ai-lock-overlay {
+    position: absolute;
+    inset: 0;
+    z-index: 6;
+    display: grid;
+    place-items: center;
+    border-radius: inherit;
+    background: color-mix(in srgb, var(--color-preview-bg) 55%, transparent);
+    pointer-events: none;
+  }
+
+  .ai-lock-overlay .ai-lock-spinner {
+    display: grid;
+    place-items: center;
+    width: 24px;
+    height: 24px;
+    border-radius: 999px;
+    background: color-mix(in srgb, var(--color-surface) 88%, transparent);
+    color: var(--color-accent);
+    box-shadow: 0 2px 8px rgb(0 0 0 / 0.12);
+  }
+
+  .preview-asset.ai-locked .preview-asset-face {
+    cursor: default;
+  }
+
+  @media (max-width: 620px) {
+    .ai-dimension-status {
+      left: 10px;
+      bottom: 10px;
+      max-width: calc(100% - 20px);
+      padding-left: 8px;
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .ai-dimension-status .animate-spin {
+      animation: none;
     }
   }
 

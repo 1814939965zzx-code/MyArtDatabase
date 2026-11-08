@@ -55,6 +55,8 @@ let dimensionDelayMs = 0;
 let dimensionStatus = 200;
 let dimensionRaw = null;
 let dimensionValues = null;
+let dimensionInFlight = 0;
+let dimensionMaxInFlight = 0;
 const aiMock = createServer((req, res) => {
   if (req.method === "GET") {
     res.writeHead(200, { "content-type": "application/json" });
@@ -85,7 +87,17 @@ const aiMock = createServer((req, res) => {
       const text = parts.find((part) => part?.type === "text")?.text ?? "";
       const aliases = [...text.matchAll(/^- (d\d+)：/gm)].map((match) => match[1]);
       dimensionCalls.push({ aliases, imageCount });
+      dimensionInFlight += 1;
+      dimensionMaxInFlight = Math.max(dimensionMaxInFlight, dimensionInFlight);
+      let settled = false;
+      const finish = () => {
+        if (settled) return;
+        settled = true;
+        dimensionInFlight = Math.max(0, dimensionInFlight - 1);
+      };
+      res.on("close", finish);
       if (dimensionStatus !== 200) {
+        finish();
         res.writeHead(dimensionStatus, { "content-type": "application/json" });
         res.end(JSON.stringify({ error: { message: "mock dimension failure" } }));
         return;
@@ -93,7 +105,10 @@ const aiMock = createServer((req, res) => {
       const body = dimensionRaw ?? JSON.stringify({
         values: dimensionValues ?? Object.fromEntries(aliases.map((alias, index) => [alias, index === 0 ? -30 : 40])),
       });
-      setTimeout(() => respond(body), dimensionDelayMs);
+      setTimeout(() => {
+        finish();
+        respond(body);
+      }, dimensionDelayMs);
       return;
     }
     if (!system.includes("图片素材标签助手") && !system.includes("标签词库管理员")) {
@@ -498,10 +513,12 @@ assert.equal(previewBad.failed[0].reason, "not_in_page", "不存在的素材应�
 // 9g) 单图 AI 维度标记：同步接口、值换算、用户修改优先、超时、权限、同 Page 锁
 {
   const singleUrl = `${base}/api/preview-pages/ai-dimensions/single`;
+  const singleAssetId = asset.id;
+  assert.equal((await post(`${base}/api/preview-page-assets`, { projectId: "project-visual-direction", pageId: previewPageId, assetIds: [singleAssetId] })).status, 200, "单图测试素材应能加入 Page");
   const singleBody = (overrides = {}) => ({
     projectId: "project-visual-direction",
     pageId: previewPageId,
-    assetId: previewAssetId,
+    assetId: singleAssetId,
     dimensionIds: [previewDimensionId],
     mode: "all",
     ...overrides,
@@ -509,12 +526,12 @@ assert.equal(previewBad.failed[0].reason, "not_in_page", "不存在的素材应�
   const setPreviewValue = async (value) => fetch(`${base}/api/preview-values`, {
     method: "PATCH",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ projectId: "project-visual-direction", pageId: previewPageId, updates: [{ assetId: previewAssetId, values: { [previewDimensionId]: value } }] }),
+    body: JSON.stringify({ projectId: "project-visual-direction", pageId: previewPageId, updates: [{ assetId: singleAssetId, values: { [previewDimensionId]: value } }] }),
   });
   const waitForDimensionCall = async (count) => {
     const started = Date.now();
     while (dimensionCalls.length < count) {
-      if (Date.now() - started > 2000) throw new Error("等待单图 AI 请求超时");
+      if (Date.now() - started > 10000) throw new Error("等待单图 AI 请求超时");
       await new Promise((resolve) => setTimeout(resolve, 10));
     }
   };
@@ -539,7 +556,7 @@ assert.equal(previewBad.failed[0].reason, "not_in_page", "不存在的素材应�
   assert.equal(dimensionCalls[0].imageCount, 1, "每次模型请求只能有 1 张图");
   assert.deepEqual(dimensionCalls[0].aliases, ["d1"], "提示词应包含 d1 别名");
   const allPage = await json(await fetch(`${base}/api/preview-page?projectId=project-visual-direction&pageId=${previewPageId}`));
-  const allAsset = allPage.page.assets.find((entry) => entry.assetId === previewAssetId);
+  const allAsset = allPage.page.assets.find((entry) => entry.assetId === singleAssetId);
   assert.equal(allAsset.dimensionValues[previewDimensionId], 350, "单图结果应持久化");
   assert.equal(allAsset.valueRevs[previewDimensionId], allData.revision, "单图结果应带 lastRev");
 
@@ -566,7 +583,7 @@ assert.equal(previewBad.failed[0].reason, "not_in_page", "不存在的素材应�
   assert.equal(pendingData.updates.length, 0, "用户已修改的坐标不应被 AI 覆盖");
   assert.ok(pendingData.skipped.some((entry) => entry.dimensionId === previewDimensionId && entry.reason === "value_changed"), "应返回 value_changed");
   const userPage = await json(await fetch(`${base}/api/preview-page?projectId=project-visual-direction&pageId=${previewPageId}`));
-  assert.equal(userPage.page.assets.find((entry) => entry.assetId === previewAssetId).dimensionValues[previewDimensionId], 700, "用户值应保留");
+  assert.equal(userPage.page.assets.find((entry) => entry.assetId === singleAssetId).dimensionValues[previewDimensionId], 700, "用户值应保留");
 
   // 超时：不写库；迟到响应被丢弃
   const valueBeforeTimeout = 700;
@@ -578,7 +595,7 @@ assert.equal(previewBad.failed[0].reason, "not_in_page", "不存在的素材应�
   dimensionDelayMs = 0;
   await new Promise((resolve) => setTimeout(resolve, 500));
   const timeoutPage = await json(await fetch(`${base}/api/preview-page?projectId=project-visual-direction&pageId=${previewPageId}`));
-  assert.equal(timeoutPage.page.assets.find((entry) => entry.assetId === previewAssetId).dimensionValues[previewDimensionId], valueBeforeTimeout, "超时后不得写库");
+  assert.equal(timeoutPage.page.assets.find((entry) => entry.assetId === singleAssetId).dimensionValues[previewDimensionId], valueBeforeTimeout, "超时后不得写库");
 
   // 同 Page 已有单图请求时再次请求应 409
   dimensionCalls.length = 0;
@@ -604,6 +621,104 @@ assert.equal(previewBad.failed[0].reason, "not_in_page", "不存在的素材应�
   const authFailure = await post(singleUrl, singleBody());
   assert.equal(authFailure.status, 502, "模型 401 应映射为 502");
   dimensionStatus = 200;
+}
+
+// 9h) 批量 AI 维度任务：2 路并发、单图请求、事件应用、停止、后台跑完
+{
+  const batchPageCreated = await json(await post(`${base}/api/preview-pages`, { projectId: "project-visual-direction", name: "批量 AI 测试页" }));
+  const batchPageId = batchPageCreated.page.id;
+  // 只用本地有原图的两个素材（asset-01 与本次上传的 asset），避免依赖种子素材的远程缩略图。
+  const batchAssetIds = [previewAssetId, asset.id];
+  assert.equal((await post(`${base}/api/preview-page-assets`, { projectId: "project-visual-direction", pageId: batchPageId, assetIds: batchAssetIds })).status, 200, "批量测试页应能加入 2 个素材");
+  const batchDimensionCreated = await json(await post(`${base}/api/preview-dimensions`, { projectId: "project-visual-direction", pageId: batchPageId, leftLabel: "左端", rightLabel: "右端" }));
+  const batchDimensionId = batchDimensionCreated.dimension.id;
+
+  const jobUrl = `${base}/api/preview-pages/ai-dimensions/job?projectId=project-visual-direction&pageId=${batchPageId}&since=0`;
+  const createBatch = () => post(`${base}/api/preview-pages/ai-dimensions`, {
+    projectId: "project-visual-direction",
+    pageId: batchPageId,
+    dimensionIds: [batchDimensionId],
+    mode: "all",
+  });
+  const getJob = async () => json(await fetch(jobUrl));
+  const waitForJob = async (predicate, timeout = 10000) => {
+    const started = Date.now();
+    let data = await getJob();
+    while (!predicate(data.job) && Date.now() - started < timeout) {
+      await new Promise((resolve) => setTimeout(resolve, 40));
+      data = await getJob();
+    }
+    return data;
+  };
+  const stopJob = (jobId) => post(`${base}/api/preview-pages/ai-dimensions/stop`, { jobId });
+
+  // 正常跑完：并发 2，每次请求只有 1 张图
+  dimensionCalls.length = 0;
+  dimensionMaxInFlight = 0;
+  dimensionDelayMs = 3000;
+  dimensionStatus = 200;
+  dimensionRaw = null;
+  dimensionValues = null;
+  const created = await createBatch();
+  assert.equal(created.status, 202, "批量任务应 202");
+  const createdData = await created.json();
+  assert.ok(createdData.jobId, "批量任务应返回 jobId");
+  assert.ok(createdData.total >= 2, "批量任务应至少包含 2 张图片");
+  const finished = await waitForJob((job) => job && ["done", "stopped", "error"].includes(job.status));
+  assert.equal(finished.job.status, "done", "批量任务应完成");
+  assert.equal(finished.job.total, createdData.total, "批量任务总数应稳定");
+  assert.equal(finished.job.done, finished.job.total, "完成数应等于总数");
+  assert.ok(finished.job.applied >= 2, "应至少应用 2 张图片");
+  assert.equal(finished.job.inFlight.length, 0, "完成后不应有 inFlight");
+  assert.equal(finished.events.length, finished.job.applied, "每张成功图片应有一条 applied 事件");
+  assert.equal(dimensionCalls.length, createdData.total, "每张图片应只发一次模型请求");
+  assert.ok(dimensionCalls.every((call) => call.imageCount === 1), "批量请求也只能每次 1 张图");
+  assert.ok(dimensionMaxInFlight >= 2, "默认应允许 2 张图并发请求");
+  assert.ok(finished.events.every((event) => event.updates.length === 1 && event.updates[0].value === 350), "事件应带换算后的值");
+  const batchPage = await json(await fetch(`${base}/api/preview-page?projectId=project-visual-direction&pageId=${batchPageId}`));
+  for (const event of finished.events) {
+    assert.equal(batchPage.page.assets.find((entry) => entry.assetId === event.assetId).dimensionValues[batchDimensionId], 350, "批量结果应持久化");
+  }
+
+  // 停止：清空队列并中止当前请求
+  dimensionDelayMs = 500;
+  const stoppedCreated = await createBatch();
+  assert.equal(stoppedCreated.status, 202, "停止用例任务应创建成功");
+  const stoppedData = await stoppedCreated.json();
+  assert.equal((await stopJob(stoppedData.jobId)).status, 200, "停止接口应 200");
+  const stopped = await waitForJob((job) => job && ["stopped", "done", "error"].includes(job.status));
+  assert.equal(stopped.job.status, "stopped", "停止后任务状态应为 stopped");
+  assert.ok(stopped.job.done <= stopped.job.total, "停止后完成数不应超过总数");
+
+  // 后台继续：创建后不轮询，过一会儿再查，任务应已完成
+  dimensionDelayMs = 80;
+  const backgroundCreated = await createBatch();
+  assert.equal(backgroundCreated.status, 202, "后台上任务应创建成功");
+  const backgroundData = await backgroundCreated.json();
+  await new Promise((resolve) => setTimeout(resolve, 3000));
+  const backgroundJob = await getJob();
+  assert.equal(backgroundJob.job.status, "done", `不轮询时任务也应在后台跑完（total=${backgroundData.total}）`);
+
+  // 并发任务：同一时间只允许一个批量任务
+  dimensionDelayMs = 400;
+  const firstJob = await createBatch();
+  assert.equal(firstJob.status, 202, "第一个批量任务应创建成功");
+  const duplicateJob = await createBatch();
+  assert.equal(duplicateJob.status, 409, "已有批量任务时再次创建应 409");
+  const firstJobData = await firstJob.json();
+  await stopJob(firstJobData.jobId);
+  await waitForJob((job) => job && ["stopped", "done", "error"].includes(job.status));
+
+  // 批量超时：单图超时后任务继续/结束，不写库
+  process.env.AI_DIMENSION_ITEM_TIMEOUT_MS = "200";
+  dimensionDelayMs = 600;
+  const timeoutCreated = await createBatch();
+  assert.equal(timeoutCreated.status, 202, "超时用例任务应创建成功");
+  const timeoutJob = await waitForJob((job) => job && ["done", "stopped", "error"].includes(job.status));
+  assert.equal(timeoutJob.job.status, "done", "单图超时不应终止整个任务");
+  assert.ok(timeoutJob.job.timedOut >= 1, "应记录超时图片");
+  process.env.AI_DIMENSION_ITEM_TIMEOUT_MS = "";
+  dimensionDelayMs = 0;
 }
 
 // 10) 替换图片：只更新文件字段，保留素材 ID、Metadata、项目引用、维度值和画板元素

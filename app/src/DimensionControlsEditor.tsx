@@ -37,7 +37,7 @@ export const DimensionControlsEditor = forwardRef<DimensionControlsEditorHandle,
       {onAiTag ? (
         <div className="flex items-center justify-between gap-2 pb-2">
           <span className="text-sm text-muted">
-            {locked ? "AI 正在处理这张图…" : "AI 标记"}
+            {locked ? "AI 正在处理这张图…" : aiTagDisabled ? "AI 标注进行中" : "AI 标记"}
           </span>
           <Button
             size="xs"

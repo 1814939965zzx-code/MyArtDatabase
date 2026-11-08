@@ -32,6 +32,7 @@ import { formatDuration, isVideoMime, transcodePercent, useTranscodePolling, vid
 import type { SessionUser } from "./AuthGate";
 import { AccountSettingsModal } from "./AccountSettingsModal";
 import { AiDimensionDialog } from "./AiDimensionDialog";
+import { useAiDimensionTag } from "./useAiDimensionTag";
 import { AllAssetsView, type LibraryAsset } from "./AllAssetsView";
 import { AnnouncementBanner } from "./components/layout/AnnouncementBanner";
 import { AnnouncementModal } from "./AnnouncementModal";
@@ -270,6 +271,7 @@ export function ArtDatabaseApp({ user, onLogout }: { user: SessionUser; onLogout
   const [aiTagBusy, setAiTagBusy] = useState(false);
   const [aiDimensionTarget, setAiDimensionTarget] = useState<Asset | null>(null);
   const [aiDimensionBusyAssetId, setAiDimensionBusyAssetId] = useState<string | null>(null);
+  const [aiBatchDialogAssets, setAiBatchDialogAssets] = useState<Asset[] | null>(null);
   const [tagManagerOpen, setTagManagerOpen] = useState(false);
   const [projectTagManagerOpen, setProjectTagManagerOpen] = useState(false);
   const [accountOpen, setAccountOpen] = useState(false);
@@ -280,6 +282,61 @@ export function ArtDatabaseApp({ user, onLogout }: { user: SessionUser; onLogout
   const [announcement, setAnnouncement] = useState<Announcement | null>(null);
   const [announcementDismissed, setAnnouncementDismissed] = useState(false);
   const [currentUser, setCurrentUser] = useState<SessionUser>(user);
+
+  const aiBatch = useAiDimensionTag({
+    projectId: workspace?.project.id ?? "",
+    pageId: currentPreviewPage?.id ?? "",
+    enabled: !readOnly && Boolean(currentPreviewPage?.id),
+    flush: dimSync.flush,
+    hasPending: dimSync.hasPending,
+    onMessage: setMessage,
+    onApplied: (assetId, updates, revision) => {
+      const fresh = updates.filter((update) => !dimSync.isPending(`${assetId}|${update.dimensionId}`));
+      if (!fresh.length) return;
+      setPreviewPage((current) => {
+        if (!current) return current;
+        return {
+          ...current,
+          revision: Math.max(current.revision ?? 0, revision),
+          assets: current.assets.map((asset) => {
+            if (asset.assetId !== assetId) return asset;
+            const dimensionValues = { ...asset.dimensionValues };
+            const valueRevs = { ...(asset.valueRevs ?? {}) };
+            for (const update of fresh) {
+              dimensionValues[update.dimensionId] = update.value;
+              valueRevs[update.dimensionId] = update.lastRev;
+            }
+            return { ...asset, dimensionValues, valueRevs };
+          }),
+        };
+      });
+    },
+  });
+
+  const lockedAssetIds = useMemo(() => {
+    const ids = new Set(aiBatch.inFlight);
+    if (aiDimensionBusyAssetId) ids.add(aiDimensionBusyAssetId);
+    return [...ids];
+  }, [aiBatch.inFlight, aiDimensionBusyAssetId]);
+  const lockedAssetIdsRef = useRef<string[]>([]);
+  lockedAssetIdsRef.current = lockedAssetIds;
+
+  const batchAiAssets = useMemo(() => {
+    if (!currentPreviewPage || !workspace) return [];
+    const byId = new Map(workspace.assets.map((asset) => [asset.id, asset]));
+    const result: Asset[] = [];
+    for (const entry of currentPreviewPage.assets) {
+      const asset = byId.get(entry.assetId);
+      if (asset) result.push({ ...asset, dimensionValues: entry.dimensionValues });
+    }
+    return result;
+  }, [currentPreviewPage, workspace]);
+
+  function openBatchAiDialog() {
+    if (readOnly || aiBatch.active || aiDimensionBusyAssetId || !currentPreviewPage) return;
+    setAiBatchDialogAssets(batchAiAssets);
+  }
+
   const fileInputRef = useRef<HTMLInputElement>(null);
   const metadataEditorRef = useRef<AssetMetadataEditorHandle>(null);
   const dimensionEditorRef = useRef<DimensionControlsEditorHandle>(null);
@@ -961,6 +1018,7 @@ export function ArtDatabaseApp({ user, onLogout }: { user: SessionUser; onLogout
 
   async function saveDimensionValue(assetId: string, dimensionId: string, value: number) {
     if (!workspace || !currentPreviewPage) return;
+    if (lockedAssetIdsRef.current.includes(assetId)) return;
     // 本地已经通过 onChangeValue 更新过了：这里只入队，由同步器合并提交、失败重试。
     dimSync.setValue(assetId, dimensionId, value);
   }
@@ -1053,6 +1111,7 @@ export function ArtDatabaseApp({ user, onLogout }: { user: SessionUser; onLogout
 
   async function savePreviewDimensionValues(assetId: string, values: Record<string, number>): Promise<boolean> {
     if (!workspace || !currentPreviewPage) return false;
+    if (lockedAssetIdsRef.current.includes(assetId)) return false;
     setPreviewPage((current) => current?.id === currentPreviewPage.id ? {
       ...current,
       assets: current.assets.map((asset) => asset.assetId === assetId
@@ -1745,7 +1804,7 @@ export function ArtDatabaseApp({ user, onLogout }: { user: SessionUser; onLogout
                   </Button>
                 )}
               />
-            )}</> : surface === "preview" ? <DimensionPages key={workspace.project.id} projectId={workspace.project.id} assets={workspace.assets} page={currentPreviewPage} onPageChange={setPreviewPage} onReceivePage={receivePreviewPage} revision={previewRevision} syncStatus={dimSync.status} onRetrySync={dimSync.retry} onMessage={setMessage} onSelectAsset={openPreviewAsset} onUpdateAssetDimensions={savePreviewDimensionValues} onAddDimension={() => setDimensionOpen(true)} onEditDimension={(dimension) => setEditingDimensionId(dimension.id)} readOnly={readOnly} /> : <BoardView key={workspace.project.id} projectId={workspace.project.id} assets={workspace.assets} onMessage={setMessage} onSelectAsset={(assetId) => { setDetailNav(null); setSelectedAssetId(assetId); }} readOnly={readOnly} />}
+            )}</> : surface === "preview" ? <DimensionPages key={workspace.project.id} projectId={workspace.project.id} assets={workspace.assets} page={currentPreviewPage} onPageChange={setPreviewPage} onReceivePage={receivePreviewPage} revision={previewRevision} syncStatus={dimSync.status} onRetrySync={dimSync.retry} onMessage={setMessage} onSelectAsset={openPreviewAsset} onUpdateAssetDimensions={savePreviewDimensionValues} onAddDimension={() => setDimensionOpen(true)} onEditDimension={(dimension) => setEditingDimensionId(dimension.id)} readOnly={readOnly} lockedAssetIds={lockedAssetIds} onOpenAiBatch={readOnly ? undefined : openBatchAiDialog} aiTag={aiBatch.active ? { status: aiBatch.status === "stopping" ? "stopping" : "running", done: aiBatch.job?.done ?? 0, total: aiBatch.job?.total ?? 0, timedOut: aiBatch.job?.timedOut ?? 0, canStop: aiBatch.canStop, stop: aiBatch.stop } : undefined} /> : <BoardView key={workspace.project.id} projectId={workspace.project.id} assets={workspace.assets} onMessage={setMessage} onSelectAsset={(assetId) => { setDetailNav(null); setSelectedAssetId(assetId); }} readOnly={readOnly} />}
           </>
         ) : (
           <EmptyState
@@ -1871,9 +1930,9 @@ export function ArtDatabaseApp({ user, onLogout }: { user: SessionUser; onLogout
                       assetId={selectedAsset.id}
                       busy={busy}
                       readOnly={readOnly}
-                      locked={aiDimensionBusyAssetId === selectedAsset.id}
+                      locked={lockedAssetIds.includes(selectedAsset.id)}
                       aiTagBusy={aiDimensionBusyAssetId === selectedAsset.id}
-                      aiTagDisabled={aiDimensionBusyAssetId !== null && aiDimensionBusyAssetId !== selectedAsset.id}
+                      aiTagDisabled={aiBatch.active || lockedAssetIds.some((id) => id !== selectedAsset.id)}
                       onAiTag={!readOnly && (selectedAsset.mimeType ?? "").startsWith("image/")
                         ? () => setAiDimensionTarget(selectedAsset)
                         : undefined}
@@ -2104,6 +2163,20 @@ export function ArtDatabaseApp({ user, onLogout }: { user: SessionUser; onLogout
             if (!target || aiDimensionBusyAssetId !== null) return;
             setAiDimensionTarget(null);
             void markOneAssetDimensions(target, options);
+          }}
+        />
+      ) : null}
+
+      {aiBatchDialogAssets && currentPreviewPage ? (
+        <AiDimensionDialog
+          open
+          dimensions={currentPreviewPage.dimensions}
+          assets={aiBatchDialogAssets}
+          busy={false}
+          onClose={() => setAiBatchDialogAssets(null)}
+          onConfirm={(options) => {
+            setAiBatchDialogAssets(null);
+            void aiBatch.start(options);
           }}
         />
       ) : null}

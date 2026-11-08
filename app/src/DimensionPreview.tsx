@@ -1,14 +1,15 @@
 "use client";
 
-import { Aperture, Box, Bug, Images, Maximize2, Minimize2, Minus, MousePointer2, Pencil, Plus, RotateCcw, X } from "lucide-react";
+import { Aperture, Box, Bug, Images, Maximize2, Minimize2, Minus, MousePointer2, Pencil, Plus, RotateCcw, Sparkles, X } from "lucide-react";
 import { CSSProperties, PointerEvent, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { Button, EmptyState, IconButton, RangeSlider, SyncStatusDot, TagLabel, cn } from "./ui";
+import { AiDimensionStatus } from "./AiDimensionStatus";
+import { Button, EmptyState, IconButton, RangeSlider, Spinner, SyncStatusDot, TagLabel, cn } from "./ui";
 import { useViewportGestures } from "./useViewportGestures";
 import { displayDimensionValue } from "./dimensionScale";
 import { gridClusterCell, gridClusterKey, gridDivisionsFor, gridMinimumSpacing, gridTicksFor, orderByViewDepth, orderStackGrid, orderStackMembers, PREVIEW_ASSET_WIDTH, previewAssetAspectRatio as aspectRatioFor, stackPreviewMembers, zoomPanAtPointer } from "./previewGrid";
 
 type Dimension = { id: string; leftLabel: string; rightLabel: string };
-type Asset = { id: string; name: string; thumbnailUrl: string | null; dimensionValues: Record<string, number>; width?: number; height?: number };
+type Asset = { id: string; name: string; thumbnailUrl: string | null; mimeType?: string; dimensionValues: Record<string, number>; width?: number; height?: number };
 type CameraDrag = { pointerId: number; startX: number; startY: number; rotateX: number; rotateZ: number; assetId?: string; moved: boolean };
 type ViewPan = { pointerId: number; startX: number; startY: number; panX: number; panY: number };
 type AxisSign = -1 | 1;
@@ -187,6 +188,9 @@ export function DimensionPreview({
   syncStatus = "synced",
   onRetrySync,
   readOnly = false,
+  lockedAssetIds = [],
+  aiTag,
+  onOpenAiBatch,
 }: {
   dimensions: Dimension[];
   assets: Asset[];
@@ -201,6 +205,18 @@ export function DimensionPreview({
   onRetrySync?: () => void;
   /** 游客只读：可切换维度轴、缩放/平移与打开详情，但不能拖动改坐标或增删维度。 */
   readOnly?: boolean;
+  /** 正在被 AI 处理的图片：只锁这些图片的维度拖动。 */
+  lockedAssetIds?: string[];
+  /** 批量 AI 任务状态；单图同步请求不使用。 */
+  aiTag?: {
+    status: "running" | "stopping";
+    done: number;
+    total: number;
+    timedOut: number;
+    canStop: boolean;
+    stop: () => void;
+  };
+  onOpenAiBatch?: () => void;
 }) {
   const [zoom, setZoom] = useState(1);
   const gestureZoomRef = useRef(zoom);
@@ -287,6 +303,10 @@ export function DimensionPreview({
     () => selectedIds.map((id) => dimensions.find((dimension) => dimension.id === id)).filter(Boolean) as Dimension[],
     [dimensions, selectedIds],
   );
+  const lockedAssets = useMemo(() => new Set(lockedAssetIds), [lockedAssetIds]);
+  const isLockedAsset = (assetId: string) => lockedAssets.has(assetId);
+  const hasImageAssets = assets.some((asset) => (asset.mimeType ?? "image/").startsWith("image/"));
+  const aiBatchBusy = aiTag?.status === "running" || aiTag?.status === "stopping";
   const mode = selected.length;
   // hover 单张/堆期间，其余图片、堆与坐标 tag 统一失焦、压暗，网格与坐标线降透明度
   const hoverFocusActive = (hoverPreview !== null && !hoverPreview.closing) || hoveredAssetId !== null || planeCluster !== null || closingCluster !== null;
@@ -1511,6 +1531,7 @@ export function DimensionPreview({
   function movePlaneCardDrag(event: PointerEvent<HTMLDivElement>) {
     const active = planeDrag.current;
     if (!active || active.pointerId !== event.pointerId) return;
+    if (isLockedAsset(active.assetId)) return;
     event.preventDefault();
     event.stopPropagation();
     const dx = event.clientX - active.startX;
@@ -1541,6 +1562,14 @@ export function DimensionPreview({
     setPlaneDragDelta({ x: 0, y: 0 });
     setDropTargetClusterKey(null);
     if (!active.moved) return;
+    if (isLockedAsset(active.assetId)) {
+      setOverrides((current) => {
+        const next = { ...current };
+        delete next[active.assetId];
+        return next;
+      });
+      return;
+    }
     const changedValues = Object.fromEntries(
       selected
         .map((dimension) => [dimension.id, dragValues.current[dimension.id] ?? 500] as const)
@@ -1674,6 +1703,7 @@ export function DimensionPreview({
     const active = assetDrag.current;
     const plane = scenePlaneRef.current;
     if (!active || active.pointerId !== event.pointerId || !plane || !selected.length) return;
+    if (isLockedAsset(active.assetId)) return;
     event.preventDefault();
     event.stopPropagation();
     if (readOnly) return; // 游客只读：按下不移动坐标，松手仍按单击打开详情
@@ -1711,6 +1741,14 @@ export function DimensionPreview({
         return next;
       });
       onSelectAsset(active.assetId, previewNavigationFor(active.assetId));
+      return;
+    }
+    if (isLockedAsset(active.assetId)) {
+      setOverrides((current) => {
+        const next = { ...current };
+        delete next[active.assetId];
+        return next;
+      });
       return;
     }
     const changedValues = Object.fromEntries(
@@ -1801,6 +1839,26 @@ export function DimensionPreview({
             <span className="flex items-center gap-1 whitespace-nowrap text-2xs text-sage" title="双指滑动平移，鼠标滚轮或触控板捏合缩放；也可用空格 + 左键或中键拖动平移">
               <MousePointer2 size={13} aria-hidden />双指平移 · 捏合缩放
             </span>
+            {onOpenAiBatch ? (
+              <Button
+                size="sm"
+                variant="secondary"
+                className="h-[29px]"
+                icon={<Sparkles size={14} aria-hidden />}
+                loading={aiBatchBusy}
+                disabled={readOnly || !dimensions.length || !hasImageAssets || !selected.length || aiBatchBusy}
+                onClick={onOpenAiBatch}
+                title={
+                  !dimensions.length ? "请先添加维度"
+                    : !hasImageAssets ? "当前 Page 没有可标注的图片"
+                      : !selected.length ? "请先选择至少一个维度"
+                        : aiBatchBusy ? "AI 正在标注当前 Page"
+                          : "让 AI 判断整页图片在选中维度上的位置"
+                }
+              >
+                <span className="max-sm:hidden">AI 标注维度</span>
+              </Button>
+            ) : null}
             <div className="flex h-[29px] items-center rounded-md border border-line bg-white">
               <IconButton size="sm" label="缩小" className="size-[27px] rounded-none border-0" onClick={() => { clearFan(); setZoom((value) => Math.max(.35, value - .1)); }}>
                 <Minus size={14} aria-hidden />
@@ -2020,10 +2078,11 @@ export function DimensionPreview({
                     ))
                     : stackPreviewMembers(cluster.members);
                   const isDropTarget = dropTargetClusterKey === cluster.key;
+                  const stackLocked = cluster.members.some((member) => isLockedAsset(member.id));
                   return (
                     <button
                       type="button"
-                      className={`preview-asset preview-stack ${isDropTarget ? "drop-target" : ""}`}
+                      className={`preview-asset preview-stack ${isDropTarget ? "drop-target" : ""} ${stackLocked ? "ai-locked" : ""}`}
                       key={cluster.key}
                       data-asset-id={cluster.key}
                       data-stack-key={cluster.key}
@@ -2054,6 +2113,11 @@ export function DimensionPreview({
                           <b className="stack-count">{cluster.members.length}</b>
                         </span>
                       </span>
+                      {stackLocked ? (
+                        <span className="ai-lock-overlay" aria-hidden="true">
+                          <span className="ai-lock-spinner"><Spinner size={13} /></span>
+                        </span>
+                      ) : null}
                     </button>
                   );
                 })}
@@ -2092,7 +2156,7 @@ export function DimensionPreview({
                   return (
                     <button
                       type="button"
-                      className={`preview-asset ${draggingAssetId === asset.id ? "dragging" : ""} ${hoveredAssetId === asset.id ? "hovered" : ""} ${hoverPreview?.asset.id === asset.id ? "hover-foreground-source" : ""} ${octantHidden ? "octant-hidden" : ""}`}
+                      className={`preview-asset ${isLockedAsset(asset.id) ? "ai-locked" : ""} ${draggingAssetId === asset.id ? "dragging" : ""} ${hoveredAssetId === asset.id ? "hovered" : ""} ${hoverPreview?.asset.id === asset.id ? "hover-foreground-source" : ""} ${octantHidden ? "octant-hidden" : ""}`}
                       key={asset.id}
                       data-asset-id={asset.id}
                       data-screen-depth={worldZ}
@@ -2119,6 +2183,11 @@ export function DimensionPreview({
                           </span>
                         )}
                       </span>
+                      {isLockedAsset(asset.id) ? (
+                        <span className="ai-lock-overlay" aria-hidden="true">
+                          <span className="ai-lock-spinner"><Spinner size={13} /></span>
+                        </span>
+                      ) : null}
                       {draggingAssetId === asset.id ? (
                         <span className="preview-value-tag-layer">{valueTagsOf(values)}</span>
                       ) : null}
@@ -2146,6 +2215,11 @@ export function DimensionPreview({
                       ? <img src={hoverPreview.asset.thumbnailUrl} alt="" draggable={false} />
                       : <i>{hoverPreview.asset.name.slice(0, 1)}</i>}
                     {hoverPreview.closing ? null : valueTagsOf(hoverPreview.values)}
+                    {isLockedAsset(hoverPreview.asset.id) ? (
+                      <span className="ai-lock-overlay" aria-hidden="true">
+                        <span className="ai-lock-spinner"><Spinner size={13} /></span>
+                      </span>
+                    ) : null}
                   </span>
                 </div>
               ) : null}
@@ -2191,7 +2265,7 @@ export function DimensionPreview({
                         return (
                           <button
                             type="button"
-                            className={`stack-plane-card ${draggingPlaneAssetId === member.id ? "dragging" : ""}`}
+                            className={`stack-plane-card ${isLockedAsset(member.id) ? "ai-locked" : ""} ${draggingPlaneAssetId === member.id ? "dragging" : ""}`}
                             key={member.id}
                             style={{
                               "--plane-card-size": `${cardSize}px`,
@@ -2216,6 +2290,11 @@ export function DimensionPreview({
                           >
                             {member.thumbnailUrl ? <img src={member.thumbnailUrl} alt="" draggable={false} /> : <i>{member.name.slice(0, 1)}</i>}
                             {valueTagsOf({ ...member.dimensionValues, ...overrides[member.id] })}
+                            {isLockedAsset(member.id) ? (
+                              <span className="ai-lock-overlay" aria-hidden="true">
+                                <span className="ai-lock-spinner"><Spinner size={13} /></span>
+                              </span>
+                            ) : null}
                           </button>
                         );
                       })}
@@ -2279,6 +2358,16 @@ export function DimensionPreview({
             description="项目可以拥有任意数量的维度，每次预览最多选择 3 个。"
           />
         )}
+        {aiTag && (aiTag.status === "running" || aiTag.status === "stopping") ? (
+          <AiDimensionStatus
+            status={aiTag.status}
+            done={aiTag.done}
+            total={aiTag.total}
+            timedOut={aiTag.timedOut}
+            canStop={aiTag.canStop}
+            onStop={aiTag.stop}
+          />
+        ) : null}
       </div>
     </section>
   );

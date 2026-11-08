@@ -13,10 +13,10 @@ export type PreviewPage = {
   assets: { assetId: string; dimensionValues: Record<string, number>; valueRevs?: Record<string, number> }[];
   revision?: number;
 };
-type Asset = { id: string; name: string; fileName: string; tags: string[]; thumbnailUrl: string | null; width: number; height: number };
+type Asset = { id: string; name: string; fileName: string; tags: string[]; thumbnailUrl: string | null; mimeType?: string; width: number; height: number };
 type Summary = { id: string; name: string; assetCount: number };
 
-export function DimensionPages({ projectId, assets, page, onPageChange, onReceivePage, revision, syncStatus, onRetrySync, onSelectAsset, onUpdateAssetDimensions, onAddDimension, onEditDimension, onMessage, readOnly = false }: {
+export function DimensionPages({ projectId, assets, page, onPageChange, onReceivePage, revision, syncStatus, onRetrySync, onSelectAsset, onUpdateAssetDimensions, onAddDimension, onEditDimension, onMessage, readOnly = false, aiTag, lockedAssetIds = [], onOpenAiBatch }: {
   projectId: string; assets: Asset[]; page: PreviewPage | null; onPageChange: (page: PreviewPage | null) => void; revision: number;
   onReceivePage: (page: PreviewPage) => void;
   syncStatus: "synced" | "saving" | "offline";
@@ -26,6 +26,16 @@ export function DimensionPages({ projectId, assets, page, onPageChange, onReceiv
   onAddDimension: () => void; onEditDimension: (dimension: PageDimension) => void; onMessage: (message: string) => void;
   /** 游客只读：隐藏 Page/素材/维度的增删改，坐标轴切换仅保留本地视图状态。 */
   readOnly?: boolean;
+  aiTag?: {
+    status: "running" | "stopping";
+    done: number;
+    total: number;
+    timedOut: number;
+    canStop: boolean;
+    stop: () => void;
+  };
+  lockedAssetIds?: string[];
+  onOpenAiBatch?: () => void;
 }) {
   const [pages, setPages] = useState<Summary[]>([]);
   const [pageId, setPageId] = useState(() => {
@@ -365,6 +375,9 @@ export function DimensionPages({ projectId, assets, page, onPageChange, onReceiv
             onUpdateAssetDimensions={onUpdateAssetDimensions}
             syncStatus={syncStatus}
             onRetrySync={onRetrySync}
+            lockedAssetIds={lockedAssetIds}
+            aiTag={aiTag}
+            onOpenAiBatch={onOpenAiBatch}
             onAddDimension={onAddDimension}
             onMessage={onMessage}
             onEditDimension={(dimension) => { const found = current.dimensions.find((d) => d.id === dimension.id); if (found) onEditDimension(found); }}
