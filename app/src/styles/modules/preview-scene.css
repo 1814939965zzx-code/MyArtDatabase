@@ -1042,7 +1042,7 @@
 
   @media (prefers-reduced-motion: reduce) {
     .ai-dimension-status .animate-spin {
-      animation: none;
+      animation: none !important;
     }
   }
 
