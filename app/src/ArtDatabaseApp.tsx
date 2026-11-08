@@ -31,6 +31,7 @@ import { apiFetch } from "./api";
 import { formatDuration, isVideoMime, transcodePercent, useTranscodePolling, videoStatusOf } from "./assetMedia";
 import type { SessionUser } from "./AuthGate";
 import { AccountSettingsModal } from "./AccountSettingsModal";
+import { AiDimensionDialog } from "./AiDimensionDialog";
 import { AllAssetsView, type LibraryAsset } from "./AllAssetsView";
 import { AnnouncementBanner } from "./components/layout/AnnouncementBanner";
 import { AnnouncementModal } from "./AnnouncementModal";
@@ -267,6 +268,8 @@ export function ArtDatabaseApp({ user, onLogout }: { user: SessionUser; onLogout
   const [dragActive, setDragActive] = useState(false);
   const [tagDict, setTagDict] = useState<TagEntry[]>([]);
   const [aiTagBusy, setAiTagBusy] = useState(false);
+  const [aiDimensionTarget, setAiDimensionTarget] = useState<Asset | null>(null);
+  const [aiDimensionBusyAssetId, setAiDimensionBusyAssetId] = useState<string | null>(null);
   const [tagManagerOpen, setTagManagerOpen] = useState(false);
   const [projectTagManagerOpen, setProjectTagManagerOpen] = useState(false);
   const [accountOpen, setAccountOpen] = useState(false);
@@ -984,6 +987,67 @@ export function ArtDatabaseApp({ user, onLogout }: { user: SessionUser; onLogout
       throw error;
     } finally {
       setBusy(false);
+    }
+  }
+
+  async function markOneAssetDimensions(
+    target: Asset,
+    options: { dimensionIds: string[]; mode: "all" | "zero" },
+  ) {
+    if (readOnly || !workspace || !currentPreviewPage) return;
+    const projectId = workspace.project.id;
+    const pageId = currentPreviewPage.id;
+    setAiDimensionBusyAssetId(target.id);
+    try {
+      await dimSync.flush();
+      if (dimSync.hasPending()) {
+        setMessage("坐标正在保存，请稍后再试");
+        return;
+      }
+      const data = await apiFetch<{
+        updates?: Array<{ dimensionId: string; value: number; lastRev: number }>;
+        skipped?: Array<{ dimensionId: string; reason: string }>;
+        revision?: number;
+      }>("/api/preview-pages/ai-dimensions/single", {
+        method: "POST",
+        body: JSON.stringify({
+          projectId,
+          pageId,
+          assetId: target.id,
+          dimensionIds: options.dimensionIds,
+          mode: options.mode,
+        }),
+      });
+      const updates = data.updates ?? [];
+      const revision = typeof data.revision === "number" ? data.revision : 0;
+      if (updates.length) {
+        setPreviewPage((current) => {
+          if (!current || current.id !== pageId) return current;
+          return {
+            ...current,
+            revision: Math.max(current.revision ?? 0, revision),
+            assets: current.assets.map((asset) => {
+              if (asset.assetId !== target.id) return asset;
+              const dimensionValues = { ...asset.dimensionValues };
+              const valueRevs = { ...(asset.valueRevs ?? {}) };
+              for (const update of updates) {
+                dimensionValues[update.dimensionId] = update.value;
+                valueRevs[update.dimensionId] = update.lastRev;
+              }
+              return { ...asset, dimensionValues, valueRevs };
+            }),
+          };
+        });
+      }
+      const skipped = data.skipped?.length ?? 0;
+      const skippedText = skipped ? `，跳过 ${skipped} 个已修改项` : "";
+      setMessage(updates.length
+        ? `AI 已标记这张图的 ${updates.length} 个维度${skippedText}`
+        : `AI 没有可应用的维度${skipped ? `（${skipped} 个已修改或已删除）` : ""}`);
+    } catch (error) {
+      setMessage(`AI 标记维度失败：${error instanceof Error ? error.message : "未知错误"}`);
+    } finally {
+      setAiDimensionBusyAssetId((current) => current === target.id ? null : current);
     }
   }
 
@@ -1807,6 +1871,12 @@ export function ArtDatabaseApp({ user, onLogout }: { user: SessionUser; onLogout
                       assetId={selectedAsset.id}
                       busy={busy}
                       readOnly={readOnly}
+                      locked={aiDimensionBusyAssetId === selectedAsset.id}
+                      aiTagBusy={aiDimensionBusyAssetId === selectedAsset.id}
+                      aiTagDisabled={aiDimensionBusyAssetId !== null && aiDimensionBusyAssetId !== selectedAsset.id}
+                      onAiTag={!readOnly && (selectedAsset.mimeType ?? "").startsWith("image/")
+                        ? () => setAiDimensionTarget(selectedAsset)
+                        : undefined}
                       onChangeValue={setLocalDimensionValue}
                       onSaveValue={saveDimensionValue}
                     />
@@ -2019,6 +2089,23 @@ export function ArtDatabaseApp({ user, onLogout }: { user: SessionUser; onLogout
             onSaved={() => { if (announcementPanel.scope === "global") void refreshAnnouncement(); }}
           />
         )
+      ) : null}
+
+      {aiDimensionTarget && currentPreviewPage ? (
+        <AiDimensionDialog
+          key={aiDimensionTarget.id}
+          open
+          dimensions={currentPreviewPage.dimensions}
+          assets={[aiDimensionTarget]}
+          busy={aiDimensionBusyAssetId !== null}
+          onClose={() => { if (aiDimensionBusyAssetId === null) setAiDimensionTarget(null); }}
+          onConfirm={(options) => {
+            const target = aiDimensionTarget;
+            if (!target || aiDimensionBusyAssetId !== null) return;
+            setAiDimensionTarget(null);
+            void markOneAssetDimensions(target, options);
+          }}
+        />
       ) : null}
 
       {message ? <Toast open>{message}</Toast> : null}

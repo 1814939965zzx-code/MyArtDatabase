@@ -42,6 +42,8 @@
 | `app/src/AllAssetsView.tsx` | 全局素材库 |
 | `app/src/DimensionPages.tsx` | 维度 Page 切换、增删改、项目素材多选加入 |
 | `app/src/DimensionPreview.tsx` | 单个 Page 的一维、二维、三维预览与拖动交互 |
+| `app/src/AiDimensionDialog.tsx` | AI 维度标记确认框（单图/批量共用：维度多选、all/zero、数量与限制） |
+| `app/src/DimensionControlsEditor.tsx` | 素材详情里的维度滑块与单图 AI 标记入口 |
 | `app/src/BoardView.tsx` | 自由画板 |
 | `app/src/UploadModal.tsx` | 上传与重复素材处理 |
 | `app/src/AssetMetadataEditor.tsx` | 素材详情与 Metadata 编辑 |
@@ -53,6 +55,7 @@
 | `app/server/routes.js` | 全部 `/api/*` 路由（含登录、用户管理、权限校验、插件令牌 CRUD） |
 | `app/server/auth.js` | 密码哈希（scrypt）、会话创建/解析、cookie、登录审计与插件令牌（创建/列表/吊销/Bearer 解析） |
 | `app/server/preview-pages.js` | 维度 Page 独立数据模型、v9 迁移与 Page/维度/素材引用/数值接口 |
+| `app/server/preview-ai.js` | 单图 AI 维度标记接口：提示词、单图视觉请求、条件写库与超时 |
 | `app/server/db.js` | SQLite 表结构、迁移与示例数据（含 users/sessions/login_logs/api_tokens） |
 | `app/server/tags.js` | 标签字典与素材-标签关联的共享读写 |
 | `app/server/ai.js` | AI 打标：配置读取、OpenAI 兼容调用、两轮标签复用裁决 |

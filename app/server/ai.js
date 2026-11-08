@@ -108,9 +108,11 @@ export function saveAiConfig({ baseUrl, apiKey, model }) {
   return next;
 }
 
-async function chatCompletions({ baseUrl, apiKey, model, messages, temperature, maxTokens }) {
+async function chatCompletions({ baseUrl, apiKey, model, messages, temperature, maxTokens, timeoutMs = CALL_TIMEOUT_MS, signal }) {
   const url = new URL(baseUrl);
   url.pathname = url.pathname.replace(/\/+$/, "") + "/chat/completions";
+  const timeoutSignal = AbortSignal.timeout(timeoutMs);
+  const requestSignal = signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal;
   let response;
   try {
     response = await fetch(url, {
@@ -125,9 +127,10 @@ async function chatCompletions({ baseUrl, apiKey, model, messages, temperature, 
         temperature,
         ...(maxTokens ? { max_tokens: maxTokens } : {}),
       }),
-      signal: AbortSignal.timeout(CALL_TIMEOUT_MS),
+      signal: requestSignal,
     });
   } catch (error) {
+    if (signal?.aborted) throw new AiError("AI 服务调用已取消", 499);
     if (error instanceof Error && error.name === "TimeoutError") {
       throw new AiError("AI 服务调用超时，请重试");
     }
@@ -145,6 +148,31 @@ async function chatCompletions({ baseUrl, apiKey, model, messages, temperature, 
   }
   const content = data?.choices?.[0]?.message?.content;
   if (typeof content !== "string" || !content.trim()) throw new AiError("AI 服务未返回内容");
+  return content;
+}
+
+/**
+ * 单图视觉请求：消息里只有 1 个 image_url；用于维度预览的“单图 AI 标记”。
+ * 与现有 AI 打标共用 chatCompletions 的解析与错误处理，只多一个可配置超时。
+ */
+export async function requestVisionJson(config, { system, text, dataUri, maxTokens, timeoutMs, signal }) {
+  const content = await chatCompletions({
+    ...config,
+    temperature: 0,
+    maxTokens,
+    timeoutMs,
+    signal,
+    messages: [
+      { role: "system", content: system },
+      {
+        role: "user",
+        content: [
+          { type: "text", text },
+          { type: "image_url", image_url: { url: dataUri } },
+        ],
+      },
+    ],
+  });
   return content;
 }
 
@@ -189,7 +217,7 @@ export async function listAiModels() {
   return [...new Set(ids)].sort();
 }
 
-function parseJsonFromContent(content) {
+export function parseJsonFromContent(content) {
   const fenced = content.match(/```(?:json)?\s*([\s\S]*?)```/);
   const candidate = fenced ? fenced[1] : content;
   try {
@@ -254,6 +282,13 @@ async function compressForAi(buffer) {
   } catch {
     throw new AiError("图片压缩失败，无法发送给 AI");
   }
+}
+
+/** 把一张素材原图压缩成 data URI；单图/批量维度标记都复用它。 */
+export async function prepareAssetImageDataUri(db, store, assetId) {
+  const buffer = await loadAssetImage(db, store, assetId);
+  const compressed = await compressForAi(buffer);
+  return `data:image/jpeg;base64,${compressed.toString("base64")}`;
 }
 
 /** 第一轮视觉提示词：注入词库时要求词库优先、禁止近义变体；无词库时退回自由生成。 */

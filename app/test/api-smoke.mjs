@@ -49,6 +49,12 @@ process.env.SEED_DEMO = "1";
 
 // AI 服务 mock：按 system prompt 区分“看图轮”与“裁决轮”；裁决轮遇到“机械臂”返回 500 以验证降级。
 let visionCalls = 0;
+// 单图 AI 维度标记用的可控 mock：记录每次请求的图片数量/维度别名，支持延迟、错误与自定义返回。
+const dimensionCalls = [];
+let dimensionDelayMs = 0;
+let dimensionStatus = 200;
+let dimensionRaw = null;
+let dimensionValues = null;
 const aiMock = createServer((req, res) => {
   if (req.method === "GET") {
     res.writeHead(200, { "content-type": "application/json" });
@@ -68,9 +74,28 @@ const aiMock = createServer((req, res) => {
     }
     const system = payload?.messages?.[0]?.content ?? "";
     const respond = (content) => {
+      if (res.destroyed) return;
       res.writeHead(200, { "content-type": "application/json" });
       res.end(JSON.stringify({ choices: [{ message: { content } }] }));
     };
+    if (system.includes("维度标注助手")) {
+      const content = payload.messages?.[1]?.content ?? [];
+      const parts = Array.isArray(content) ? content : [];
+      const imageCount = parts.filter((part) => part?.type === "image_url").length;
+      const text = parts.find((part) => part?.type === "text")?.text ?? "";
+      const aliases = [...text.matchAll(/^- (d\d+)：/gm)].map((match) => match[1]);
+      dimensionCalls.push({ aliases, imageCount });
+      if (dimensionStatus !== 200) {
+        res.writeHead(dimensionStatus, { "content-type": "application/json" });
+        res.end(JSON.stringify({ error: { message: "mock dimension failure" } }));
+        return;
+      }
+      const body = dimensionRaw ?? JSON.stringify({
+        values: dimensionValues ?? Object.fromEntries(aliases.map((alias, index) => [alias, index === 0 ? -30 : 40])),
+      });
+      setTimeout(() => respond(body), dimensionDelayMs);
+      return;
+    }
     if (!system.includes("图片素材标签助手") && !system.includes("标签词库管理员")) {
       respond("pong"); // 配置页“测试连接”的轻量 ping
       return;
@@ -469,6 +494,117 @@ assert.equal(previewAfterAsset.valueRevs[previewDimensionId], previewBatch.revis
 assert.equal(previewAfter.page.revision, previewBatch.revision, "读取应带 revision");
 const previewBad = await json(await fetch(`${base}/api/preview-values`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ projectId: "project-visual-direction", pageId: previewPageId, updates: [{ assetId: "missing-asset", values: { [previewDimensionId]: 100 } }] }) }));
 assert.equal(previewBad.failed[0].reason, "not_in_page", "不存在的素材应逐条返回 not_in_page");
+
+// 9g) 单图 AI 维度标记：同步接口、值换算、用户修改优先、超时、权限、同 Page 锁
+{
+  const singleUrl = `${base}/api/preview-pages/ai-dimensions/single`;
+  const singleBody = (overrides = {}) => ({
+    projectId: "project-visual-direction",
+    pageId: previewPageId,
+    assetId: previewAssetId,
+    dimensionIds: [previewDimensionId],
+    mode: "all",
+    ...overrides,
+  });
+  const setPreviewValue = async (value) => fetch(`${base}/api/preview-values`, {
+    method: "PATCH",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ projectId: "project-visual-direction", pageId: previewPageId, updates: [{ assetId: previewAssetId, values: { [previewDimensionId]: value } }] }),
+  });
+  const waitForDimensionCall = async (count) => {
+    const started = Date.now();
+    while (dimensionCalls.length < count) {
+      if (Date.now() - started > 2000) throw new Error("等待单图 AI 请求超时");
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+  };
+
+  // 未登录与游客
+  assert.equal((await originalFetch(singleUrl, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(singleBody()) })).status, 401, "单图接口未登录应 401");
+  const guestLogin = await originalFetch(`${base}/api/auth/guest`, { method: "POST" });
+  const guestCookie = (guestLogin.headers.get("set-cookie") || "").split(";")[0];
+  assert.equal((await originalFetch(singleUrl, { method: "POST", headers: { "content-type": "application/json", cookie: guestCookie }, body: JSON.stringify(singleBody()) })).status, 403, "单图接口游客应 403");
+
+  // 成功：all 模式，-30 → 350，且请求里只有 1 张图
+  dimensionCalls.length = 0;
+  dimensionDelayMs = 0;
+  dimensionRaw = null;
+  dimensionValues = null;
+  const allRes = await post(singleUrl, singleBody());
+  assert.equal(allRes.status, 200, "单图 all 模式应 200");
+  const allData = await allRes.json();
+  assert.equal(allData.updates.length, 1, "应写入 1 个维度");
+  assert.equal(allData.updates[0].value, 350, "-30 应换算为 350");
+  assert.equal(dimensionCalls.length, 1, "应只发 1 次模型请求");
+  assert.equal(dimensionCalls[0].imageCount, 1, "每次模型请求只能有 1 张图");
+  assert.deepEqual(dimensionCalls[0].aliases, ["d1"], "提示词应包含 d1 别名");
+  const allPage = await json(await fetch(`${base}/api/preview-page?projectId=project-visual-direction&pageId=${previewPageId}`));
+  const allAsset = allPage.page.assets.find((entry) => entry.assetId === previewAssetId);
+  assert.equal(allAsset.dimensionValues[previewDimensionId], 350, "单图结果应持久化");
+  assert.equal(allAsset.valueRevs[previewDimensionId], allData.revision, "单图结果应带 lastRev");
+
+  // zero 模式：当前值 350，不应有目标
+  const zeroNoTarget = await post(singleUrl, singleBody({ mode: "zero" }));
+  assert.equal(zeroNoTarget.status, 400, "zero 模式没有 0 值应 400");
+
+  // zero 模式：重置为 500 后应命中
+  await setPreviewValue(500);
+  const zeroRes = await post(singleUrl, singleBody({ mode: "zero" }));
+  assert.equal(zeroRes.status, 200, "zero 模式有 0 值应 200");
+  const zeroData = await zeroRes.json();
+  assert.equal(zeroData.updates[0].value, 350, "zero 模式也应写入换算值");
+
+  // 用户在处理中修改同一坐标：AI 结果应跳过，用户值保留
+  await setPreviewValue(640);
+  dimensionCalls.length = 0;
+  dimensionDelayMs = 300;
+  const pending = post(singleUrl, singleBody());
+  await waitForDimensionCall(1);
+  await setPreviewValue(700);
+  const pendingRes = await pending;
+  const pendingData = await pendingRes.json();
+  assert.equal(pendingData.updates.length, 0, "用户已修改的坐标不应被 AI 覆盖");
+  assert.ok(pendingData.skipped.some((entry) => entry.dimensionId === previewDimensionId && entry.reason === "value_changed"), "应返回 value_changed");
+  const userPage = await json(await fetch(`${base}/api/preview-page?projectId=project-visual-direction&pageId=${previewPageId}`));
+  assert.equal(userPage.page.assets.find((entry) => entry.assetId === previewAssetId).dimensionValues[previewDimensionId], 700, "用户值应保留");
+
+  // 超时：不写库；迟到响应被丢弃
+  const valueBeforeTimeout = 700;
+  process.env.AI_DIMENSION_ITEM_TIMEOUT_MS = "200";
+  dimensionDelayMs = 600;
+  const timeoutRes = await post(singleUrl, singleBody());
+  assert.ok([502, 504].includes(timeoutRes.status), `超时应返回 502/504，实际 ${timeoutRes.status}`);
+  process.env.AI_DIMENSION_ITEM_TIMEOUT_MS = "";
+  dimensionDelayMs = 0;
+  await new Promise((resolve) => setTimeout(resolve, 500));
+  const timeoutPage = await json(await fetch(`${base}/api/preview-page?projectId=project-visual-direction&pageId=${previewPageId}`));
+  assert.equal(timeoutPage.page.assets.find((entry) => entry.assetId === previewAssetId).dimensionValues[previewDimensionId], valueBeforeTimeout, "超时后不得写库");
+
+  // 同 Page 已有单图请求时再次请求应 409
+  dimensionCalls.length = 0;
+  dimensionDelayMs = 300;
+  const first = post(singleUrl, singleBody());
+  await waitForDimensionCall(1);
+  const duplicate = await post(singleUrl, singleBody());
+  assert.equal(duplicate.status, 409, "同 Page 并发单图请求应 409");
+  await first;
+  dimensionDelayMs = 0;
+
+  // 素材不在当前 Page
+  assert.equal((await post(singleUrl, singleBody({ assetId: "missing-asset" }))).status, 404, "素材不在 Page 应 404");
+
+  // 非法 JSON：返回 AI 解析错误，不写库
+  dimensionRaw = "not json";
+  const invalidJson = await post(singleUrl, singleBody());
+  assert.equal(invalidJson.status, 502, "非法 JSON 应 502");
+  dimensionRaw = null;
+
+  // 模型 401：整体失败，不写库
+  dimensionStatus = 401;
+  const authFailure = await post(singleUrl, singleBody());
+  assert.equal(authFailure.status, 502, "模型 401 应映射为 502");
+  dimensionStatus = 200;
+}
 
 // 10) 替换图片：只更新文件字段，保留素材 ID、Metadata、项目引用、维度值和画板元素
 const beforeReplaceWorkspace = await json(await fetch(`${base}/api/workspace?projectId=project-visual-direction`));
@@ -1047,6 +1183,13 @@ assert.equal((await fetch(`${base}/api/assets/image`, { method: "POST", body: cr
 // 视频不支持 AI 打标；图片素材不需要转码
 assert.equal((await post(`${base}/api/assets/ai-tags`, { id: videoUpload.id })).status, 400, "视频素材应拒绝 AI 打标");
 assert.equal((await post(`${base}/api/assets/retranscode`, { id: memberAsset.id })).status, 400, "图片素材应拒绝重新转码");
+assert.equal((await post(`${base}/api/preview-pages/ai-dimensions/single`, {
+  projectId: "project-visual-direction",
+  pageId: previewPageId,
+  assetId: videoUpload.id,
+  dimensionIds: [previewDimensionId],
+  mode: "all",
+})).status, 400, "视频素材应拒绝 AI 标记维度");
 
 // 16) 扩展图片格式：GIF 与 SVG 走同一上传/缩略图链路（TIFF/HEIC 白名单同源，不再逐一生成）
 const gifBuffer = await sharp({ create: { width: 120, height: 80, channels: 3, background: { r: 60, g: 160, b: 90 } } }).gif().toBuffer();

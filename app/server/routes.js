@@ -27,6 +27,7 @@ import { AiError, listAiModels, readAiConfigDetails, saveAiConfig, suggestTagsFo
 import { findTagByName, listTags, mergeTags, replaceAssetTags } from "./tags.js";
 import { enqueueVideoTranscode } from "./transcode.js";
 import { createPreviewPage, handlePreviewPages } from "./preview-pages.js";
+import { handlePreviewAi } from "./preview-ai.js";
 
 const IMAGE_TYPES = new Set([
   "image/jpeg",
@@ -1554,6 +1555,7 @@ export async function handleApi(request, ctx) {
       return Response.json({ error: "游客只能浏览，不能进行此操作" }, { status: 403 });
     }
 
+    if (pathname.startsWith("/api/preview-pages/ai-dimensions")) return await handlePreviewAi(request, ctx);
     if (["/api/preview-pages", "/api/preview-page", "/api/preview-page-assets", "/api/preview-dimensions", "/api/preview-values"].includes(pathname)) return await handlePreviewPages(request, ctx);
 
     if (pathname === "/api/auth/me" && method === "GET") return me(ctx);
