@@ -24,7 +24,7 @@ vite.config.ts[FV6T]: F:Vite 配置：React 与 Tailwind v4 插件、开发期�
 ===C:/Apps/MyArtDatabase-main/app/server/===
 ai.js[IA7L]: F:AI 打标配置读写、OpenAI 兼容调用与两轮标签复用裁决 | R:code:app/server/tags.js,code:app/server/routes.js | A:tagAssetWithAi,suggestTagsForUpload,testAiConnection,listAiModels,readAiConfigDetails,saveAiConfig | S:key 只存服务端配置文件并掩码回显；环境变量优先于页面配置；视频素材拒绝打标
 auth.js[CI8M]: F:密码 scrypt 哈希、Cookie 会话、游客只读 cookie、插件令牌解析与登录审计 | R:code:app/server/db.js,code:app/server/routes.js | A:hashPassword,verifyPassword,createSession,resolveUser,guestCookieHeader,resolveUserFromToken | S:真实会话优先，无有效会话时回退游客 cookie；游客仅凭 cookie 浏览，写请求由 routes 统一 403；令牌只存 SHA-256 哈希；停用用户立即失效全部会话；Cookie 为 HttpOnly 且 SameSite=Lax
-db.js[PD9M]: F:打开 SQLite、建表、执行迁移（含幂等补列）并写入仅开发环境使用的示例数据 | R:code:app/server/preview-pages.js,code:app/server/tags.js,code:app/server/index.js | A:openDatabase | S:project_assets.favorite 以 0/1 存项目内收藏，按（项目，素材）独立；assets.tags 旧列已删除；软删只写 deleted_at；示例数据仅在 --dev 或 SEED_DEMO=1 写入
+db.js[PD9L]: F:打开 SQLite、建表、执行迁移（含幂等补列）并写入仅开发环境使用的示例数据 | R:code:app/server/preview-pages.js,code:app/server/tags.js,code:app/server/index.js | A:openDatabase | S:project_assets.favorite 以 0/1 存项目内收藏，按（项目，素材）独立；assets.tags 旧列已删除；软删只写 deleted_at；示例数据仅在 --dev 或 SEED_DEMO=1 写入
 index.js[EG8S]: F:单进程 HTTP 入口：装配数据库与存储、转发 /api/*、托管 dist 静态页并写出响应 | R:code:app/server/routes.js,code:app/server/db.js,code:app/server/storage.js,code:app/server/transcode.js | A:启动参数 --dev；环境变量 PORT,DB_PATH,STORE_ROOT,SEED_DEMO | S:生产不构建前端，dist 缺失时返回构建提示；静态路径必须限制在 dist 根内；多值 Set-Cookie 用 getSetCookie 数组写出，不能被 Headers.forEach 合并
 preview-pages.js[DB8M]: F:维度 Page 的数据模型、v9 迁移与 Page/维度/素材引用/数值接口 | R:code:app/server/db.js,code:app/server/routes.js | A:handlePreviewPages,createPreviewPage | S:每个 Page 的维度与数值独立；数值以 0~1000 整数存储，界面映射为 -100~100；删除维度会级联删除数值并移出选中轴
 routes.js[EN9L]: F:全部 /api/* 路由：鉴权、游客只读拦截、素材与项目、项目内收藏、上传、标签、画板、账号与 AI 配置 | R:code:app/server/auth.js,code:app/server/db.js,code:app/server/storage.js,code:app/server/tags.js,code:app/server/ai.js,code:app/server/transcode.js,code:app/server/preview-pages.js | A:GET /api/health,/api/library,/api/projects,/api/media,/api/preview-pages;POST /api/uploads,PATCH /api/project-assets | S:除健康检查、登录状态、公告、初始化与游客登录外全部要求登录，未登录 401；游客只允许 GET/HEAD，其他写请求 403（退出登录除外）；Bearer 令牌优先于 Cookie；媒体支持 Range 206
@@ -35,9 +35,9 @@ transcode.js[MP7M]: F:视频转码队列：单并发 ffmpeg 转码为低码率 H
 ===C:/Apps/MyArtDatabase-main/app/src/===
 AccountSettingsModal.tsx[AU4T]: F:账号设置弹窗：修改显示名与密码，改密码需验证当前密码 | R:code:app/src/api.ts,code:app/src/AuthGate.tsx,code:app/src/components/account/AccountSettingsFields.tsx | A:AccountSettingsModal | S:改密码成功后其他会话失效；密码框可切换明文且不抢输入焦点；游客不显示该入口
 AiConfigModal.tsx[AA5M]: F:AI 服务配置弹窗：保存接口地址、key 与模型名，测试连接并列出可用模型 | R:code:app/src/api.ts,code:app/server/ai.js | A:AiConfigModal,AiConfigStatus | S:key 只显示尾号掩码；入口仅管理员可见，服务端同时校验
-AllAssetsView.tsx[AU7L]: F:全局素材库视图：网格/列表浏览、搜索与标签筛选、全局素材详情、图片替换与软删除 | R:code:app/src/AssetMetadataEditor.tsx,code:app/src/AssetImageReplacement.tsx,code:app/src/TagFilterBar.tsx,code:app/src/assetMedia.ts,code:app/src/api.ts | A:AllAssetsView | S:关闭详情必须自动保存；来源链接只允许 http/https；视频卡片显示转码进度；游客只读时隐藏替换、AI、删除与添加到项目入口
-AnnouncementModal.tsx[AU4T]: F:登录页公告编辑弹窗，含启用开关与 2000 字上限 | R:code:app/src/api.ts,code:app/src/components/account/AnnouncementFields.tsx | A:AnnouncementModal | S:仅管理员可写；关闭开关只隐藏展示，不删除已保存内容
-ArtDatabaseApp.tsx[AB9L]: F:应用状态中枢：主页、全部素材、回收站与项目工作区导航，编排上传、详情、收藏、游客只读与删除撤销等流程 | R:code:app/src/AuthGate.tsx,code:app/src/HomeView.tsx,code:app/src/DimensionPages.tsx,code:app/src/BoardView.tsx,code:app/src/AllAssetsView.tsx,code:app/src/api.ts | A:ArtDatabaseApp | S:项目页签顺序固定为维度预览→自由画板→素材库；游客只读时隐藏上传/收藏/编辑入口并跳过坐标草稿回写；删除先本地生效，5 秒内可撤销；Esc 优先关闭浮层再退出专注模式
+AllAssetsView.tsx[AU7L]: F:全局素材库视图：网格浏览、卡片宽度拖动调节、搜索与标签筛选、全局素材详情、图片替换与软删除 | R:code:app/src/AssetMetadataEditor.tsx,code:app/src/AssetImageReplacement.tsx,code:app/src/TagFilterBar.tsx,code:app/src/assetMedia.ts,code:app/src/api.ts,code:app/src/components/library/AssetCardWidthControl.tsx,code:app/src/components/library/AssetDetailInfoTrigger.tsx | A:AllAssetsView | S:已取消列表视图，卡片宽度 240~400px 由滑块控制；关闭详情必须自动保存；文件名/上传者/系统元数据只在“i”信息卡中展示；来源链接只允许 http/https；视频卡片显示转码进度；游客只读时隐藏替换、AI、删除与添加到项目入口
+AnnouncementModal.tsx[AU4S]: F:登录页公告编辑弹窗，含启用开关与 2000 字上限 | R:code:app/src/api.ts,code:app/src/components/account/AnnouncementFields.tsx | A:AnnouncementModal | S:仅管理员可写；关闭开关只隐藏展示，不删除已保存内容
+ArtDatabaseApp.tsx[AB9L]: F:应用状态中枢：主页、全部素材、回收站与项目工作区导航，编排上传、详情、收藏、游客只读与删除撤销等流程 | R:code:app/src/AuthGate.tsx,code:app/src/HomeView.tsx,code:app/src/DimensionPages.tsx,code:app/src/BoardView.tsx,code:app/src/AllAssetsView.tsx,code:app/src/api.ts,code:app/src/layoutPreferences.ts | A:ArtDatabaseApp | S:项目页签顺序固定为维度预览→自由画板→素材库；素材库只保留网格并用卡片宽度滑块（240~400px）；项目详情把“i”信息入口与收藏/关闭按钮放在同一组，从维度预览打开的详情把维度位置放在最前；游客只读时隐藏上传/收藏/编辑入口并跳过坐标草稿回写；删除先本地生效，5 秒内可撤销；Esc 优先关闭浮层再退出专注模式
 AssetImageReplacement.tsx[AU6M]: F:素材图片替换组件：展示新旧图对比，支持 Ctrl/Command+Z 撤销待替换候选 | R:code:app/src/api.ts,code:app/src/assetMedia.ts,code:app/src/AssetMetadataEditor.tsx | A:AssetImageReplacement | S:确认后才上传替换；替换不改素材 ID、Metadata、项目引用与创建时间；游客只读时不渲染该组件
 AssetMetadataEditor.tsx[AU7M]: F:素材详情编辑器：名称、标签、描述、来源链接与备注，提供自动保存与只读展示 | R:code:app/src/api.ts,code:app/src/AssetImageReplacement.tsx,code:app/src/AllAssetsView.tsx,code:app/src/ArtDatabaseApp.tsx | A:AssetMetadataEditor,AssetMetadataEditorHandle,AssetMetadataUpdate | S:关闭、遮罩与 Esc 都先自动保存，失败保持打开；标签删除即时生效、关闭时统一结算；来源链接只接受 http/https；游客只读时禁用输入并隐藏标签增删、AI 打标与来源编辑
 AuthGate.tsx[EI9S]: F:登录页、首次管理员引导页、游客登录与 401 会话过期回跳 | R:code:app/src/ArtDatabaseApp.tsx,code:app/src/api.ts,code:app/src/components/auth/AuthCard.tsx | A:AuthGate,SessionUser | S:数据库无用户时进入初始化向导，重复调用返回 409；401 事件统一回到登录页；游客登录无需账号，仅在已完成初始化后可用
@@ -46,8 +46,9 @@ DeletionToast.tsx[AU3T]: F:删除撤销条：展示已删除对象与剩余撤�
 DimensionControlsEditor.tsx[AU5T]: F:素材详情中的维度位置滑杆：按维度展示左右端名称、当前值与可拖动轨道 | R:code:app/src/dimensionScale.ts,code:app/src/ArtDatabaseApp.tsx | A:DimensionControlsEditor,DimensionControlsEditorHandle | S:数值以 500 为中点映射到界面 -100~100；busy 或游客只读时禁用滑杆；dismissEditor 仅为兼容返回 false
 DimensionEditorModal.tsx[AU5S]: F:编辑当前 Page 的维度名称，并提供删除该维度入口 | R:code:app/src/api.ts,code:app/src/DimensionPages.tsx,code:app/src/ArtDatabaseApp.tsx | A:DimensionEditorModal | S:两端名称必填、各不超过 24 字符且去空格后不能相同；删除维度由上层先本地移除并提供 5 秒撤销，校验或保存失败保持弹窗打开
 DimensionPages.tsx[AB7L]: F:维度 Page 的切换、新建、重命名、删除、预览轴选择与项目素材多选加入面板，游客只读时仅保留浏览 | R:code:app/src/DimensionPreview.tsx,code:app/src/api.ts,code:app/src/TagFilterBar.tsx | A:DimensionPages,PreviewPage,PageDimension | S:一次最多选三个轴；新 Page 为空；删除 Page 只删该 Page 的展示与数值，不影响素材；游客只读时隐藏 Page/素材/维度编辑，轴切换只改本地视图不写回
-DimensionPreview.tsx[AB9L]: F:单 Page 的 1D/2D/3D 预览：坐标轴、网格聚堆、象限隔离、拖拽改值、缩放平移与详情左右切换 | R:code:app/src/previewGrid.ts,code:app/src/dimensionScale.ts,code:app/src/useViewportGestures.ts,code:app/src/DimensionPages.tsx,code:app/src/ArtDatabaseApp.tsx | A:DimensionPreview | S:只有 1D/2D 允许拖动图片改值，3D 拖动仅旋转视角；2D 角落 tag 贴平面外侧并与轴端点 tag 同端距对齐；详情切换 1D 全量按维度值、2D/3D 仅堆内；游客只读时禁止拖动改值与维度增删
+DimensionPreview.tsx[AB9L]: F:单 Page 的 1D/2D/3D 预览：坐标轴、网格聚堆、象限隔离、立方体节点上的角标开关、拖拽改值、缩放平移与详情左右切换 | R:code:app/src/previewGrid.ts,code:app/src/dimensionScale.ts,code:app/src/useViewportGestures.ts,code:app/src/DimensionPages.tsx,code:app/src/ArtDatabaseApp.tsx | A:DimensionPreview | S:仅 1D/2D 拖动改值，3D 只旋转；2D 角落 tag 贴平面外侧并与轴端点同端距；3D 只为可见面节点（默认 19 个）生成开关，按 corner/edge/face 三组切换，hiddenLabelGroups 仅 mode===3 生效；详情 1D 全量、2D/3D 仅堆内；游客禁改
 HomeView.tsx[AU6T]: F:主页项目卡片网格：封面拼图、顶栏搜索、重命名与删除，游客只读时隐藏写入口 | R:code:app/src/ArtDatabaseApp.tsx,code:app/src/api.ts,code:app/src/components/home/ProjectCard.tsx | A:HomeView,HomeProject | S:封面最多取项目内 4 张缩略图，无素材时显示占位图标；游客只读时隐藏新建、重命名与删除
+layoutPreferences.ts[CU6T]: F:素材库卡片宽度的取值边界、钳制与 localStorage 读写 | R:- | A:ASSET_CARD_WIDTH_MIN,ASSET_CARD_WIDTH_MAX,ASSET_CARD_WIDTH_DEFAULT,clampAssetCardWidth,readAssetCardWidth,writeAssetCardWidth | S:范围固定 240~400px、默认 400；项目素材库与全部素材库共用同一存储键；读写失败回退默认值，不影响会话内布局
 PasswordInput.tsx[CS5T]: F:兼容入口：从 ui/PasswordInput 转出密码输入组件 | R:code:app/src/ui/PasswordInput.tsx | A:PasswordInput | S:仅做 re-export，避免一次性改动调用点；实际行为在 ui/PasswordInput
 TagFilterBar.tsx[AU6T]: F:素材标签多选筛选条，默认两行、可展开收起且已选项排最前 | R:code:app/src/TagManager.tsx | A:TagFilterBar | S:选中多个标签按 OR 组合，并与关键词按 AND 组合
 TagManager.tsx[AB7L]: F:标签管理面板：全局重命名/合并/删除/清理未使用与 AI 配置入口，项目模式仅重命名与删除 | R:code:app/src/api.ts,code:app/src/AiConfigModal.tsx,code:app/src/TagFilterBar.tsx | A:TagManager,TagEntry | S:项目内入口只列该项目标签且仅能重命名与删除；重命名与合并全局生效；非管理员隐藏 AI 服务配置入口
@@ -133,19 +134,20 @@ AnnouncementFields.tsx[AU4T]: F:登录页公告编辑字段：文本域、启用
 AuthCard.tsx[EI8S]: F:登录/初始化卡片与表单：品牌头、登录表单、初始化表单、公告条与错误提示 | R:code:app/src/AuthGate.tsx,code:app/src/ui/index.ts | A:AuthCard,AuthScreen,LoginForm,SetupForm,LoginPayload,SetupPayload | S:初始化密码至少 8 位且两次一致；登录支持记住我；组件只负责展示与提交，不直接调用 API
 
 ===C:/Apps/MyArtDatabase-main/app/src/components/home/===
-ProjectCard.tsx[AU6T]: F:主页项目卡：封面拼图、进入、重命名与删除操作 | R:code:app/src/HomeView.tsx,code:app/src/ui/cn.ts | A:ProjectCard | S:封面最多取 4 张缩略图，无素材时显示占位；游客只读时隐藏重命名与删除
+ProjectCard.tsx[AU6S]: F:主页项目卡：封面拼图、进入、重命名与删除操作 | R:code:app/src/HomeView.tsx,code:app/src/ui/cn.ts | A:ProjectCard | S:封面最多取 4 张缩略图，无素材时显示占位；游客只读时隐藏重命名与删除
 
 ===C:/Apps/MyArtDatabase-main/app/src/components/layout/===
 BrandMark.tsx[CU4T]: F:品牌图标：登录页、侧栏共用，直接渲染 /favicon.svg，与标签页图标一致 | R:code:app/public/favicon.svg,code:app/src/ui/cn.ts | A:BrandMark | S:size 控制宽高，radius 仅做圆角裁剪；纯装饰 aria-hidden；不要再放回独立图形
 SidebarNavItem.tsx[CU5T]: F:侧栏导航项：图标、标题、说明与选中态 | R:code:app/src/ui/cn.ts | A:SidebarNavItem | S:整行按钮可点；选中态用 aria-current=page；深色底样式由调用方布局控制
 TopbarTabs.tsx[AU6T]: F:项目顶栏三视图页签：维度预览/自由画板/素材库 | R:code:app/src/ui/Tabs.tsx | A:TopbarTabs,ProjectSurface | S:页签顺序固定；进入项目默认维度预览；切换只改视图不改数据
 TopbarTitle.tsx[CU4T]: F:顶栏标题组：标题与可选计数徽标 | R:- | A:TopbarTitle | S:计数为数字时才渲染徽标；标题单行截断
-UserMenu.tsx[AU6T]: F:顶部用户菜单：账号设置、插件令牌、管理员入口与退出登录 | R:code:app/src/ui/Menu.tsx | A:UserMenu,UserMenuAction | S:管理员才显示成员管理、登录页公告与视觉组件；游客只显示退出登录；点击外部或 Esc 关闭
+UserMenu.tsx[AU6S]: F:顶部用户菜单：账号设置、插件令牌、管理员入口与退出登录 | R:code:app/src/ui/Menu.tsx | A:UserMenu,UserMenuAction | S:管理员才显示成员管理、登录页公告与视觉组件；游客只显示退出登录；点击外部或 Esc 关闭
 
 ===C:/Apps/MyArtDatabase-main/app/src/components/library/===
-AssetCard.tsx[CU7S]: F:素材卡：网格/列表两种布局、缩略图、标签行、项目数、转码进度与收藏星标 | R:code:app/src/components/library/TagRow.tsx,code:app/src/assetMedia.ts,code:app/src/ui/index.ts | A:AssetCard,AssetCardAsset,AssetCardProps | S:点击打开详情；转码中显示进度；收藏星标只做展示；无缩略图显示占位
-TagRow.tsx[CU4T]: F:素材卡上的标签行 | R:code:app/src/ui/cn.ts | A:TagRow | S:无标签时不渲染；窄屏列表布局由外层样式隐藏
-ViewToggle.tsx[CU4T]: F:网格/列表视图切换分段控件 | R:code:app/src/ui/cn.ts | A:ViewToggle | S:aria-pressed 标记当前视图；只切换展示方式，不改数据
+AssetCard.tsx[CU7S]: F:素材卡：网格布局（卡片宽度由外层 CSS 变量控制）、缩略图、标签行、项目数、转码进度与收藏星标 | R:code:app/src/components/library/TagRow.tsx,code:app/src/assetMedia.ts,code:app/src/ui/index.ts | A:AssetCard,AssetCardAsset,AssetCardProps | S:已移除列表布局与 variant；点击打开详情；转码中显示进度；收藏星标只做展示；无缩略图显示占位
+AssetCardWidthControl.tsx[CU5T]: F:素材库工具栏的卡片宽度控制：240~400px 滑块与 useAssetCardWidth 本地偏好 Hook | R:code:app/src/layoutPreferences.ts,code:app/src/ui/RangeSlider.tsx,code:app/src/ui/index.ts | A:useAssetCardWidth,AssetCardWidthControl | S:步进 10px；宽度值写入布局 CSS 变量 --asset-card-min；偏好存 localStorage 并在项目/全部素材两处共用
+AssetDetailInfoTrigger.tsx[CU5S]: F:素材详情右上角“i”信息入口：hover/聚焦/点击弹出文件名、上传者与系统元数据只读信息卡 | R:code:app/src/assetMedia.ts,code:app/src/ui/IconButton.tsx,code:app/src/styles/modules/drawer.css | A:AssetDetailInfoTrigger,AssetDetailInfo | S:开关状态由详情面板受控（open/onOpenChange）以同步压暗遮罩；关闭有 120ms 缓冲，指针可移入信息卡；视频显示时长、转码中显示“转码中”
+TagRow.tsx[CU4T]: F:素材卡上的标签行 | R:code:app/src/ui/cn.ts | A:TagRow | S:无标签时不渲染
 
 ===C:/Apps/MyArtDatabase-main/app/src/design/===
 VisualComponentsPage.tsx[CU4L]: F:视觉组件验收页：展示设计 token、ui 原语与真实业务组件样例 | R:code:app/src/ui/index.ts,code:app/src/design/specimens/auth.tsx,code:app/src/design/specimens/library.tsx | A:VisualComponentsPage | S:仅管理员菜单入口；样例直接挂载真实弹窗，会读取真实标签/成员/令牌/配置，关闭不影响数据
@@ -156,7 +158,7 @@ auth.tsx[CU3S]: F:登录/初始化、账号设置与公告字段样例 | R:code:
 detail.tsx[CU3T]: F:素材详情 Metadata、替换入口与上传状态样例 | R:code:app/src/AssetMetadataEditor.tsx,code:app/src/AssetImageReplacement.tsx,code:app/src/ui/index.ts | A:MetadataSpecimen,ReplacementSpecimen,UploadStateSpecimen | S:替换确认依赖真实文件，样例只展示按钮与提示；不触发上传
 dimensions.tsx[CU3T]: F:维度位置滑杆样例 | R:code:app/src/DimensionControlsEditor.tsx | A:DimensionControlsSpecimen | S:使用真实组件与本地状态，不写回服务端
 layout.tsx[CU3S]: F:侧栏、顶栏、标签筛选、用户菜单与 Tag/Tabs 原语样例 | R:code:app/src/components/layout/UserMenu.tsx,code:app/src/components/layout/TopbarTabs.tsx,code:app/src/components/layout/SidebarNavItem.tsx | A:SidebarSpecimen,TopbarSpecimen,TagFilterSpecimen,UserMenuSpecimen,TagAndTabsSpecimen | S:使用真实组件，交互仅本地演示
-library.tsx[CU3S]: F:项目卡、素材卡、回收站与视图切换样例 | R:code:app/src/components/home/ProjectCard.tsx,code:app/src/components/library/AssetCard.tsx,code:app/src/components/library/ViewToggle.tsx | A:ProjectCardSpecimen,AssetCardSpecimen,TrashSpecimen | S:使用真实卡片组件与占位图；操作按钮只展示，不触发删除或恢复
+library.tsx[CU3S]: F:项目卡、素材卡、卡片宽度控制与回收站样例 | R:code:app/src/components/home/ProjectCard.tsx,code:app/src/components/library/AssetCard.tsx,code:app/src/components/library/AssetCardWidthControl.tsx | A:ProjectCardSpecimen,AssetCardSpecimen,TrashSpecimen | S:真实卡片与占位图；按钮仅展示不触发操作
 
 ===C:/Apps/MyArtDatabase-main/app/src/styles/===
 base.css[CU6S]: F:基础层：全局重置、可访问性基线、按钮/输入通用样式与专注模式滚动锁 | R:code:app/src/globals.css | A:- | S:只放全局共享规则；颜色与字号取自 tokens；preview-focus-active/board-focus-active 锁定页面滚动
@@ -164,10 +166,10 @@ tokens.css[CU8S]: F:全站设计 token：颜色、字体、字号、间距、圆
 
 ===C:/Apps/MyArtDatabase-main/app/src/styles/modules/===
 board.css[CU6M]: F:自由画板样式：外壳、视口、Frame、画布元素、缩放手柄与只读布局 | R:code:app/src/BoardView.tsx | A:- | S:坐标/吸附/命中逻辑在 BoardView；颜色只来自 token；board-body.read-only 单列铺满
-drawer.css[CU6M]: F:素材详情抽屉样式：全屏遮罩、左侧预览、右侧面板与上一张/下一张箭头 | R:code:app/src/ArtDatabaseApp.tsx,code:app/src/AllAssetsView.tsx | A:- | S:抽屉全屏覆盖；箭头浮在图片两侧且不触发遮罩关闭；游客只读时箭头仍可用
+drawer.css[CU6M]: F:素材详情抽屉样式：全屏遮罩、左侧预览、右侧面板、标题栏“i”信息卡与压暗遮罩、上一张/下一张箭头 | R:code:app/src/ArtDatabaseApp.tsx,code:app/src/AllAssetsView.tsx,code:app/src/components/library/AssetDetailInfoTrigger.tsx | A:- | S:抽屉全屏覆盖；信息卡从标题栏图标下方弹出并向右对齐，打开时 asset-info-scrim 压暗标题栏以下内容；箭头浮在图片两侧且不触发遮罩关闭；游客只读时箭头仍可用
 layout.css[CU6S]: F:应用骨架布局：app-shell、侧栏、顶栏、workspace 与响应式折叠 | R:code:app/src/ArtDatabaseApp.tsx | A:- | S:项目工作区收起侧栏；预览/画板占满顶栏下剩余空间；布局数值只用 token
-library.css[CU5T]: F:素材库网格/列表与卡片样式 | R:code:app/src/components/library/AssetCard.tsx,code:app/src/AllAssetsView.tsx | A:- | S:通过 asset-collection 上的 asset-grid/asset-list 切换布局
-preview-scene.css[CU7L]: F:维度预览场景样式：平面、坐标轴、网格、端点 tag、角落 tag、素材、堆与聚堆平面 | R:code:app/src/DimensionPreview.tsx | A:- | S:颜色只来自 token；场景几何数值保持不变；2D 角落 tag 外侧对齐由 --corner-tx/--corner-ty 驱动；游客只读不改样式
+library.css[CU5T]: F:素材库网格与卡片样式（已取消列表布局） | R:code:app/src/components/library/AssetCard.tsx,code:app/src/AllAssetsView.tsx,code:app/src/layoutPreferences.ts | A:- | S:asset-grid 用 --asset-card-min 控制卡片宽度（由滑块写入，兜底 400px），列数随窗口自适应；620px 以下固定两列；asset-list 规则已删除
+preview-scene.css[CU7L]: F:维度预览场景样式：平面、坐标轴、网格、端点 tag、角落 tag、立方体节点上的角标开关、素材、堆与聚堆平面 | R:code:app/src/DimensionPreview.tsx | A:- | S:颜色只来自 token；2D 角落 tag 由 --corner-tx/--corner-ty 外对齐；.octant-isolation-controls 用 scale(1.2)+top right 把象限控件放大到 120%；.octant-node-eye 三级 3/6/10px，按 data-group 与 :has() 只放大被 hover 组，实心/空心区分显隐，热区为圆点本身
 
 ===C:/Apps/MyArtDatabase-main/app/src/sync/===
 boardSync.ts[DR7S]: F:画板同步适配器：元素与 Frame 接入 outbox，按版本合并并提供草稿恢复 | R:code:app/src/sync/outbox.ts,code:app/src/sync/merge.ts,code:app/src/sync/id.ts | A:createBoardSync,useBoardSync,SyncItem,SyncFrame | S:Frame 键固定 frames 整份替换；未同步元素优先；草稿先展示再补传；游客只读时不恢复草稿
