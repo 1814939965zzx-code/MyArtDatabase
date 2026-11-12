@@ -18,7 +18,6 @@ export type AssetCardAsset = {
 
 export type AssetCardProps = {
   asset: AssetCardAsset;
-  variant?: "grid" | "list";
   selected?: boolean;
   selectable?: boolean;
   checked?: boolean;
@@ -37,13 +36,13 @@ export type AssetCardProps = {
 };
 
 /**
- * 素材卡：网格/列表共用，支持转码进度、项目引用数、选择态与底部动作。
+ * 素材卡：网格布局，支持转码进度、项目引用数、选择态与底部动作。
+ * 卡片宽度由素材库工具栏的滑块控制（240～400px）；
  * hover 保留投影 + 图片轻微放大；只对 transform 做过渡，不做卡片位移，
  * 也不再给图片加 filter/对比度过渡（filter 与 transform 同时动画会产生重影/像换了一张缩略图）。
  */
 export function AssetCard({
   asset,
-  variant = "grid",
   selected = false,
   selectable = false,
   checked = false,
@@ -67,8 +66,7 @@ export function AssetCard({
     <>
       <span
         className={cn(
-          "asset-thumb relative block overflow-hidden bg-surface-sunken",
-          variant === "grid" && "aspect-[1.18]",
+          "asset-thumb relative block aspect-[1.18] overflow-hidden bg-surface-sunken",
           roundedThumb && "rounded-[5px]",
         )}
       >

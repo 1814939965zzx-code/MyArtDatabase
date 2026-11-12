@@ -872,6 +872,10 @@
     flex-direction: column;
     align-items: flex-end;
     gap: 8px;
+    /* 整个象限控件（立方体、节点开关、退出叉子与下方标签）统一放大到 120%；
+       以右上角为锚点向左下扩展，不改变原本贴边的位置感 */
+    transform: scale(1.2);
+    transform-origin: top right;
   }
 
   .octant-cube {
@@ -887,6 +891,89 @@
 
   .octant-cube-wrap {
     position: relative;
+  }
+
+  /*
+   * 立方体可见节点上的坐标角标开关，三级尺寸：
+   * - 静止（鼠标不在立方体上）：3px 小点（实心=显示中、灰色=已隐藏）；
+   * - 鼠标 hover 到立方体上：全部点变成 6px；
+   * - hover / 键盘聚焦到某个点：只把**同组**的点放大成 10px 完整圆圈（按 data-group 匹配，纯 CSS，
+   *   同一组的点之间移动不会先缩回再放大），其余组仍是 6px。
+   * 空心圆带不透明底色，不露出方块底下的线；只过渡尺寸与颜色，位置跟随方块投影即时变化。
+   */
+  .octant-node-eyes {
+    position: absolute;
+    inset: 2px;
+    z-index: 2;
+    pointer-events: none;
+  }
+
+  .octant-node-eye {
+    position: absolute;
+    box-sizing: border-box;
+    width: 3px;
+    height: 3px;
+    padding: 0;
+    border: 0 solid transparent;
+    border-radius: 50%;
+    background: var(--color-sage-deep);
+    transform: translate(-50%, -50%);
+    pointer-events: auto;
+    cursor: pointer;
+    transition:
+      width 100ms ease,
+      height 100ms ease,
+      border-width 100ms ease,
+      background-color 100ms ease,
+      border-color 100ms ease,
+      transform 100ms ease;
+  }
+
+  .octant-node-eye[aria-pressed="false"] {
+    background: var(--color-faint);
+  }
+
+  /* 第二级：鼠标进入立方体后所有点统一 6px（写在分组放大规则之前，同优先级时后者覆盖） */
+  .octant-cube-wrap:hover .octant-node-eye,
+  .octant-cube-wrap:has(.octant-node-eye:focus-visible) .octant-node-eye {
+    width: 6px;
+    height: 6px;
+  }
+
+  /* 6px 这一级也要区分状态：显示中的是实心点，已隐藏的改成空心小圈（不透明底，不露方块线） */
+  .octant-cube-wrap:hover .octant-node-eye[aria-pressed="false"],
+  .octant-cube-wrap:has(.octant-node-eye:focus-visible) .octant-node-eye[aria-pressed="false"] {
+    border-width: 1px;
+    border-color: var(--color-faint);
+    background: var(--color-surface);
+  }
+
+  .octant-node-eyes:has([data-group="corner"]:hover) [data-group="corner"],
+  .octant-node-eyes:has([data-group="corner"]:focus-visible) [data-group="corner"],
+  .octant-node-eyes:has([data-group="edge"]:hover) [data-group="edge"],
+  .octant-node-eyes:has([data-group="edge"]:focus-visible) [data-group="edge"],
+  .octant-node-eyes:has([data-group="face"]:hover) [data-group="face"],
+  .octant-node-eyes:has([data-group="face"]:focus-visible) [data-group="face"] {
+    width: 10px;
+    height: 10px;
+    border-width: 1.5px;
+    border-color: var(--color-sage-deep);
+    background: var(--color-sage-deep);
+  }
+
+  .octant-node-eyes:has([data-group="corner"]:hover) [data-group="corner"][aria-pressed="false"],
+  .octant-node-eyes:has([data-group="corner"]:focus-visible) [data-group="corner"][aria-pressed="false"],
+  .octant-node-eyes:has([data-group="edge"]:hover) [data-group="edge"][aria-pressed="false"],
+  .octant-node-eyes:has([data-group="edge"]:focus-visible) [data-group="edge"][aria-pressed="false"],
+  .octant-node-eyes:has([data-group="face"]:hover) [data-group="face"][aria-pressed="false"],
+  .octant-node-eyes:has([data-group="face"]:focus-visible) [data-group="face"][aria-pressed="false"] {
+    border-color: var(--color-faint);
+    background: var(--color-surface);
+  }
+
+  .octant-node-eye:focus-visible {
+    outline: 2px solid var(--color-accent);
+    outline-offset: 2px;
   }
 
   /* 一键退出隔离：贴在立方体右上角的小叉子，只在隔离时出现 */

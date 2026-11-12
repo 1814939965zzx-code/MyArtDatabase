@@ -608,7 +608,7 @@ export function VisualComponentsPage() {
               <ProjectCardSpecimen />
             </Specimen>
 
-            <Specimen title="素材卡（网格 / 列表 / 状态）" note="AssetCard / ViewToggle">
+            <Specimen title="素材卡（网格 / 卡片宽度 / 状态）" note="AssetCard / AssetCardWidthControl">
               <AssetCardSpecimen />
             </Specimen>
 

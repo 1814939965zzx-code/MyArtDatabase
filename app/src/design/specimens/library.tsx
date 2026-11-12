@@ -1,8 +1,9 @@
 import { ImageIcon, RotateCcw, Trash2 } from "lucide-react";
+import type { CSSProperties } from "react";
 import { Button, EmptyState, Tag } from "../../ui";
 import { AssetCard } from "../../components/library/AssetCard";
+import { AssetCardWidthControl } from "../../components/library/AssetCardWidthControl";
 import { ProjectCard } from "../../components/home/ProjectCard";
-import { ViewToggle } from "../../components/library/ViewToggle";
 
 const swatch = (color: string) =>
   `data:image/svg+xml;utf8,${encodeURIComponent(`<svg xmlns="http://www.w3.org/2000/svg" width="120" height="90"><rect width="120" height="90" fill="${color}"/></svg>`)}`;
@@ -40,7 +41,7 @@ export function ProjectCardSpecimen() {
   );
 }
 
-/** B4 · 素材卡：网格（正常 / 转码 / 无图）与列表。 */
+/** B4 · 素材卡：网格（正常 / 转码 / 无图）与卡片宽度控制。 */
 export function AssetCardSpecimen() {
   return (
     <div className="flex flex-col gap-5">
@@ -53,14 +54,15 @@ export function AssetCardSpecimen() {
         <AssetCard asset={{ ...demoAsset, id: "asset-3", name: "无缩略图素材", thumbnailUrl: null, tags: [] }} roundedThumb />
       </div>
       <div className="rounded-lg border border-line bg-surface p-3">
-        <div className="asset-list">
-          <AssetCard asset={demoAsset} variant="list" roundedThumb showProjectCount />
-          <AssetCard asset={{ ...demoAsset, id: "asset-4", name: "列表中的第二个素材" }} variant="list" roundedThumb />
+        <div className="mb-2 text-xs text-muted">240px 卡片宽度</div>
+        <div className="asset-grid" style={{ "--asset-card-min": "240px" } as CSSProperties}>
+          <AssetCard asset={demoAsset} roundedThumb showProjectCount />
+          <AssetCard asset={{ ...demoAsset, id: "asset-4", name: "窄卡片中的第二个素材" }} roundedThumb />
         </div>
       </div>
       <div className="flex items-center gap-3">
-        <span className="text-xs text-muted">视图切换</span>
-        <ViewToggle value="grid" onChange={() => {}} />
+        <span className="text-xs text-muted">卡片宽度</span>
+        <AssetCardWidthControl value={400} onChange={() => {}} />
       </div>
     </div>
   );

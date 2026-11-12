@@ -12,7 +12,7 @@ import {
   Trash2,
   X,
 } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { AssetMetadataEditor, type AssetMetadataEditorHandle, type AssetMetadataUpdate } from "./AssetMetadataEditor";
 import { AssetImageReplacement } from "./AssetImageReplacement";
 import { notifyUnauthorized } from "./api";
@@ -21,7 +21,8 @@ import { TagFilterBar } from "./TagFilterBar";
 import type { TagEntry } from "./TagManager";
 import { useProgressiveImage } from "./useProgressiveImage";
 import { AssetCard } from "./components/library/AssetCard";
-import { ViewToggle } from "./components/library/ViewToggle";
+import { AssetCardWidthControl, useAssetCardWidth } from "./components/library/AssetCardWidthControl";
+import { AssetDetailInfoTrigger } from "./components/library/AssetDetailInfoTrigger";
 import { Button, EmptyState, IconButton, InlineMessage, Modal, Spinner, cn } from "./ui";
 
 export type LibraryProject = {
@@ -68,9 +69,7 @@ export function AllAssetsView({
   assets,
   projects,
   search,
-  view,
   loading,
-  onViewChange,
   onRefresh,
   onMessage,
   onAssetTrashed,
@@ -79,9 +78,7 @@ export function AllAssetsView({
   assets: LibraryAsset[];
   projects: LibraryProject[];
   search: string;
-  view: "grid" | "list";
   loading: boolean;
-  onViewChange: (view: "grid" | "list") => void;
   onRefresh: () => Promise<void>;
   onMessage: (message: string) => void;
   /** 删除已生效后通知上层刷新回收站；软删除可随时在回收站恢复，不显示倒计时撤销。 */
@@ -89,7 +86,10 @@ export function AllAssetsView({
   /** 游客只读：隐藏替换/删除/AI/添加项目等写入口，Metadata 只读展示。 */
   readOnly?: boolean;
 }) {
+  const [cardWidth, setCardWidth] = useAssetCardWidth();
   const [selectedAssetId, setSelectedAssetId] = useState<string | null>(null);
+  // 素材详情“i”信息卡的开关：打开时在面板内容上铺一层遮罩（scrim）
+  const [assetInfoOpen, setAssetInfoOpen] = useState(false);
   // 全部素材库详情里左右切换的顺序：打开时按当前筛选结果快照，切换前先保存当前素材
   const [detailNav, setDetailNav] = useState<string[] | null>(null);
   const [assignAssetId, setAssignAssetId] = useState<string | null>(null);
@@ -169,6 +169,7 @@ export function AllAssetsView({
     if (saved !== false) {
       setSelectedAssetId(null);
       setDetailNav(null);
+      setAssetInfoOpen(false);
     }
   }
 
@@ -176,6 +177,7 @@ export function AllAssetsView({
   function openAssetDetail(assetId: string) {
     setDetailNav(filteredAssets.map((asset) => asset.id));
     setSelectedAssetId(assetId);
+    setAssetInfoOpen(false);
   }
 
   /** 详情左右箭头：先保存当前素材的未提交修改，再切换到相邻素材。 */
@@ -186,6 +188,7 @@ export function AllAssetsView({
     if (await metadataEditorRef.current?.save() === false) return;
     setError("");
     setSelectedAssetId(nextId);
+    setAssetInfoOpen(false);
   }
 
   /** 转码失败后重新转码（原文件仍在，服务端置回 processing 并入队）。 */
@@ -313,17 +316,16 @@ export function AllAssetsView({
         </div>
       </div>
 
-      <div className="mx-[42px] mb-[18px] flex justify-end max-md:mx-6">
-        <ViewToggle value={view} onChange={onViewChange} />
+      <div className="mx-[42px] mb-[18px] flex items-center justify-end gap-2.5 max-md:mx-6">
+        <AssetCardWidthControl value={cardWidth} onChange={setCardWidth} />
       </div>
 
       {filteredAssets.length ? (
-        <div className={cn("asset-collection library-collection", view === "list" ? "asset-list" : "asset-grid")}>
+        <div className="asset-collection library-collection asset-grid" style={{ "--asset-card-min": `${cardWidth}px` } as CSSProperties}>
           {filteredAssets.map((asset, index) => (
             <AssetCard
               key={asset.id}
               asset={asset}
-              variant={view}
               roundedThumb
               thumbnailLoading={index > 7 ? "lazy" : "eager"}
               showProjectCount
@@ -388,16 +390,9 @@ export function AllAssetsView({
             ) : null}
           </div>
           <div className="drawer-panel">
-            <div className="drawer-heading"><div><p className="mb-1 text-2xs font-bold uppercase tracking-[.15em] text-accent">GLOBAL ASSET</p><h2>素材详情</h2></div><IconButton label="关闭素材详情" onClick={() => void closeAssetDetail()}><X size={18} aria-hidden /></IconButton></div>
+            {assetInfoOpen ? <div className="asset-info-scrim" /> : null}
+            <div className="drawer-heading"><div><p className="mb-1 text-2xs font-bold uppercase tracking-[.15em] text-accent">GLOBAL ASSET</p><h2>素材详情</h2></div><div className="flex items-center gap-1"><AssetDetailInfoTrigger asset={selectedAsset} open={assetInfoOpen} onOpenChange={setAssetInfoOpen} /><IconButton label="关闭素材详情" onClick={() => void closeAssetDetail()}><X size={18} aria-hidden /></IconButton></div></div>
             <div key={selectedAsset.id} className="drawer-scroll">
-              <div className="drawer-file"><small>文件名</small><span>{selectedAsset.fileName}</span></div>
-              <div className="drawer-facts">
-                <span>{isVideoMime(selectedAsset.mimeType)
-                  ? (videoStatusOf(selectedAsset.mimeType, selectedAsset.transcodeStatus) === "ready" ? formatDuration(selectedAsset.duration) : "转码中")
-                  : selectedAsset.width && selectedAsset.height ? `${selectedAsset.width} × ${selectedAsset.height}` : "尺寸未知"}</span>
-                <span>{selectedAsset.fileSize ? `${(selectedAsset.fileSize / 1024 / 1024).toFixed(2)} MB` : "大小未知"}</span>
-                <span>{selectedAsset.mimeType || "image"}</span>
-              </div>
               {error ? <InlineMessage tone="error" className="mb-3">{error}</InlineMessage> : null}
               {!readOnly ? (
                 <AssetImageReplacement

@@ -137,6 +137,7 @@
   }
 
   .drawer-panel {
+    position: relative;
     min-width: 0;
     min-height: 0;
     display: flex;
@@ -168,36 +169,102 @@
     font-weight: 500;
   }
 
-  .drawer-file {
-    padding: 14px 0;
-    border-bottom: 1px solid var(--color-line-soft);
+  /*
+   * 右侧面板标题栏右上角的“i”信息入口：与收藏、关闭按钮同一行同一组，
+   * hover 弹出的信息卡相对该按钮居右对齐。
+   */
+  .drawer-heading {
+    position: relative;
+    z-index: 2;
   }
 
-  .drawer-file small,
-  .drawer-file span {
+  .drawer-heading .asset-info {
+    align-self: flex-start;
+  }
+
+  .asset-info {
+    position: relative;
+    display: flex;
+    flex: none;
+    justify-content: flex-end;
+  }
+
+  .asset-info-trigger[aria-expanded="true"] {
+    background: var(--color-line-soft);
+    color: var(--color-ink);
+  }
+
+  /* 信息卡打开时压暗标题栏以下的面板内容，让悬浮卡从表单字段中分离出来。 */
+  .asset-info-scrim {
+    position: absolute;
+    left: 0;
+    right: 1px;
+    bottom: 0;
+    top: 92px;
+    z-index: 1;
+    background: color-mix(in srgb, var(--color-paper) 72%, transparent);
+    animation: asset-info-fade var(--duration-fast) var(--ease-out-soft);
+    pointer-events: none;
+  }
+
+  @keyframes asset-info-fade {
+    from { opacity: 0; }
+  }
+
+  .asset-info-popover {
+    position: absolute;
+    top: calc(100% + 6px);
+    right: 0;
+    z-index: var(--z-popover);
+    display: flex;
+    flex-direction: column;
+    gap: 9px;
+    width: min(272px, calc(100vw - 48px));
+    padding: 13px 14px;
+    border: 1px solid var(--color-line);
+    border-radius: var(--radius-md);
+    background: var(--color-surface);
+    box-shadow: var(--shadow-panel);
+    cursor: default;
+    animation: asset-info-in var(--duration-fast) var(--ease-out-soft);
+  }
+
+  @keyframes asset-info-in {
+    from { opacity: 0; transform: translateY(-3px); }
+  }
+
+  .asset-info-block small {
     display: block;
-  }
-
-  .drawer-file small {
-    margin-bottom: 5px;
+    margin-bottom: 3px;
     color: var(--color-muted);
     font-size: 10px;
+    letter-spacing: 0.04em;
   }
 
-  .drawer-file span {
+  .asset-info-block span {
+    display: block;
+    overflow-wrap: anywhere;
     font-family: var(--font-mono);
-    font-size: 12px;
+    font-size: 11px;
+    line-height: 1.5;
+    color: var(--color-ink-label);
   }
 
-  .drawer-facts {
-    padding: 9px 0;
+  .asset-info-block:first-child span {
+    font-size: 12px;
+    color: var(--color-ink);
+  }
+
+  .asset-info-facts {
     display: flex;
-    gap: 5px;
     flex-wrap: wrap;
+    gap: 5px;
+    padding: 8px 0;
+    border-top: 1px solid var(--color-line-soft);
     border-bottom: 1px solid var(--color-line-soft);
   }
 
-  .drawer-facts span {
+  .asset-info-facts span {
     padding: 3px 6px;
     background: var(--color-surface-muted);
     color: var(--color-muted);

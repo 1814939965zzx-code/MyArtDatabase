@@ -19,6 +19,17 @@ const OCTANT_AXES: OctantAxis[] = ["x", "y", "z"];
 /** 选中集合在三维上始终是一个轴对齐的小立方块——1 / 2（棱）/ 4（面）/ 8（整块）格。 */
 type OctantBounds = Record<OctantAxis, [AxisSign, AxisSign]>;
 
+/**
+ * 角落坐标 tag 的三类节点：立方体 8 个角、12 个棱中点、6 个面中心。
+ * 立方体节点上的开关按这个分组工作：角落 8 个点共同控制 8 个角的 tag 组，
+ * 棱中点共同控制 12 个棱上的 tag 组，面中心共同控制 6 个轴端点 tag。
+ */
+type CornerLabelGroup = "corner" | "edge" | "face";
+function cornerLabelGroupOf(x: number, y: number, z: number): CornerLabelGroup {
+  const zeros = (x === 0 ? 1 : 0) + (y === 0 ? 1 : 0) + (z === 0 ? 1 : 0);
+  return zeros === 0 ? "corner" : zeros === 1 ? "edge" : "face";
+}
+
 function octantBounds(octants: Octant[]): OctantBounds | null {
   if (!octants.length) return null;
   const range = (axis: OctantAxis): [AxisSign, AxisSign] => {
@@ -242,6 +253,10 @@ export function DimensionPreview({
   const debugEnabled = import.meta.env.DEV;
   const [showClusterDebug, setShowClusterDebug] = useState(false);
   const [blurEnabled, setBlurEnabled] = useState(true);
+  // 坐标角标开关：贴在右上角立方体各网格节点上的小圆圈按“节点类型”分三组——
+  // 8 个角落、12 个棱中点、6 个面中心；点任意一个只切换同组角标，三组互不影响。
+  // 角落组对应 8 个角的 tag 组，棱中点组对应 12 个棱上的 tag 组，面中心组对应 6 个轴端点 tag。
+  const [hiddenLabelGroups, setHiddenLabelGroups] = useState<CornerLabelGroup[]>([]);
   const scenePlaneRef = useRef<HTMLDivElement>(null);
   const sceneViewportRef = useRef<HTMLDivElement>(null);
   const cameraDrag = useRef<CameraDrag | null>(null);
@@ -288,6 +303,8 @@ export function DimensionPreview({
     [dimensions, selectedIds],
   );
   const mode = selected.length;
+  // 坐标角标开关只属于 3D 的立方体；1D/2D 的坐标 tag 永远显示，不受它影响
+  const activeHiddenLabelGroups = mode === 3 ? hiddenLabelGroups : [];
   // hover 单张/堆期间，其余图片、堆与坐标 tag 统一失焦、压暗，网格与坐标线降透明度
   const hoverFocusActive = (hoverPreview !== null && !hoverPreview.closing) || hoveredAssetId !== null || planeCluster !== null || closingCluster !== null;
   const effectiveDimensionValue = (asset: Asset, dimensionId: string) => overrides[asset.id]?.[dimensionId] ?? asset.dimensionValues[dimensionId] ?? 500;
@@ -319,8 +336,9 @@ export function DimensionPreview({
 
   // 右上角 8 格立方体：与场景共用同一组俯仰/水平角度做正交投影，只负责选中象限，不改变主视图。
   // 8 个格子 = 空间八个象限；每个格子只画朝外的三个面，背面按法线深度剔除，再按远近排序保证近处在上层。
-  const octantCubeFacets = useMemo(() => {
-    if (mode !== 3) return [];
+  // 同时收集可见面网格节点的投影位置，供贴在节点上的坐标角标开关使用。
+  const { octantCubeFacets, octantCubeNodes } = useMemo(() => {
+    if (mode !== 3) return { octantCubeFacets: [] as Array<{ key: string; octant: Octant; points: string; depth: number }>, octantCubeNodes: [] as Array<{ key: string; left: number; top: number; group: CornerLabelGroup }> };
     const radius = 30;
     const pitch = rotateX * Math.PI / 180;
     const yaw = rotateZ * Math.PI / 180;
@@ -338,17 +356,35 @@ export function DimensionPreview({
       };
     };
     const facets: Array<{ key: string; octant: Octant; points: string; depth: number }> = [];
+    // 可见面（朝摄像机且非退化）上的 3×3 节点并集：只有这些节点没被方块挡住
+    const visibleNodes = new Map<string, [number, number, number]>();
     for (const signX of [-1, 1] as AxisSign[]) {
       for (const signY of [-1, 1] as AxisSign[]) {
         for (const signZ of [-1, 1] as AxisSign[]) {
           // 场景中 y=1 是屏幕上方（世界 y 为负），立方体沿用同一朝向
           const y = -signY;
-          const faces: Array<{ normal: [number, number, number]; corners: Array<[number, number, number]> }> = [
-            { normal: [signX, 0, 0], corners: [[signX, 0, 0], [signX, y, 0], [signX, y, signZ], [signX, 0, signZ]] },
-            { normal: [0, y, 0], corners: [[0, y, 0], [signX, y, 0], [signX, y, signZ], [0, y, signZ]] },
-            { normal: [0, 0, signZ], corners: [[0, 0, signZ], [signX, 0, signZ], [signX, y, signZ], [0, y, signZ]] },
+          const faceSpecs: Array<{
+            normal: [number, number, number];
+            corners: Array<[number, number, number]>;
+            nodes: Array<[number, number, number]>;
+          }> = [
+            {
+              normal: [signX, 0, 0],
+              corners: [[signX, 0, 0], [signX, y, 0], [signX, y, signZ], [signX, 0, signZ]],
+              nodes: [-1, 0, 1].flatMap((nodeY) => [-1, 0, 1].map((nodeZ) => [signX, nodeY, nodeZ] as [number, number, number])),
+            },
+            {
+              normal: [0, y, 0],
+              corners: [[0, y, 0], [signX, y, 0], [signX, y, signZ], [0, y, signZ]],
+              nodes: [-1, 0, 1].flatMap((nodeX) => [-1, 0, 1].map((nodeZ) => [nodeX, y, nodeZ] as [number, number, number])),
+            },
+            {
+              normal: [0, 0, signZ],
+              corners: [[0, 0, signZ], [signX, 0, signZ], [signX, y, signZ], [0, y, signZ]],
+              nodes: [-1, 0, 1].flatMap((nodeX) => [-1, 0, 1].map((nodeY) => [nodeX, nodeY, signZ] as [number, number, number])),
+            },
           ];
-          for (const face of faces) {
+          for (const face of faceSpecs) {
             const [normalX, normalY, normalZ] = face.normal;
             // 面法线在投影深度方向上的分量 > 0 才朝向摄像机，否则是背面
             const facing = sinPitch * (sinYaw * normalX + cosYaw * normalY) + cosPitch * normalZ;
@@ -360,18 +396,36 @@ export function DimensionPreview({
               return sum + point.x * next.y - next.x * point.y;
             }, 0)) / 2;
             if (area < 0.6) continue;
+            const depth = projected.reduce((sum, point) => sum + point.depth, 0) / projected.length;
             facets.push({
               key: `${signX},${signY},${signZ}|${normalX},${normalY},${normalZ}`,
               octant: { x: signX, y: signY, z: signZ },
               points: projected.map((point) => `${point.x.toFixed(2)},${point.y.toFixed(2)}`).join(" "),
-              depth: projected.reduce((sum, point) => sum + point.depth, 0) / projected.length,
+              depth,
             });
+            for (const node of face.nodes) visibleNodes.set(`${node[0]},${node[1]},${node[2]}`, node);
           }
         }
       }
     }
     facets.sort((a, b) => a.depth - b.depth);
-    return facets;
+    // 只给没被方块挡住的节点生成开关点：背面节点随视角转过轮廓线时隐藏，
+    // 看得见的点按投影位置跟随方块移动。分组按节点类型：三个坐标都非零 = 角落、
+    // 一个 0 = 棱中点、两个 0 = 面中心。
+    const nodes: Array<{ key: string; left: number; top: number; depth: number; group: CornerLabelGroup }> = [];
+    for (const [key, [x, nodeY, z]] of visibleNodes) {
+      const point = project(x, nodeY, z);
+      nodes.push({
+        key,
+        left: (point.x + 48) / 96 * 100,
+        top: (point.y + 48) / 96 * 100,
+        depth: point.depth,
+        group: cornerLabelGroupOf(x, nodeY, z),
+      });
+    }
+    // 近处的点后渲染，叠在远处点上面
+    nodes.sort((a, b) => a.depth - b.depth);
+    return { octantCubeFacets: facets, octantCubeNodes: nodes };
   }, [mode, rotateX, rotateZ]);
 
   // 与渲染管线同源的投影：由 unprojectPointerToPlane 反解，屏幕坐标相对平面中心；用于深度与堆屏幕定位等展示用途
@@ -1914,25 +1968,25 @@ export function DimensionPreview({
                     </span>
                   );
                 }))}
-                <span className={cn("axis-label axis-label-x-start", isOctantIsolated && !isOctantSideVisible(0, -1) && "octant-hidden")}>
+                <span className={cn("axis-label axis-label-x-start", (activeHiddenLabelGroups.includes("face") || (isOctantIsolated && !isOctantSideVisible(0, -1))) && "octant-hidden")}>
                   <TagLabel className="preview-scene-tag" style={billboardStyle}>{selected[0].leftLabel}</TagLabel>
                 </span>
-                <span className={cn("axis-label axis-label-x-end", isOctantIsolated && !isOctantSideVisible(0, 1) && "octant-hidden")}>
+                <span className={cn("axis-label axis-label-x-end", (activeHiddenLabelGroups.includes("face") || (isOctantIsolated && !isOctantSideVisible(0, 1))) && "octant-hidden")}>
                   <TagLabel className="preview-scene-tag" style={billboardStyle}>{selected[0].rightLabel}</TagLabel>
                 </span>
                 {mode >= 2 ? <>
-                  <span className={cn("axis-label axis-label-y-start", isOctantIsolated && !isOctantSideVisible(1, 1) && "octant-hidden")}>
+                  <span className={cn("axis-label axis-label-y-start", (activeHiddenLabelGroups.includes("face") || (isOctantIsolated && !isOctantSideVisible(1, 1))) && "octant-hidden")}>
                     <TagLabel className="preview-scene-tag" style={billboardStyle}>{selected[1].rightLabel}</TagLabel>
                   </span>
-                  <span className={cn("axis-label axis-label-y-end", isOctantIsolated && !isOctantSideVisible(1, -1) && "octant-hidden")}>
+                  <span className={cn("axis-label axis-label-y-end", (activeHiddenLabelGroups.includes("face") || (isOctantIsolated && !isOctantSideVisible(1, -1))) && "octant-hidden")}>
                     <TagLabel className="preview-scene-tag" style={billboardStyle}>{selected[1].leftLabel}</TagLabel>
                   </span>
                 </> : null}
                 {mode === 3 ? <>
-                  <span className={cn("axis-label axis-label-z-start", isOctantIsolated && !isOctantSideVisible(2, -1) && "octant-hidden")}>
+                  <span className={cn("axis-label axis-label-z-start", (activeHiddenLabelGroups.includes("face") || (isOctantIsolated && !isOctantSideVisible(2, -1))) && "octant-hidden")}>
                     <TagLabel className="preview-scene-tag" style={billboardStyle}>{selected[2].leftLabel}</TagLabel>
                   </span>
-                  <span className={cn("axis-label axis-label-z-end", isOctantIsolated && !isOctantSideVisible(2, 1) && "octant-hidden")}>
+                  <span className={cn("axis-label axis-label-z-end", (activeHiddenLabelGroups.includes("face") || (isOctantIsolated && !isOctantSideVisible(2, 1))) && "octant-hidden")}>
                     <TagLabel className="preview-scene-tag" style={billboardStyle}>{selected[2].rightLabel}</TagLabel>
                   </span>
                 </> : null}
@@ -1945,9 +1999,11 @@ export function DimensionPreview({
                   // 整组的内侧边因此与相邻轴端点 tag 对齐，不再以角落为中心压住象限内容；
                   // 3D 的角落是空间的顶点，旋转后仍以该顶点为中心才不会被视角拉偏。
                   const anchoredOutside = mode === 2;
+                  // 角落组按节点类型分开开关：8 个角（三点都非零）归“corner”，12 个棱中点归“edge”
+                  const labelGroup = cornerLabelGroupOf(corner.x, corner.y, corner.z);
                   return (
                     <span
-                      className={`corner-label ${octantHidden ? "octant-hidden" : ""}`}
+                      className={`corner-label ${activeHiddenLabelGroups.includes(labelGroup) || octantHidden ? "octant-hidden" : ""}`}
                       key={corner.key}
                       style={{
                         left: corner.x === 1 ? "100%" : corner.x === -1 ? "0" : "50%",
@@ -2230,6 +2286,30 @@ export function DimensionPreview({
                 data-isolated-octants={isolatedOctants.length}
                 data-isolated-keys={isolatedOctants.map(octantKeyOf).join(" ")}
               >
+                {/* 贴在立方体可见节点上的开关点：hover/聚焦某个点时只放大它所在的那一组，点任一节点只切换同组角标 */}
+                <div className="octant-node-eyes">
+                  {octantCubeNodes.map((node) => {
+                    const hidden = hiddenLabelGroups.includes(node.group);
+                    const groupName = node.group === "corner" ? "角落" : node.group === "edge" ? "棱上" : "轴端点";
+                    return (
+                      <button
+                        key={node.key}
+                        type="button"
+                        className="octant-node-eye"
+                        data-group={node.group}
+                        style={{ left: `${node.left}%`, top: `${node.top}%` }}
+                        aria-pressed={!hidden}
+                        aria-label={`${hidden ? "显示" : "隐藏"}${groupName}坐标角标`}
+                        title={`${hidden ? "显示" : "隐藏"}${groupName}坐标角标`}
+                        onClick={(event) => {
+                          setHiddenLabelGroups((current) => current.includes(node.group) ? current.filter((item) => item !== node.group) : [...current, node.group]);
+                          // 鼠标点击后主动移开焦点，避免键盘态把放大样式留在方块上
+                          if (event.detail > 0) event.currentTarget.blur();
+                        }}
+                      />
+                    );
+                  })}
+                </div>
                 <svg
                   className="octant-cube"
                   viewBox="-48 -48 96 96"

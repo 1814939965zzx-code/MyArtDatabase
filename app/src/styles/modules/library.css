@@ -4,43 +4,15 @@
   }
 
   /*
-   * 素材网格：以卡片最小宽度为刻度等分可用宽度，窗口越宽列数越多，不设列数上限。
-   * 400px 为卡片最小刻度，实际卡宽随列数在约 400～540px 之间，不再是固定 4 列。
+   * 素材网格：以卡片宽度为刻度等分可用宽度，窗口越宽列数越多，不设列数上限。
+   * 卡片宽度由素材库工具栏的滑块控制（240～400px，见 layoutPreferences.ts），
+   * 通过内联的 --asset-card-min 传入；未传入时按 400px 兜底。
    */
   .asset-grid {
     --asset-card-min: 400px;
     display: grid;
     grid-template-columns: repeat(auto-fill, minmax(min(100%, var(--asset-card-min)), 1fr));
     gap: 17px;
-  }
-
-  .asset-list {
-    display: flex;
-    flex-direction: column;
-    gap: 7px;
-  }
-
-  .asset-list .asset-card {
-    display: flex;
-    align-items: center;
-  }
-
-  .asset-list .asset-thumb {
-    width: 95px;
-    flex: 0 0 95px;
-    aspect-ratio: 1.4;
-  }
-
-  .asset-list .asset-meta {
-    flex: 1;
-    display: grid;
-    grid-template-columns: 1fr 1.2fr;
-    align-items: center;
-    gap: 14px;
-  }
-
-  .asset-list .tag-row {
-    margin-top: 0;
   }
 
   @media (max-width: 850px) {
@@ -53,15 +25,6 @@
     .asset-grid {
       grid-template-columns: repeat(2, minmax(0, 1fr));
       gap: 10px;
-    }
-
-    .asset-list .asset-meta {
-      grid-template-columns: 1fr;
-      gap: 3px;
-    }
-
-    .asset-list .tag-row {
-      display: none;
     }
   }
 }

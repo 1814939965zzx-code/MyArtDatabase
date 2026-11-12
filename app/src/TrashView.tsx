@@ -130,7 +130,6 @@ export function TrashView({
                 <AssetCard
                   key={asset.id}
                   asset={asset}
-                  variant="grid"
                   selected={selected}
                   selectable
                   checked={selected}

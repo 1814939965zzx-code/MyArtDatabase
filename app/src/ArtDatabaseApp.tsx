@@ -9,8 +9,6 @@ import {
   FolderInput,
   Grid2X2,
   ImageIcon,
-  LayoutGrid,
-  List,
   ListChecks,
   LoaderCircle,
   Menu,
@@ -26,9 +24,9 @@ import {
   Upload,
   X,
 } from "lucide-react";
-import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
+import { FormEvent, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { apiFetch } from "./api";
-import { formatDuration, isVideoMime, transcodePercent, useTranscodePolling, videoStatusOf } from "./assetMedia";
+import { isVideoMime, transcodePercent, useTranscodePolling, videoStatusOf } from "./assetMedia";
 import type { SessionUser } from "./AuthGate";
 import { AccountSettingsModal } from "./AccountSettingsModal";
 import { AllAssetsView, type LibraryAsset } from "./AllAssetsView";
@@ -57,8 +55,9 @@ import { TopbarTabs } from "./components/layout/TopbarTabs";
 import { TopbarTitle } from "./components/layout/TopbarTitle";
 import { UserMenu } from "./components/layout/UserMenu";
 import { AssetCard } from "./components/library/AssetCard";
+import { AssetCardWidthControl, useAssetCardWidth } from "./components/library/AssetCardWidthControl";
+import { AssetDetailInfoTrigger } from "./components/library/AssetDetailInfoTrigger";
 import { ImportFromLibraryModal } from "./components/library/ImportFromLibraryModal";
-import { ViewToggle } from "./components/library/ViewToggle";
 import { Button, EmptyState, Field, IconButton, Input, Modal, SearchInput, Spinner, Tabs, Textarea, Toast, cn } from "./ui";
 import { VisualComponentsPage } from "./design/VisualComponentsPage";
 import { useProgressiveImage } from "./useProgressiveImage";
@@ -233,11 +232,13 @@ export function ArtDatabaseApp({ user, onLogout }: { user: SessionUser; onLogout
     void dimSync.flush();
   }, [currentPreviewPage?.id, readOnly]);
   const [selectedAssetId, setSelectedAssetId] = useState<string | null>(null);
+  // 素材详情“i”信息卡的开关：打开时在面板内容上铺一层遮罩（scrim）
+  const [assetInfoOpen, setAssetInfoOpen] = useState(false);
   // 详情左右切换顺序：维度预览传 1D 全量 / 2D·3D 堆内顺序，项目素材库传当前筛选结果顺序；
   // 自由画板等其他入口保持为 null，不显示箭头。
   const [detailNav, setDetailNav] = useState<string[] | null>(null);
   const [search, setSearch] = useState("");
-  const [view, setView] = useState<"grid" | "list">("grid");
+  const [cardWidth, setCardWidth] = useAssetCardWidth();
   const [surface, setSurface] = useState<"assets" | "preview" | "board">("preview");
   const [projectAssetCategory, setProjectAssetCategory] = useState<"all" | "favorites">("all");
   // 项目素材库批量选择（从当前项目移除）：选择态只影响项目素材列表，不改变全局素材
@@ -497,6 +498,7 @@ export function ArtDatabaseApp({ user, onLogout }: { user: SessionUser; onLogout
     if (saved !== false) {
       setSelectedAssetId(null);
       setDetailNav(null);
+      setAssetInfoOpen(false);
     }
   }
 
@@ -504,12 +506,14 @@ export function ArtDatabaseApp({ user, onLogout }: { user: SessionUser; onLogout
   function openPreviewAsset(assetId: string, navigation?: string[] | null) {
     setDetailNav(navigation && navigation.length ? navigation : null);
     setSelectedAssetId(assetId);
+    setAssetInfoOpen(false);
   }
 
   /** 项目素材库打开详情：按当前筛选结果（含收藏分类）记录左右切换顺序。 */
   function openLibraryAsset(assetId: string) {
     setDetailNav(filteredAssets.map((asset) => asset.id));
     setSelectedAssetId(assetId);
+    setAssetInfoOpen(false);
   }
 
   /** 详情页左右箭头：先保存当前素材的未提交修改，再切换到相邻素材。 */
@@ -519,6 +523,7 @@ export function ArtDatabaseApp({ user, onLogout }: { user: SessionUser; onLogout
     if (!nextId) return;
     if (await metadataEditorRef.current?.save() === false) return;
     setSelectedAssetId(nextId);
+    setAssetInfoOpen(false);
   }
 
   useEffect(() => () => {
@@ -1552,9 +1557,7 @@ export function ArtDatabaseApp({ user, onLogout }: { user: SessionUser; onLogout
             assets={libraryAssets}
             projects={activeProjects}
             search={search}
-            view={view}
             loading={libraryLoading}
-            onViewChange={setView}
             onRefresh={async () => { await Promise.all([loadLibrary(), loadProjects()]); }}
             onMessage={setMessage}
             onAssetTrashed={handleAssetTrashed}
@@ -1618,7 +1621,7 @@ export function ArtDatabaseApp({ user, onLogout }: { user: SessionUser; onLogout
                     {!readOnly ? <Button variant="secondary" size="sm" icon={<Tags size={14} aria-hidden />} onClick={() => setProjectTagManagerOpen(true)}>标签管理</Button> : null}
                   </>
                 )}
-                <ViewToggle value={view} onChange={setView} />
+                <AssetCardWidthControl value={cardWidth} onChange={setCardWidth} />
               </div>
             </div>
 
@@ -1645,14 +1648,13 @@ export function ArtDatabaseApp({ user, onLogout }: { user: SessionUser; onLogout
             </div>
 
             {filteredAssets.length ? (
-              <div className={cn("asset-collection", view === "list" ? "asset-list" : "asset-grid")}>
+              <div className="asset-collection asset-grid" style={{ "--asset-card-min": `${cardWidth}px` } as CSSProperties}>
                 {filteredAssets.map((asset, index) => {
                   const checked = projectSelectMode && projectSelectedIds.includes(asset.id);
                   return (
                     <AssetCard
                       key={asset.id}
                       asset={asset}
-                      variant={view}
                       selected={checked}
                       selectable={projectSelectMode}
                       checked={checked}
@@ -1746,9 +1748,11 @@ export function ArtDatabaseApp({ user, onLogout }: { user: SessionUser; onLogout
             ) : null}
           </div>
           <div className="drawer-panel">
+            {assetInfoOpen ? <div className="asset-info-scrim" /> : null}
             <div className="drawer-heading">
               <div><p className="mb-1 text-2xs font-bold uppercase tracking-[.15em] text-accent">ASSET DETAIL</p><h2>素材详情</h2></div>
               <div className="flex items-center gap-1">
+                <AssetDetailInfoTrigger asset={selectedAsset} open={assetInfoOpen} onOpenChange={setAssetInfoOpen} />
                 {!readOnly ? (
                   <IconButton
                     label={selectedAsset.favorite ? "取消收藏" : "收藏"}
@@ -1763,39 +1767,10 @@ export function ArtDatabaseApp({ user, onLogout }: { user: SessionUser; onLogout
               </div>
             </div>
             <div key={selectedAsset.id} className="drawer-scroll">
-              <div className="drawer-file"><small>文件名</small><span>{selectedAsset.fileName}</span></div>
-              {selectedAsset.createdByName ? <div className="drawer-file"><small>上传者</small><span>{selectedAsset.createdByName}</span></div> : null}
-              {selectedAsset.width || selectedAsset.fileSize || isVideoMime(selectedAsset.mimeType) ? (
-                <div className="drawer-facts">
-                  <span>{isVideoMime(selectedAsset.mimeType)
-                    ? (videoStatusOf(selectedAsset.mimeType, selectedAsset.transcodeStatus) === "ready" ? formatDuration(selectedAsset.duration) : "转码中")
-                    : selectedAsset.width && selectedAsset.height ? `${selectedAsset.width} × ${selectedAsset.height}` : "尺寸未知"}</span>
-                  <span>{selectedAsset.fileSize ? `${(selectedAsset.fileSize / 1024 / 1024).toFixed(2)} MB` : "演示素材"}</span>
-                  <span>{selectedAsset.mimeType || "image"}</span>
-                </div>
-              ) : null}
-              {!readOnly ? (
-                <AssetImageReplacement
-                  asset={selectedAsset}
-                  busy={busy}
-                  onBusyChange={setBusy}
-                  onComplete={async () => { await Promise.all([loadWorkspace(workspace.project.id), loadLibrary()]); }}
-                  onMessage={setMessage}
-                />
-              ) : null}
-              <AssetMetadataEditor
-                ref={metadataEditorRef}
-                asset={selectedAsset}
-                busy={busy}
-                availableTags={availableTags}
-                aiTagBusy={aiTagBusy}
-                readOnly={readOnly}
-                onAiTag={() => void runAiTag(selectedAsset)}
-                onSave={(update) => saveAssetMetadata(selectedAsset, update)}
-              />
+              {/* 从维度预览打开的详情：维度信息置顶，先定位再看素材的其他字段。 */}
               {selectedPageAsset && currentPreviewPage ? (
-                <>
-                  <div className="mb-2 mt-4 flex items-center gap-2 text-sm">
+                <div className="mb-4 mt-1 border-b border-line-soft pb-4">
+                  <div className="mb-1 flex items-center gap-2 text-sm">
                     <Settings2 size={16} aria-hidden />
                     <strong>{currentPreviewPage.name} · 维度位置</strong>
                   </div>
@@ -1817,7 +1792,7 @@ export function ArtDatabaseApp({ user, onLogout }: { user: SessionUser; onLogout
                     <Button
                       variant="danger"
                       size="sm"
-                      className="mt-4 w-full"
+                      className="mt-3 w-full"
                       icon={<Trash2 size={14} aria-hidden />}
                       onClick={async () => {
                         if (await metadataEditorRef.current?.save() === false) return;
@@ -1832,8 +1807,27 @@ export function ArtDatabaseApp({ user, onLogout }: { user: SessionUser; onLogout
                       从当前 Page 移除
                     </Button>
                   ) : null}
-                </>
+                </div>
               ) : null}
+              {!readOnly ? (
+                <AssetImageReplacement
+                  asset={selectedAsset}
+                  busy={busy}
+                  onBusyChange={setBusy}
+                  onComplete={async () => { await Promise.all([loadWorkspace(workspace.project.id), loadLibrary()]); }}
+                  onMessage={setMessage}
+                />
+              ) : null}
+              <AssetMetadataEditor
+                ref={metadataEditorRef}
+                asset={selectedAsset}
+                busy={busy}
+                availableTags={availableTags}
+                aiTagBusy={aiTagBusy}
+                readOnly={readOnly}
+                onAiTag={() => void runAiTag(selectedAsset)}
+                onSave={(update) => saveAssetMetadata(selectedAsset, update)}
+              />
               {!readOnly && !(selectedPageAsset && currentPreviewPage) ? (
                 <Button
                   variant="danger"

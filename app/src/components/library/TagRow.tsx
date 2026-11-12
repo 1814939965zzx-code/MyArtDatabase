@@ -1,6 +1,6 @@
 import { cn } from "../../ui";
 
-/** 素材卡片上的标签行（列表布局在窄屏自动隐藏）。 */
+/** 素材卡片上的标签行。 */
 export function TagRow({ tags, className }: { tags: string[]; className?: string }) {
   if (!tags.length) return null;
   return (
