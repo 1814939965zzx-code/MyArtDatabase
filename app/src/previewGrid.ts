@@ -75,20 +75,36 @@ export function orderStackGrid<T>(members: readonly T[], columns: number, xOf: (
 }
 
 /**
- * 选择每半轴的等分格数 n：n = 1/2/3/4/5… 按 +1 递增，整轴格数 2n 始终为偶数。
- * 首次按当前像素间距直接取能保持格距不小于 M 的最大 n；之后格距超出 2.4M 时 n+1、
- * 小于 M 时 n-1，保持等分并按单格递增/递减。max n=256（格距 0.390625）。
+ * 固定刻度阶梯：低 n 密集，高 n 约 1.25 倍递增；整轴格数始终是 2n。
+ * 阶梯只决定“可选的 n”，不随缩放历史变化。
  */
-export function gridDivisionsFor(pixelsPerUnit: number, minimumSpacing: number, previous?: number): number {
+export const PREVIEW_DIVISION_LADDER = [1, 2, 3, 4, 5, 6, 8, 10, 12, 16, 20, 24, 32, 40, 48, 64, 80, 96, 128, 160, 192, 256] as const;
+
+/**
+ * 选择每半轴的等分格数 n。
+ *
+ * n 只由当前视图决定：场景边长、缩放、最小格距 M。这里不读取上一次的 n，也不做
+ * “格距 > 2.4M 才 +1、< M 才 -1”的方向性回退，所以放大到达和缩小到达同一个
+ * 缩放级别会得到同一个 n。
+ *
+ * 先取固定阶梯上不大于 target 的最大值，保证格距不小于 M；target < 1 时夹到 1，
+ * n 封顶 256 时格距可能小于 M。计算前把 zoom 量化到 1% 步进，避免捏合手势在
+ * 阶梯边界附近来回抖动。
+ */
+export function gridDivisionsForView(sceneSize: number, zoom: number, minimumSpacing: number): number {
+  if (!(sceneSize > 0) || !(zoom > 0) || !Number.isFinite(sceneSize) || !Number.isFinite(zoom)) return MIN_DIVISIONS;
   const spacing = Math.max(1, minimumSpacing);
-  if (!(pixelsPerUnit > 0) || !Number.isFinite(pixelsPerUnit)) return previous ?? 5;
-  const initial = Math.max(MIN_DIVISIONS, Math.min(MAX_DIVISIONS, Math.floor((100 * pixelsPerUnit) / spacing)));
-  let divisions = Math.max(MIN_DIVISIONS, Math.min(MAX_DIVISIONS, previous ?? initial));
-  const max = spacing * (previous === undefined ? 2 : 2.4);
-  let guard = 0;
-  while ((100 / divisions) * pixelsPerUnit > max && divisions < MAX_DIVISIONS && guard++ < MAX_DIVISIONS) divisions += 1;
-  while ((100 / divisions) * pixelsPerUnit < spacing && divisions > MIN_DIVISIONS && guard++ < MAX_DIVISIONS) divisions -= 1;
-  return divisions;
+  if (!Number.isFinite(spacing)) return MIN_DIVISIONS;
+  const quantizedZoom = Math.round(zoom * 100) / 100;
+  const pixelsPerUnit = sceneSize * quantizedZoom / 200;
+  const target = 100 * pixelsPerUnit / spacing;
+  if (!Number.isFinite(target)) return MIN_DIVISIONS;
+  let divisions = MIN_DIVISIONS;
+  for (const candidate of PREVIEW_DIVISION_LADDER) {
+    if (candidate > target) break;
+    divisions = candidate;
+  }
+  return Math.max(MIN_DIVISIONS, Math.min(MAX_DIVISIONS, divisions));
 }
 
 /** 格子边界固定经过 0；正负两半分别从 0 向 ±100 等分 n 格。 */

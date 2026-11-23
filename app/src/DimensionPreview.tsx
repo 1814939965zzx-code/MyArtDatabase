@@ -1,14 +1,15 @@
 "use client";
 
-import { Aperture, Box, Bug, Images, Maximize2, Minimize2, Minus, MousePointer2, Pencil, Plus, RotateCcw, X } from "lucide-react";
+import { Aperture, Box, Bug, Images, Layers, Maximize2, Minimize2, Minus, MousePointer2, Pencil, Pin, Plus, RotateCcw, X } from "lucide-react";
 import { CSSProperties, PointerEvent, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Button, EmptyState, IconButton, RangeSlider, SyncStatusDot, TagLabel, cn } from "./ui";
 import { useViewportGestures } from "./useViewportGestures";
 import { displayDimensionValue } from "./dimensionScale";
-import { gridClusterCell, gridClusterKey, gridDivisionsFor, gridMinimumSpacing, gridTicksFor, orderByViewDepth, orderStackGrid, orderStackMembers, PREVIEW_ASSET_WIDTH, previewAssetAspectRatio as aspectRatioFor, stackPreviewMembers, zoomPanAtPointer } from "./previewGrid";
+import { gridClusterCell, gridClusterKey, gridDivisionsForView, gridMinimumSpacing, gridTicksFor, orderByViewDepth, orderStackGrid, orderStackMembers, PREVIEW_ASSET_WIDTH, previewAssetAspectRatio as aspectRatioFor, stackPreviewMembers, zoomPanAtPointer } from "./previewGrid";
+import { autoAssetScaleForViewport, readPreviewScalePreference, writePreviewScalePreference, type PreviewScalePreference } from "./previewScale";
 
 type Dimension = { id: string; leftLabel: string; rightLabel: string };
-type Asset = { id: string; name: string; thumbnailUrl: string | null; dimensionValues: Record<string, number>; width?: number; height?: number };
+type Asset = { id: string; name: string; thumbnailUrl: string | null; dimensionValues: Record<string, number>; width?: number; height?: number; pinned?: boolean };
 type CameraDrag = { pointerId: number; startX: number; startY: number; rotateX: number; rotateZ: number; assetId?: string; moved: boolean };
 type ViewPan = { pointerId: number; startX: number; startY: number; panX: number; panY: number };
 type AxisSign = -1 | 1;
@@ -122,9 +123,21 @@ const wrapRotation = (value: number) => ((value % 360) + 360) % 360;
 const SCENE_PERSPECTIVE = 2200;
 const PLANE_CARD_SIZE = PREVIEW_ASSET_WIDTH;
 const PLANE_CARD_GAP = 12;
+// 展开平面卡片 hover 时图片放大倍数；pin 按图片实际比例贴到放大图右上角
+const PLANE_CARD_HOVER_SCALE = 1.86;
+// 平面右侧为最右列卡片的 pin 预留的外扩宽度（放大图右缘 + 按钮）
+const PLANE_PIN_OVERHANG = 44;
 // hover 时其余图层统一退后：没有景深模糊的对象加统一模糊，所有非 hover 对象叠加 50% 画布底色
 const HOVER_FOCUS_BLUR = 4;
 const HOVER_FOCUS_SCRIM = "0.5";
+// hover 前景层：源图放大到 2.475 倍，图片相对前景层左上角偏移 73.75%
+const HOVER_PREVIEW_SCALE = 2.475;
+const HOVER_PREVIEW_INSET = 0.7375;
+// 鼠标离开图片后的容错区与延迟：保证能移动到右侧图标按钮
+const HOVER_RETENTION_PAD = 32;
+const HOVER_LEAVE_GRACE_MS = 160;
+// 平面卡片 pin 在图片外沿：给足移动到按钮的宽限时间
+const PLANE_CARD_PIN_GRACE_MS = 300;
 
 /** 展开平面的网格列数/行数与平面尺寸（与渲染共用）；cardSize 随图片缩放系数调整。 */
 function planeDimensions(count: number, cardSize = PLANE_CARD_SIZE) {
@@ -135,6 +148,23 @@ function planeDimensions(count: number, cardSize = PLANE_CARD_SIZE) {
     rows,
     width: columns * cardSize + (columns - 1) * PLANE_CARD_GAP + 56,
     height: rows * cardSize + (rows - 1) * PLANE_CARD_GAP + 34,
+  };
+}
+
+/**
+ * Pin 贴着 hover 放大后的图片右上角：
+ * 卡片是正方形，图片按自身比例 contain 在卡片内；先算图片实际显示尺寸，
+ * 再乘 1.86 得到放大后的右边缘与上边缘，作为按钮的 left/top。
+ */
+function planeCardPinPosition(asset: Asset, cardSize: number) {
+  const width = asset.width ?? 0;
+  const height = asset.height ?? 0;
+  const ratio = width > 0 && height > 0 ? width / height : 1;
+  const renderedWidth = ratio >= 1 ? cardSize : cardSize * ratio;
+  const renderedHeight = ratio >= 1 ? cardSize / ratio : cardSize;
+  return {
+    left: cardSize / 2 + (renderedWidth * PLANE_CARD_HOVER_SCALE) / 2,
+    top: cardSize / 2 - (renderedHeight * PLANE_CARD_HOVER_SCALE) / 2,
   };
 }
 
@@ -190,6 +220,7 @@ export function DimensionPreview({
   assets,
   onSelectAsset,
   onUpdateAssetDimensions,
+  onTogglePin,
   onAddDimension,
   onEditDimension,
   selectedIds,
@@ -203,6 +234,7 @@ export function DimensionPreview({
   assets: Asset[];
   onSelectAsset: (assetId: string, navigation?: string[] | null) => void;
   onUpdateAssetDimensions: (assetId: string, values: Record<string, number>) => Promise<boolean>;
+  onTogglePin?: (assetId: string, pinned: boolean) => void | Promise<void>;
   onAddDimension: () => void;
   onEditDimension: (dimension: Dimension) => void;
   selectedIds: string[];
@@ -237,22 +269,25 @@ export function DimensionPreview({
   const [spaceHeld, setSpaceHeld] = useState(false);
   const [overrides, setOverrides] = useState<Record<string, Record<string, number>>>({});
   const [sceneSize, setSceneSize] = useState(0);
-  const [gridDivisions, setGridDivisions] = useState<number | undefined>(undefined);
-  // 图片缩放系数：作用于预览场景内所有图片（单张/堆/展开平面卡片），100% 为默认 90px；localStorage 记住
-  const [assetScale, setAssetScale] = useState<number>(() => {
-    try {
-      const stored = window.localStorage.getItem("artdatabase:preview-asset-scale:v1");
-      if (stored) {
-        const value = Number(stored);
-        if (Number.isFinite(value) && value >= 0.5 && value <= 2) return value;
-      }
-    } catch { /* 本地偏好可选 */ }
-    return 1;
-  });
+  // 图片缩放系数：作用于预览场景内所有图片（单张/堆/展开平面卡片），100% 为默认 90px。
+  // 自动挡位按浏览器窗口尺寸选 70%/100%/150%，手动值按设备记住；具体解析见 previewScale.ts。
+  const [scalePreference, setScalePreference] = useState<PreviewScalePreference>(() => readPreviewScalePreference());
+  const [scaleViewport, setScaleViewport] = useState(() => ({ width: window.innerWidth, height: window.innerHeight }));
+  const assetScale = scalePreference.mode === "auto"
+    ? autoAssetScaleForViewport(scaleViewport.width, scaleViewport.height)
+    : scalePreference.value;
   // 开发调试开关：绘制聚簇范围（生产构建中该分支被构建期剔除）
   const debugEnabled = import.meta.env.DEV;
   const [showClusterDebug, setShowClusterDebug] = useState(false);
   const [blurEnabled, setBlurEnabled] = useState(true);
+  // 聚堆开关（R2）：关闭后所有素材按真实坐标单张显示；只存本机偏好，不写服务端。
+  const [stackingEnabled, setStackingEnabled] = useState<boolean>(() => {
+    try {
+      return window.localStorage.getItem("artdatabase:preview-stacking:v1") !== "0";
+    } catch {
+      return true;
+    }
+  });
   // 坐标角标开关：贴在右上角立方体各网格节点上的小圆圈按“节点类型”分三组——
   // 8 个角落、12 个棱中点、6 个面中心；点任意一个只切换同组角标，三组互不影响。
   // 角落组对应 8 个角的 tag 组，棱中点组对应 12 个棱上的 tag 组，面中心组对应 6 个轴端点 tag。
@@ -265,6 +300,10 @@ export function DimensionPreview({
   const dragValues = useRef<Record<string, number>>({});
   const spaceHeldRef = useRef(false);
   const hoveredAssetIdRef = useRef<string | null>(null);
+  // 点“关闭”后暂时屏蔽该图的 hover，直到 hover 到另一张图或鼠标离开画布
+  const dismissedHoverIdRef = useRef<string | null>(null);
+  const hoverActionsRef = useRef<HTMLDivElement>(null);
+  const hoverLeaveTimer = useRef<number | null>(null);
   const hoverCloseTimer = useRef<number | null>(null);
   // Tab 切换前后遮挡图片焦点：hover 锚点（鼠标实际所指的图片/堆）、按深度排序的循环列表与当前下标
   const hoverAnchorRef = useRef<FocusTarget | null>(null);
@@ -281,6 +320,8 @@ export function DimensionPreview({
   const lastScaleChangeAtRef = useRef(0);
   const [planeCluster, setPlaneCluster] = useState<Cluster | null>(null);
   const [closingCluster, setClosingCluster] = useState<Cluster | null>(null);
+  const [hoveredPlaneCardId, setHoveredPlaneCardId] = useState<string | null>(null);
+  const planeCardPinTimer = useRef<number | null>(null);
   const [draggingPlaneAssetId, setDraggingPlaneAssetId] = useState<string | null>(null);
   const [planeDragDelta, setPlaneDragDelta] = useState({ x: 0, y: 0 });
   const [dropTargetClusterKey, setDropTargetClusterKey] = useState<string | null>(null);
@@ -303,6 +344,8 @@ export function DimensionPreview({
     [dimensions, selectedIds],
   );
   const mode = selected.length;
+  // 刻度计算用的缩放量化到 1%，避免捏合手势在阶梯边界附近抖动；M 也用同一量化值，保证同一视图只有一套输入。
+  const gridZoom = Math.round(zoom * 100) / 100;
   // 坐标角标开关只属于 3D 的立方体；1D/2D 的坐标 tag 永远显示，不受它影响
   const activeHiddenLabelGroups = mode === 3 ? hiddenLabelGroups : [];
   // hover 单张/堆期间，其余图片、堆与坐标 tag 统一失焦、压暗，网格与坐标线降透明度
@@ -312,17 +355,19 @@ export function DimensionPreview({
     assets.filter((asset) => assetBelongsToIsolatedOctant(asset.dimensionValues)),
     mode,
     assetScale,
-    zoom,
-  ), [assets, mode, assetScale, zoom, selected, isolatedOctants]);
-  useEffect(() => {
-    if (sceneSize > 0) setGridDivisions((previous) => gridDivisionsFor(sceneSize * zoom / 200, minimumGridSpacing, previous));
-  }, [sceneSize, zoom, minimumGridSpacing]);
+    gridZoom,
+  ), [assets, mode, assetScale, gridZoom, selected, isolatedOctants]);
   useEffect(() => () => {
     if (hoverCloseTimer.current !== null) window.clearTimeout(hoverCloseTimer.current);
+    if (hoverLeaveTimer.current !== null) window.clearTimeout(hoverLeaveTimer.current);
+    if (planeCardPinTimer.current !== null) window.clearTimeout(planeCardPinTimer.current);
   }, []);
-  const densityGridDivisions = gridDivisions ?? gridDivisionsFor(sceneSize * zoom / 200, minimumGridSpacing);
-  // 每个半轴等分：0 始终是格子边界，正负两半各分成 n 格（n 按 +1 序列）。
-  const activeGridDivisions = densityGridDivisions;
+  // n 由当前视图唯一确定：固定阶梯 + zoom 量化；不读取上一次的 n，也不按缩放方向回退。
+  // 0 始终是格子边界，正负两半各分成 n 格。
+  const activeGridDivisions = useMemo(
+    () => gridDivisionsForView(sceneSize, gridZoom, minimumGridSpacing),
+    [sceneSize, gridZoom, minimumGridSpacing],
+  );
   const gridTicks = useMemo(() => gridTicksFor(activeGridDivisions), [activeGridDivisions]);
   const sceneRotateX = ((rotateX + 180) % 360 + 360) % 360 - 180;
   const sceneRotateZ = ((rotateZ + 180) % 360 + 360) % 360 - 180;
@@ -460,10 +505,11 @@ export function DimensionPreview({
   const { clusters, clusterOf } = useMemo(() => {
     const clusters: Cluster[] = [];
     const clusterOf = new Map<string, string>();
-    if (!mode || !sceneSize) return { clusters, clusterOf };
+    if (!mode || !sceneSize || !stackingEnabled) return { clusters, clusterOf };
     type Entry = { asset: Asset; worldZ: number; values: number[] };
     const groups = new Map<string, Entry[]>();
     for (const asset of assets) {
+      if (asset.pinned) continue;
       if (asset.id === draggingAssetId || asset.id === draggingPlaneAssetId) continue;
       const values = { ...asset.dimensionValues, ...overrides[asset.id] };
       if (!assetBelongsToIsolatedOctant(values)) continue;
@@ -508,7 +554,7 @@ export function DimensionPreview({
       for (const entry of group) clusterOf.set(entry.asset.id, key);
     }
     return { clusters, clusterOf };
-  }, [assets, mode, selected, activeGridDivisions, sceneSize, scenePivot.x, scenePivot.y, scenePivot.z, isolatedOctants, overrides, draggingAssetId, draggingPlaneAssetId, rotateX, rotateZ]);
+  }, [assets, mode, selected, activeGridDivisions, sceneSize, stackingEnabled, scenePivot.x, scenePivot.y, scenePivot.z, isolatedOctants, overrides, draggingAssetId, draggingPlaneAssetId, rotateX, rotateZ]);
   /**
    * 详情页左右切换的顺序：
    * - 1D：Page 内全部素材按该维度值升序（同值保持 Page 顺序），任何单张/堆内成员都能前后切换；
@@ -632,8 +678,29 @@ export function DimensionPreview({
   }, [focusMode]);
 
   useEffect(() => {
-    try { window.localStorage.setItem("artdatabase:preview-asset-scale:v1", String(assetScale)); } catch { /* 本地偏好可选 */ }
-  }, [assetScale]);
+    writePreviewScalePreference(scalePreference);
+  }, [scalePreference]);
+
+  // 自动挡位只跟随浏览器窗口尺寸；防抖 150ms，拖拽窗口时不会连续跳档。
+  useEffect(() => {
+    let timer: number | null = null;
+    const onResize = () => {
+      if (timer !== null) window.clearTimeout(timer);
+      timer = window.setTimeout(() => {
+        timer = null;
+        setScaleViewport({ width: window.innerWidth, height: window.innerHeight });
+      }, 150);
+    };
+    window.addEventListener("resize", onResize);
+    return () => {
+      window.removeEventListener("resize", onResize);
+      if (timer !== null) window.clearTimeout(timer);
+    };
+  }, []);
+
+  useEffect(() => {
+    try { window.localStorage.setItem("artdatabase:preview-stacking:v1", stackingEnabled ? "1" : "0"); } catch { /* 本地偏好可选 */ }
+  }, [stackingEnabled]);
 
   // 场景平面随所选维度数挂载/卸载（mode=0 时整个场景卸载）：依赖 mode 使每次平面重建后都重新测量并重挂观察器。
   // 否则 sceneSize 会停留在 0（挂载时无平面、或卸载时 ResizeObserver 以 0×0 回调清零），导致隔离象限检测失效。
@@ -776,6 +843,19 @@ export function DimensionPreview({
     }
   }, [clusters, planeCluster]);
 
+  // 取消固定后素材可能重新进入堆：收起仍停在它上面的 hover 前景层，避免悬浮图和堆同时存在。
+  useEffect(() => {
+    if (!hoverPreview) return;
+    if (!clusterOf.has(hoverPreview.asset.id)) return;
+    dismissedHoverIdRef.current = null;
+    setAssetHover(null);
+    dropHoverPreview();
+  }, [clusterOf, hoverPreview]);
+
+  useEffect(() => {
+    resetPlaneCardPin();
+  }, [planeCluster?.key]);
+
   useEffect(() => () => {
     if (planeCloseTimer.current !== null) window.clearTimeout(planeCloseTimer.current);
   }, []);
@@ -788,7 +868,7 @@ export function DimensionPreview({
   }, []);
 
   // 缩放视图或图片缩放系数变化导致聚堆重组时，用 200ms FLIP 让素材滑入/滑出堆；
-  // 旋转、平移、拖动改维度不会触发。
+  // 旋转、平移、拖动改维度不会触发。n 现在是当前视图的直接计算结果，不再需要预测下一帧的格数。
   useLayoutEffect(() => {
     if (lastGridDivisionsRef.current === null) {
       lastGridDivisionsRef.current = activeGridDivisions;
@@ -800,14 +880,10 @@ export function DimensionPreview({
     if (scaleChanged) {
       lastScaleRef.current = { zoom, assetScale };
       lastScaleChangeAtRef.current = now;
-      const predictedDivisions = sceneSize > 0
-        ? gridDivisionsFor(sceneSize * zoom / 200, minimumGridSpacing, gridDivisions)
-        : gridDivisions;
-      const predictedActive = predictedDivisions ?? activeGridDivisions;
-      if (predictedActive !== activeGridDivisions || divisionsChanged) {
+      if (divisionsChanged) {
         const previous = flipStateRef.current;
         const next = captureFlipLayout();
-        if (divisionsChanged && previous && now - previous.at < 500) animateFlipLayout(previous.map, next);
+        if (previous && now - previous.at < 500) animateFlipLayout(previous.map, next);
         flipStateRef.current = { map: next, at: now };
       }
       lastGridDivisionsRef.current = activeGridDivisions;
@@ -1251,7 +1327,7 @@ export function DimensionPreview({
   function computeFocusCycle(anchor: FocusTarget, rect: DOMRect): FocusTarget[] {
     const plane = scenePlaneRef.current;
     if (!plane) return [anchor];
-    const hoverScale = 2.475;
+    const hoverScale = HOVER_PREVIEW_SCALE;
     const centerX = rect.left + rect.width / 2;
     const centerY = rect.top + rect.height / 2;
     const expanded = {
@@ -1298,8 +1374,25 @@ export function DimensionPreview({
     }
   }
 
+  function cancelHoverLeave() {
+    if (hoverLeaveTimer.current !== null) {
+      window.clearTimeout(hoverLeaveTimer.current);
+      hoverLeaveTimer.current = null;
+    }
+  }
+
+  /** 离开 hover 区域后给一段容错时间，期间移到右侧按钮可取消收起。 */
+  function scheduleHoverLeave() {
+    if (hoverLeaveTimer.current !== null) return;
+    hoverLeaveTimer.current = window.setTimeout(() => {
+      hoverLeaveTimer.current = null;
+      setAssetHover(null);
+    }, HOVER_LEAVE_GRACE_MS);
+  }
+
   function dropHoverPreview() {
     cancelHoverClose();
+    cancelHoverLeave();
     setHoverPreview(null);
   }
 
@@ -1321,6 +1414,8 @@ export function DimensionPreview({
   /** 将焦点应用到指定图片：在 3D 场景外的前景层展示，遮挡物保持原位、不再隐藏。 */
   function applyFocus(assetId: string) {
     cancelHoverClose();
+    cancelHoverLeave();
+    if (dismissedHoverIdRef.current && dismissedHoverIdRef.current !== assetId) dismissedHoverIdRef.current = null;
     // 缩回过程中重新进入同一张图：直接恢复为完整前景层，不再重新取源图矩形
     if (hoverPreview?.asset.id === assetId && hoverPreview.closing) {
       hoveredAssetIdRef.current = assetId;
@@ -1350,6 +1445,7 @@ export function DimensionPreview({
 
   /** 立即收起可能展开的堆平面，但不重置 hover 锚点与焦点循环（供 Tab 切换复用）。 */
   function dismissPlane() {
+    resetPlaneCardPin();
     if (planeCloseTimer.current !== null) {
       window.clearTimeout(planeCloseTimer.current);
       planeCloseTimer.current = null;
@@ -1384,7 +1480,21 @@ export function DimensionPreview({
     applyFocus(target.id);
   }
 
+  /** 点“关闭”后立即收起 hover，并暂时屏蔽该图，直到 hover 另一张图或鼠标离开画布。 */
+  function dismissHoverFor(assetId: string) {
+    dismissedHoverIdRef.current = assetId;
+    hoverAnchorRef.current = null;
+    focusCycleRef.current = [];
+    focusIndexRef.current = 0;
+    hoveredAssetIdRef.current = null;
+    setHoveredAssetId(null);
+    cancelHoverLeave();
+    setAssetHover(null);
+    dropHoverPreview();
+  }
+
   function setAssetHover(assetId: string | null) {
+    cancelHoverLeave();
     // 锚点未变时保持当前焦点（含 Tab 切换后的焦点），避免指针微小移动重置循环
     const nextAnchor: FocusTarget | null = assetId ? { id: assetId, stack: false } : null;
     if (sameTarget(hoverAnchorRef.current, nextAnchor)) return;
@@ -1404,7 +1514,34 @@ export function DimensionPreview({
     applyFocus(nextAnchor.id);
   }
 
+  /** 展开平面卡片的 pin 需要跨越卡片外沿，单独用 hover 状态 + 宽限计时保证可点。 */
+  function cancelPlaneCardPinHide() {
+    if (planeCardPinTimer.current !== null) {
+      window.clearTimeout(planeCardPinTimer.current);
+      planeCardPinTimer.current = null;
+    }
+  }
+
+  function showPlaneCardPin(assetId: string) {
+    cancelPlaneCardPinHide();
+    setHoveredPlaneCardId(assetId);
+  }
+
+  function schedulePlaneCardPinHide() {
+    if (planeCardPinTimer.current !== null) return;
+    planeCardPinTimer.current = window.setTimeout(() => {
+      planeCardPinTimer.current = null;
+      setHoveredPlaneCardId(null);
+    }, PLANE_CARD_PIN_GRACE_MS);
+  }
+
+  function resetPlaneCardPin() {
+    cancelPlaneCardPinHide();
+    setHoveredPlaneCardId(null);
+  }
+
   function clearFan() {
+    resetPlaneCardPin();
     // 取消进行中的收拢动画并立即卸载
     if (planeCloseTimer.current !== null) {
       window.clearTimeout(planeCloseTimer.current);
@@ -1431,6 +1568,7 @@ export function DimensionPreview({
   }
 
   function closePlane() {
+    resetPlaneCardPin();
     const cluster = planeClusterRef.current;
     if (!cluster) return;
     if (planeCloseTimer.current !== null) {
@@ -1517,25 +1655,163 @@ export function DimensionPreview({
     openPlane(key);
   }
 
+  function hoverGeometry() {
+    if (!hoverPreview || hoverPreview.closing) return null;
+    const viewport = sceneViewportRef.current?.getBoundingClientRect();
+    if (!viewport) return null;
+    const left = hoverPreview.left - hoverPreview.width * HOVER_PREVIEW_INSET;
+    const top = hoverPreview.top - hoverPreview.height * HOVER_PREVIEW_INSET;
+    const actions = hoverActionsRef.current?.getBoundingClientRect();
+    return {
+      viewportLeft: viewport.left,
+      viewportTop: viewport.top,
+      left,
+      top,
+      right: left + hoverPreview.width * HOVER_PREVIEW_SCALE,
+      bottom: top + hoverPreview.height * HOVER_PREVIEW_SCALE,
+      actions: actions ? {
+        left: actions.left - viewport.left,
+        top: actions.top - viewport.top,
+        right: actions.right - viewport.left,
+        bottom: actions.bottom - viewport.top,
+      } : null,
+    };
+  }
+
+  function insideRect(x: number, y: number, rect: { left: number; top: number; right: number; bottom: number }) {
+    return x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom;
+  }
+
+  /** 右侧操作条本身：优先级最高，保证按钮可点。 */
+  function pointInHoverActions(clientX: number, clientY: number) {
+    const geometry = hoverGeometry();
+    if (!geometry?.actions) return false;
+    return insideRect(clientX - geometry.viewportLeft, clientY - geometry.viewportTop, geometry.actions);
+  }
+
+  /** 放大图本身：hover 层在最上面，指针在其上时保持当前图。 */
+  function pointInHoverMagnified(clientX: number, clientY: number) {
+    const geometry = hoverGeometry();
+    return Boolean(geometry && insideRect(clientX - geometry.viewportLeft, clientY - geometry.viewportTop, geometry));
+  }
+
+  /** 放大图 + 操作条外扩一圈的容错区，避免移动到图标途中 hover 提前结束。 */
+  function pointInHoverRetention(clientX: number, clientY: number) {
+    const geometry = hoverGeometry();
+    if (!geometry) return false;
+    const x = clientX - geometry.viewportLeft;
+    const y = clientY - geometry.viewportTop;
+    const left = Math.min(geometry.left, geometry.actions?.left ?? geometry.left) - HOVER_RETENTION_PAD;
+    const right = Math.max(geometry.right, geometry.actions?.right ?? geometry.right) + HOVER_RETENTION_PAD;
+    const top = Math.min(geometry.top, geometry.actions?.top ?? geometry.top) - HOVER_RETENTION_PAD;
+    const bottom = Math.max(geometry.bottom, geometry.actions?.bottom ?? geometry.bottom) + HOVER_RETENTION_PAD;
+    return x >= left && x <= right && y >= top && y <= bottom;
+  }
+
   function updateAssetHover(event: PointerEvent<HTMLDivElement>) {
     if (assetDrag.current || cameraDrag.current || viewPanDrag.current) {
+      cancelHoverLeave();
       setAssetHover(null);
       setStackHover(null);
       return;
     }
+    if (pointInHoverActions(event.clientX, event.clientY)) {
+      cancelHoverLeave();
+      return;
+    }
+    if (pointInHoverMagnified(event.clientX, event.clientY)) {
+      cancelHoverLeave();
+      return;
+    }
     const hit = assetAtPoint(event.clientX, event.clientY, true);
-    // 模糊对象不参与 hover：既不会成为新目标，也不会清除当前 hover；指针移到空白处才结束
-    if (hit?.blurred) return;
+    // 模糊对象不参与 hover：既不会成为新目标，也不会清除当前 hover；指针移到空白处才结束。
+    // 例外：已经 hover 单张/堆时，其余堆会被聚焦压暗，但用户明确移到堆上仍应展开它。
+    if (hit?.blurred) {
+      if (hit.stackKey && hoverFocusActive) {
+        cancelHoverLeave();
+        setAssetHover(null);
+        setStackHover(hit.stackKey);
+      }
+      return;
+    }
+    // 堆的 data-asset-id 是堆键，必须先于“切换单张”的判断处理
     if (hit?.stackKey) {
+      cancelHoverLeave();
       setAssetHover(null);
       setStackHover(hit.stackKey);
       return;
     }
-    setAssetHover(hit?.id ?? null);
+    if (hit?.id && dismissedHoverIdRef.current) {
+      if (hit.id === dismissedHoverIdRef.current) {
+        cancelHoverLeave();
+        setAssetHover(null);
+        setStackHover(null);
+        return;
+      }
+      dismissedHoverIdRef.current = null;
+    }
+    if (hit?.id && hit.id !== hoverPreview?.asset.id) {
+      cancelHoverLeave();
+      setAssetHover(hit.id);
+      setStackHover(null);
+      return;
+    }
+    if (pointInHoverRetention(event.clientX, event.clientY)) {
+      cancelHoverLeave();
+      return;
+    }
+    if (hit?.id) {
+      cancelHoverLeave();
+      setAssetHover(hit.id);
+      setStackHover(null);
+      return;
+    }
+    if (hoverPreview && !hoverPreview.closing) {
+      scheduleHoverLeave();
+      return;
+    }
+    cancelHoverLeave();
+    setAssetHover(null);
     setStackHover(null);
   }
 
-  function startPlaneCardDrag(event: PointerEvent<HTMLButtonElement>, member: Asset) {
+  function planeCardCorridorRect(assetId: string) {
+    const plane = sceneViewportRef.current;
+    if (!plane) return null;
+    const card = Array.from(plane.querySelectorAll<HTMLElement>("[data-plane-card-id]"))
+      .find((element) => element.dataset.planeCardId === assetId);
+    if (!card) return null;
+    const visual = card.firstElementChild instanceof HTMLElement ? card.firstElementChild : card;
+    const pin = card.querySelector<HTMLElement>(".plane-card-pin");
+    const cardRect = card.getBoundingClientRect();
+    const visualRect = visual.getBoundingClientRect();
+    const pinRect = pin?.getBoundingClientRect();
+    return {
+      left: Math.min(cardRect.left, visualRect.left, pinRect?.left ?? visualRect.left) - 8,
+      right: Math.max(cardRect.right, visualRect.right, pinRect?.right ?? visualRect.right) + 8,
+      top: Math.min(cardRect.top, visualRect.top, pinRect?.top ?? visualRect.top) - 8,
+      bottom: Math.max(cardRect.bottom, visualRect.bottom, pinRect?.bottom ?? visualRect.bottom) + 8,
+    };
+  }
+
+  function pointInPlaneCardCorridor(assetId: string, clientX: number, clientY: number) {
+    const rect = planeCardCorridorRect(assetId);
+    return Boolean(rect && clientX >= rect.left && clientX <= rect.right && clientY >= rect.top && clientY <= rect.bottom);
+  }
+
+  function trackPlaneCardHover(event: PointerEvent<HTMLDivElement>) {
+    if (!hoveredPlaneCardId || planeDrag.current) return;
+    const planeRect = event.currentTarget.getBoundingClientRect();
+    const inPlane = event.clientX >= planeRect.left && event.clientX <= planeRect.right
+      && event.clientY >= planeRect.top && event.clientY <= planeRect.bottom;
+    if (inPlane || pointInPlaneCardCorridor(hoveredPlaneCardId, event.clientX, event.clientY)) {
+      cancelPlaneCardPinHide();
+    } else {
+      schedulePlaneCardPinHide();
+    }
+  }
+
+  function startPlaneCardDrag(event: PointerEvent<HTMLDivElement>, member: Asset) {
     // 游客只读：卡片只响应点击（打开详情），不进入拖动
     if (readOnly) return;
     // 平移优先：中键 / 空格+左键不进入卡片拖动，事件继续冒泡给场景开始平移
@@ -1864,14 +2140,29 @@ export function DimensionPreview({
                 <Plus size={14} aria-hidden />
               </IconButton>
             </div>
-            <div className="flex h-[29px] items-center gap-1.5 rounded-md border border-line bg-white px-2 text-muted" role="group" aria-label="图片缩放系数" title="图片缩放系数：作用于预览内所有图片（50%～200%）">
+            <div className="flex h-[29px] items-center gap-1.5 rounded-md border border-line bg-white px-2 text-muted" role="group" aria-label="图片缩放系数与自动挡位" title="图片缩放系数：作用于预览内所有图片（50%～200%）；自动挡位按窗口大小选择 70%/100%/150%">
+              <button
+                type="button"
+                aria-pressed={scalePreference.mode === "auto"}
+                aria-label="自动挡位"
+                title="自动按窗口大小选择图片基准尺寸；拖动滑块会退出自动"
+                className={cn("flex-none rounded px-1 py-0.5 text-2xs transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-sage", scalePreference.mode === "auto" ? "bg-sage-wash font-medium text-sage" : "text-muted hover:text-ink")}
+                onClick={() => {
+                  clearFan();
+                  setScalePreference((current) => current.mode === "auto"
+                    ? { mode: "manual", value: assetScale }
+                    : { mode: "auto", value: assetScale });
+                }}
+              >
+                自动
+              </button>
               <Images size={13} aria-hidden />
               <RangeSlider
                 min={50}
                 max={200}
                 step={5}
                 value={Math.round(assetScale * 100)}
-                onValueChange={(value) => { clearFan(); setAssetScale(value / 100); }}
+                onValueChange={(value) => { clearFan(); setScalePreference({ mode: "manual", value: value / 100 }); }}
                 aria-label="图片缩放系数"
                 className="h-1 w-[76px]"
               />
@@ -1893,6 +2184,17 @@ export function DimensionPreview({
               onClick={() => setBlurEnabled((active) => !active)}
             >
               <Aperture size={15} aria-hidden />
+            </IconButton>
+            <IconButton
+              size="sm"
+              variant="solid"
+              active={stackingEnabled}
+              label={stackingEnabled ? "关闭聚堆" : "开启聚堆"}
+              title={stackingEnabled ? "关闭聚堆：所有素材按真实坐标单张显示" : "开启聚堆：同格素材合并显示"}
+              className="size-[31px]"
+              onClick={() => { clearFan(); setStackingEnabled((active) => !active); }}
+            >
+              <Layers size={15} aria-hidden />
             </IconButton>
             {debugEnabled ? (
               <IconButton
@@ -1919,7 +2221,7 @@ export function DimensionPreview({
               onPointerUp={endSceneMove}
               onPointerCancel={endSceneMove}
               onPointerEnter={() => { pointerInSceneRef.current = true; }}
-              onPointerLeave={() => { pointerInSceneRef.current = false; setAssetHover(null); setStackHover(null); }}
+              onPointerLeave={() => { pointerInSceneRef.current = false; dismissedHoverIdRef.current = null; cancelHoverLeave(); setAssetHover(null); setStackHover(null); }}
               onAuxClick={(event) => event.preventDefault()}
               onMouseDown={(event) => { if (event.button === 1) event.preventDefault(); }}
             >
@@ -2165,7 +2467,7 @@ export function DimensionPreview({
                         "--billboard-rz": `${mode === 3 ? -sceneRotateZ : 0}deg`,
                         ...fogStyle,
                       } as CSSProperties}
-                      title={mode === 3 ? `${asset.name} · 点击查看详情 · 拖动旋转视角` : `${asset.name} · 拖动修改维度`}
+                      title={mode === 3 ? `${asset.name}${asset.pinned ? " · 已固定" : ""} · 点击查看详情 · 拖动旋转视角` : `${asset.name}${asset.pinned ? " · 已固定" : ""} · 拖动修改维度`}
                     >
                       {/* 模糊加在整张脸上：图片与雾化底色一起虚化，避免底色被裁出一个硬边框 */}
                       <span className="preview-asset-face" style={blurStyle}>
@@ -2175,6 +2477,9 @@ export function DimensionPreview({
                           </span>
                         )}
                       </span>
+                      {asset.pinned ? (
+                        <span className="preview-pin-badge" aria-hidden="true"><Pin size={10} aria-hidden /></span>
+                      ) : null}
                       {draggingAssetId === asset.id ? (
                         <span className="preview-value-tag-layer">{valueTagsOf(values)}</span>
                       ) : null}
@@ -2205,6 +2510,55 @@ export function DimensionPreview({
                   </span>
                 </div>
               ) : null}
+              {hoverPreview && !hoverPreview.closing ? (() => {
+                const viewport = sceneViewportRef.current;
+                const vw = viewport?.offsetWidth ?? 0;
+                const vh = viewport?.offsetHeight ?? 0;
+                if (!vw || !vh) return null;
+                const magnifiedLeft = hoverPreview.left - hoverPreview.width * HOVER_PREVIEW_INSET;
+                const magnifiedTop = hoverPreview.top - hoverPreview.height * HOVER_PREVIEW_INSET;
+                const magnifiedWidth = hoverPreview.width * HOVER_PREVIEW_SCALE;
+                const barWidth = 26;
+                const barHeight = readOnly ? 26 : 58;
+                let left = magnifiedLeft + magnifiedWidth;
+                if (left + barWidth > vw - 8) left = magnifiedLeft - barWidth;
+                left = Math.max(8, Math.min(vw - barWidth - 8, left));
+                const top = Math.max(8, Math.min(vh - barHeight - 8, magnifiedTop));
+                const hoveredAsset = assets.find((asset) => asset.id === hoverPreview.asset.id) ?? hoverPreview.asset;
+                return (
+                  <div
+                    ref={hoverActionsRef}
+                    className="hover-actions"
+                    style={{ left, top }}
+                    onPointerDown={(event) => event.stopPropagation()}
+                    onClick={(event) => event.stopPropagation()}
+                  >
+                    <IconButton
+                      size="sm"
+                      variant="solid"
+                      className="rounded-full text-ink shadow-sm"
+                      label="关闭 hover"
+                      title="关闭这张图的 hover；hover 其他图或移出画板后恢复"
+                      onClick={() => dismissHoverFor(hoveredAsset.id)}
+                    >
+                      <X size={14} aria-hidden />
+                    </IconButton>
+                    {!readOnly ? (
+                      <IconButton
+                        size="sm"
+                        variant="solid"
+                        aria-pressed={Boolean(hoveredAsset.pinned)}
+                        className={cn("rounded-full shadow-sm", hoveredAsset.pinned ? "text-sage" : "text-ink")}
+                        label={hoveredAsset.pinned ? "取消固定" : "固定到维度位置"}
+                        title={hoveredAsset.pinned ? "取消固定" : "固定：不参与自动聚堆"}
+                        onClick={() => { void onTogglePin?.(hoveredAsset.id, !hoveredAsset.pinned); }}
+                      >
+                        <Pin size={14} aria-hidden />
+                      </IconButton>
+                    ) : null}
+                  </div>
+                );
+              })() : null}
               {(planeCluster || closingCluster) ? (() => {
                 const cluster = (planeCluster ?? closingCluster)!;
                 const isClosing = !planeCluster && closingCluster !== null;
@@ -2213,6 +2567,7 @@ export function DimensionPreview({
                 const count = members.length;
                 const cardSize = PLANE_CARD_SIZE * assetScale;
                 const { columns, rows, width: planeWidth, height: planeHeight } = planeDimensions(count, cardSize);
+                const planeWidthWithPin = planeWidth + PLANE_PIN_OVERHANG;
                 const projected = projectValuePoint(cluster.x, cluster.y, cluster.z);
                 let left = 0;
                 let top = 0;
@@ -2221,20 +2576,20 @@ export function DimensionPreview({
                   const vh = viewport.offsetHeight;
                   const screenX = vw / 2 + viewPan.x + (projected?.screenX ?? cluster.screenX);
                   const screenY = vh / 2 + viewPan.y + (projected?.screenY ?? cluster.screenY);
-                  // 平面与原堆完全重合：以堆的屏幕位置为中心
-                  left = Math.max(8, Math.min(vw - planeWidth - 8, screenX - planeWidth / 2));
+                  // 卡片组仍以堆的屏幕位置为中心；右侧额外的 44px 只用于容纳最右列卡片的 pin
+                  left = Math.max(8, Math.min(vw - planeWidthWithPin - 8, screenX - planeWidth / 2));
                   top = Math.max(8, Math.min(vh - planeHeight - 8, screenY - planeHeight / 2));
                 }
                 return (
                   <div
                     className={`stack-plane mode-${mode} ${isClosing ? "closing" : ""}`}
-                    style={{ left, top, width: planeWidth, height: planeHeight }}
+                    style={{ left, top, width: planeWidthWithPin, height: planeHeight, paddingRight: 28 + PLANE_PIN_OVERHANG }}
                     onPointerDown={(event) => {
                       // 中键 / 空格+左键：平移优先，冒泡给场景开始平移；其余事件继续由平面独占
                       if (event.button === 1 || (event.button === 0 && spaceHeldRef.current)) return;
                       event.stopPropagation();
                     }}
-                    onPointerMove={(event) => { event.stopPropagation(); movePlaneCardDrag(event); }}
+                    onPointerMove={(event) => { event.stopPropagation(); trackPlaneCardHover(event); movePlaneCardDrag(event); }}
                     onPointerUp={(event) => { event.stopPropagation(); void endPlaneCardDrag(event); }}
                     onPointerCancel={(event) => { event.stopPropagation(); void endPlaneCardDrag(event); }}
                   >
@@ -2244,10 +2599,14 @@ export function DimensionPreview({
                         const row = Math.floor(index / columns);
                         const offsetX = (col - (columns - 1) / 2) * (cardSize + PLANE_CARD_GAP);
                         const offsetY = (row - (rows - 1) / 2) * (cardSize + PLANE_CARD_GAP);
+                        const pinPosition = planeCardPinPosition(member, cardSize);
                         return (
-                          <button
-                            type="button"
-                            className={`stack-plane-card ${draggingPlaneAssetId === member.id ? "dragging" : ""}`}
+                          <div
+                            role="button"
+                            tabIndex={0}
+                            aria-label={member.name}
+                            data-plane-card-id={member.id}
+                            className={`stack-plane-card ${hoveredPlaneCardId === member.id ? "is-hovered" : ""} ${draggingPlaneAssetId === member.id ? "dragging" : ""} focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-sage`}
                             key={member.id}
                             style={{
                               "--plane-card-size": `${cardSize}px`,
@@ -2257,7 +2616,36 @@ export function DimensionPreview({
                               "--drag-dy": `${planeDragDelta.y}px`,
                             } as CSSProperties}
                             onPointerDown={(event) => startPlaneCardDrag(event, member)}
+                            onPointerEnter={(event) => {
+                              if (hoveredPlaneCardId && hoveredPlaneCardId !== member.id && pointInPlaneCardCorridor(hoveredPlaneCardId, event.clientX, event.clientY)) {
+                                cancelPlaneCardPinHide();
+                                return;
+                              }
+                              showPlaneCardPin(member.id);
+                            }}
+                            onPointerMove={(event) => {
+                              if (hoveredPlaneCardId && hoveredPlaneCardId !== member.id && pointInPlaneCardCorridor(hoveredPlaneCardId, event.clientX, event.clientY)) {
+                                cancelPlaneCardPinHide();
+                                return;
+                              }
+                              if (hoveredPlaneCardId !== member.id) showPlaneCardPin(member.id);
+                            }}
+                            onPointerLeave={() => schedulePlaneCardPinHide()}
                             onClick={() => {
+                              if (suppressClickAfterPan.current) {
+                                suppressClickAfterPan.current = false;
+                                return;
+                              }
+                              if (planeDragJustMoved.current) {
+                                planeDragJustMoved.current = false;
+                                return;
+                              }
+                              clearFan();
+                              onSelectAsset(member.id, previewNavigationFor(member.id));
+                            }}
+                            onKeyDown={(event) => {
+                              if (event.target !== event.currentTarget || (event.key !== "Enter" && event.key !== " ")) return;
+                              event.preventDefault();
                               if (suppressClickAfterPan.current) {
                                 suppressClickAfterPan.current = false;
                                 return;
@@ -2272,7 +2660,27 @@ export function DimensionPreview({
                           >
                             {member.thumbnailUrl ? <img src={member.thumbnailUrl} alt="" draggable={false} /> : <i>{member.name.slice(0, 1)}</i>}
                             {valueTagsOf({ ...member.dimensionValues, ...overrides[member.id] })}
-                          </button>
+                            {!readOnly ? (
+                              <IconButton
+                                size="sm"
+                                variant="solid"
+                                aria-pressed={Boolean(member.pinned)}
+                                className={cn("plane-card-pin rounded-full shadow-md", hoveredPlaneCardId === member.id && "is-visible", member.pinned ? "text-sage" : "text-ink")}
+                                style={{ left: pinPosition.left, top: pinPosition.top }}
+                                label={member.pinned ? "取消固定" : "固定并移出堆"}
+                                title={member.pinned ? "取消固定" : "固定：移出堆并保持单张"}
+                                onPointerDown={(event) => event.stopPropagation()}
+                                onPointerEnter={() => showPlaneCardPin(member.id)}
+                                onPointerLeave={() => schedulePlaneCardPinHide()}
+                                onClick={(event) => {
+                                  event.stopPropagation();
+                                  void onTogglePin?.(member.id, !member.pinned);
+                                }}
+                              >
+                                <Pin size={13} aria-hidden />
+                              </IconButton>
+                            ) : null}
+                          </div>
                         );
                       })}
                     </div>

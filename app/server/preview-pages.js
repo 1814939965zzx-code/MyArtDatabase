@@ -29,6 +29,7 @@ export function migratePreviewPages(db) {
       page_id TEXT NOT NULL,
       project_id TEXT NOT NULL,
       asset_id TEXT NOT NULL,
+      pinned INTEGER NOT NULL DEFAULT 0,
       PRIMARY KEY(page_id, asset_id),
       FOREIGN KEY(page_id, project_id) REFERENCES preview_pages(id, project_id) ON DELETE CASCADE,
       FOREIGN KEY(project_id, asset_id) REFERENCES project_assets(project_id, asset_id) ON DELETE CASCADE
@@ -59,6 +60,8 @@ export function migratePreviewPages(db) {
     if (!pageColumns.includes("revision")) db.exec("ALTER TABLE preview_pages ADD COLUMN revision INTEGER NOT NULL DEFAULT 0");
     const valueColumns = db.prepare("PRAGMA table_info(preview_dimension_values)").all().map((column) => column.name);
     if (!valueColumns.includes("last_rev")) db.exec("ALTER TABLE preview_dimension_values ADD COLUMN last_rev INTEGER NOT NULL DEFAULT 0");
+    const pageAssetColumns = db.prepare("PRAGMA table_info(preview_page_assets)").all().map((column) => column.name);
+    if (!pageAssetColumns.includes("pinned")) db.exec("ALTER TABLE preview_page_assets ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0");
   }
   if (db.prepare("PRAGMA user_version").get().user_version >= 9) return;
   transaction(db, () => {
@@ -129,7 +132,7 @@ export async function handlePreviewPages(request, { db }) {
   if (path === "/api/preview-page" && method === "GET") {
     const dimensions = db.prepare(`SELECT d.id, p.project_id AS projectId, d.page_id AS pageId, d.left_label AS leftLabel, d.right_label AS rightLabel, d.sort_order AS sortOrder
       FROM preview_dimensions d JOIN preview_pages p ON p.id = d.page_id WHERE d.page_id = ? ORDER BY d.sort_order, d.id`).all(pageId);
-    const rows = db.prepare(`SELECT pa.asset_id AS assetId FROM preview_page_assets pa JOIN assets a ON a.id = pa.asset_id WHERE pa.page_id = ? AND a.deleted_at IS NULL`).all(pageId);
+    const rows = db.prepare(`SELECT pa.asset_id AS assetId, pa.pinned FROM preview_page_assets pa JOIN assets a ON a.id = pa.asset_id WHERE pa.page_id = ? AND a.deleted_at IS NULL`).all(pageId);
     const values = db.prepare("SELECT asset_id AS assetId, dimension_id AS dimensionId, value, last_rev AS lastRev FROM preview_dimension_values WHERE page_id = ?").all(pageId);
     const map = new Map(rows.map(({ assetId }) => [assetId, {}]));
     const revMap = new Map(rows.map(({ assetId }) => [assetId, {}]));
@@ -142,9 +145,19 @@ export async function handlePreviewPages(request, { db }) {
       id: page.id, projectId, name: page.name,
       selectedIds: JSON.parse(page.selected_axes).filter((id) => dimensions.some((d) => d.id === id)),
       dimensions,
-      assets: rows.map(({ assetId }) => ({ assetId, dimensionValues: map.get(assetId), valueRevs: revMap.get(assetId) })),
+      assets: rows.map(({ assetId, pinned }) => ({ assetId, pinned: Boolean(pinned), dimensionValues: map.get(assetId), valueRevs: revMap.get(assetId) })),
       revision: page.revision,
     } });
+  }
+  if (path === "/api/preview-page-assets" && method === "PATCH") {
+    const assetId = clean(payload.assetId);
+    if (!assetId || typeof payload.pinned !== "boolean") return bad("固定状态格式不正确");
+    if (!db.prepare("SELECT 1 FROM preview_page_assets WHERE page_id = ? AND asset_id = ?").get(pageId, assetId)) return bad("素材不在当前 Page", 404);
+    transaction(db, () => {
+      db.prepare("UPDATE preview_page_assets SET pinned = ? WHERE page_id = ? AND asset_id = ?").run(payload.pinned ? 1 : 0, pageId, assetId);
+      db.prepare("UPDATE preview_pages SET revision = revision + 1 WHERE id = ?").run(pageId);
+    });
+    return Response.json({ ok: true, pinned: payload.pinned });
   }
   if (path === "/api/preview-page-assets" && method === "POST") {
     const ids = payload.assetIds;

@@ -1,25 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { gridCell, gridCellKey, gridClusterCell, gridClusterKey, gridDivisionsFor, gridMinimumSpacing, gridTicksFor, orderByViewDepth, orderStackGrid, orderStackMembers, PREVIEW_STACK_VISIBLE, previewAssetAspectRatio, stackPreviewMembers, zoomPanAtPointer } from "../src/previewGrid.ts";
-
-test("half-axis divisions start at 1 and grow by +1, so the whole axis always has an even cell count", () => {
-  let previous = 1;
-  for (let pixels = 1; pixels <= 20; pixels += .05) {
-    const divisions = gridDivisionsFor(pixels, 130, previous);
-    assert.ok(Number.isInteger(divisions));
-    assert.ok(divisions >= 1 && divisions <= 256);
-    assert.ok(divisions >= previous && divisions - previous <= 1);
-    assert.equal(divisions * 2, (divisions * 2 / 2) * 2);
-    previous = divisions;
-  }
-  for (let pixels = 20; pixels >= 1; pixels -= .05) {
-    const divisions = gridDivisionsFor(pixels, 130, previous);
-    assert.ok(divisions <= previous && previous - divisions <= 1);
-    previous = divisions;
-  }
-  assert.equal(gridDivisionsFor(1, 130), 1);
-  assert.equal(gridDivisionsFor(1000, 130, 256), 256);
-});
+import { gridCell, gridCellKey, gridClusterCell, gridClusterKey, gridDivisionsForView, gridMinimumSpacing, gridTicksFor, orderByViewDepth, orderStackGrid, orderStackMembers, PREVIEW_DIVISION_LADDER, PREVIEW_STACK_VISIBLE, previewAssetAspectRatio, stackPreviewMembers, zoomPanAtPointer } from "../src/previewGrid.ts";
 
 test("zero is always a grid boundary and every half-axis is divided into n equal cells", () => {
   for (const divisions of [1, 2, 3, 4, 5, 7, 8, 11, 16, 32, 64, 128, 256]) {
@@ -94,18 +75,22 @@ test("stack positions and drop-target keys stay on their respective side of zero
   assert.deepEqual(gridTicksFor(2), [0, 250, 500, 750, 1000]);
 });
 
-test("initial half divisions keep the cell spacing inside the requested band", () => {
+test("half divisions use the fixed ladder and keep the cell spacing at least M", () => {
   const cases = [
-    [1.75, 130, 1], [2.5, 130, 1], [5, 130, 3], [5.145, 130, 3],
-    [10, 130, 7], [14.4, 130, 11], [10, 220, 4], [10, 85, 11],
+    [1000, .35, 130, 1],
+    [1000, .5, 130, 1],
+    [1000, 1, 130, 3],
+    [1000, 2, 130, 6],
+    [1000, 2.8, 130, 10],
+    [1000, 1, 220, 2],
+    [1000, 1, 85, 5],
   ];
-  for (const [pixels, spacing, expected] of cases) {
-    assert.equal(gridDivisionsFor(pixels, spacing), expected);
-    const cell = (100 / expected) * pixels;
+  for (const [scene, zoom, spacing, expected] of cases) {
+    assert.equal(gridDivisionsForView(scene, zoom, spacing), expected);
+    const cell = (100 / expected) * (scene * zoom / 200);
     assert.ok(cell >= spacing);
-    if (expected > 1) assert.ok(cell <= spacing * 2);
   }
-  assert.equal(gridDivisionsFor(750 / 200 * .55, gridMinimumSpacing([], 2, 1.35, .55)), 1);
+  assert.equal(gridDivisionsForView(750 * .55, 1, gridMinimumSpacing([], 2, 1.35, .55)), 1);
 });
 
 test("half divisions stay equal and axis-aligned at every level", () => {
@@ -126,7 +111,10 @@ test("the coarsest grid is one cell per half-axis; the finest is 256", () => {
   assert.deepEqual(gridTicksFor(1), [0, 500, 1000]);
   assert.deepEqual(gridCell(500, 1), { index: 0, min: 500, max: 1000, center: 750 });
   assert.deepEqual(gridCell(0, 1), { index: 0, min: 0, max: 500, center: 250 });
-  assert.equal(gridDivisionsFor(1000, 130, 256), 256);
+  assert.equal(gridDivisionsForView(1000, .35, 1000), 1);
+  assert.equal(gridDivisionsForView(100000, 2.8, 1), 256);
+  assert.equal(gridDivisionsForView(0, 1, 130), 1);
+  assert.equal(gridDivisionsForView(1000, 0, 130), 1);
   assert.equal(gridTicksFor(256).length, 513);
   assert.ok(Math.abs(gridTicksFor(256)[256] - 500) < 1e-9);
 });
@@ -154,44 +142,66 @@ test("ordinary zoom uses the same axis-anchored divisions", () => {
   assert.equal(gridCellKey([249], 1), gridCellKey([300], 1));
 });
 
-test("density adapts to both zoom and viewport size using the image footprint", () => {
-  let previous = 1;
-  const result = [];
-  for (const zoom of [.35, .5, 1, 2, 2.8]) {
-    previous = gridDivisionsFor(1000 * zoom / 200, 130, previous);
-    result.push(previous);
-  }
-  assert.deepEqual(result, [1, 1, 2, 4, 5]);
-  assert.equal(gridDivisionsFor(1000 / 200, 130, 3), 3);
+test("density is a pure function of the current view, not the zoom history", () => {
+  const zooms = [.35, .5, 1, 2, 2.8];
+  const forward = zooms.map((zoom) => gridDivisionsForView(1000, zoom, 130));
+  const backward = [...zooms].reverse().map((zoom) => gridDivisionsForView(1000, zoom, 130)).reverse();
+  assert.deepEqual(forward, [1, 1, 3, 6, 10]);
+  assert.deepEqual(backward, forward);
+  // Reaching 100% from below or from above both give the same n.
+  assert.equal(gridDivisionsForView(1000, 1, 130), 3);
+  // Image-scale round trip returns to the initial n.
+  const initial = gridDivisionsForView(1000, 1, gridMinimumSpacing([], 2, 1));
+  const large = gridDivisionsForView(1000, 1, gridMinimumSpacing([], 2, 2));
+  const restored = gridDivisionsForView(1000, 1, gridMinimumSpacing([], 2, 1));
+  assert.equal(initial, 3);
+  assert.equal(large, 2);
+  assert.equal(restored, initial);
 });
 
-test("half divisions move by one level at a time around the spacing thresholds", () => {
-  assert.equal(gridDivisionsFor(5, 100, 5), 5);
-  assert.equal(gridDivisionsFor(5.5, 100, 5), 5);
-  assert.equal(gridDivisionsFor(12.1, 100, 5), 6);
-  assert.equal(gridDivisionsFor(4.9, 100, 5), 4);
-  let previous = 5;
-  for (const pixels of [5, 6, 7, 8, 9, 10, 11, 12]) {
-    const next = gridDivisionsFor(pixels, 100, previous);
-    assert.ok(next >= previous && next - previous <= 1);
-    previous = next;
+test("half divisions change only at ladder boundaries and quantize zoom to 1%", () => {
+  assert.equal(gridDivisionsForView(1000, 1.004, 130), gridDivisionsForView(1000, 1, 130));
+  assert.equal(gridDivisionsForView(1000, 1.006, 130), gridDivisionsForView(1000, 1.01, 130));
+  const base = gridDivisionsForView(1000, 1, 130);
+  for (const delta of [-.004, -.003, -.002, -.001, 0, .001, .002, .003, .004]) {
+    assert.equal(gridDivisionsForView(1000, 1 + delta, 130), base);
+  }
+  // A larger change crosses the ladder boundary and moves n.
+  assert.notEqual(gridDivisionsForView(1000, 1.2, 130), base);
+});
+
+test("large resize changes can jump multiple ladder levels without carrying history", () => {
+  const small = gridDivisionsForView(620, 1, 130);
+  const large = gridDivisionsForView(2600, 1, 130);
+  assert.equal(small, 2);
+  assert.equal(large, 10);
+  assert.ok(large - small > 1);
+  assert.equal(gridDivisionsForView(620, 1, 130), small);
+  for (const scene of [620, 1000, 2600]) {
+    const n = gridDivisionsForView(scene, 1, 130);
+    const cell = (100 / n) * (scene / 200);
+    if (n > 1 && n < 256) assert.ok(cell >= 130);
   }
 });
 
-test("large resize changes can move several levels but stay in the equal grid", () => {
-  const divisions = gridDivisionsFor(40, 144, 80);
-  assert.equal(divisions, 27);
-  assert.equal(gridDivisionsFor(.5, 144, divisions), 1);
-  for (const step of [144, 264, 84]) {
-    let previous;
-    for (const pixels of [1, 2, 5, 10, 20, 40, 20, 10, 5, 2, 1]) {
-      const next = gridDivisionsFor(pixels, step, previous);
-      const cell = (100 / next) * pixels;
-      if (next > 1 && next < 256) {
-        assert.ok(cell >= step);
-        assert.ok(cell <= step * 2.4);
+test("half divisions always come from the fixed ladder and stay within 1..256", () => {
+  const ladder = new Set(PREVIEW_DIVISION_LADDER);
+  for (const scene of [0, 1, 200, 620, 800, 1000, 1300, 2000, 5000]) {
+    for (const zoom of [.35, .5, 1, 1.37, 2, 2.8]) {
+      for (const spacing of [1, 85, 130, 144, 220, 400]) {
+        const n = gridDivisionsForView(scene, zoom, spacing);
+        assert.ok(ladder.has(n));
+        assert.ok(n >= 1 && n <= 256);
+        if (scene > 0) {
+          const quantizedZoom = Math.round(zoom * 100) / 100;
+          const ppu = scene * quantizedZoom / 200;
+          const target = 100 * ppu / spacing;
+          if (target >= 1 && n < 256) {
+            const cell = (100 / n) * ppu;
+            assert.ok(cell >= spacing - 1e-9, `cell ${cell} < M ${spacing} (scene ${scene}, zoom ${zoom})`);
+          }
+        }
       }
-      previous = next;
     }
   }
 });
@@ -260,12 +270,13 @@ test("normal image proportions and stack overhang determine spacing, including s
 
 test("larger pictures coarsen the grid and smaller pictures allow finer cells", () => {
   const spacing = (scale) => gridMinimumSpacing([{ width: 3, height: 4 }], 2, scale);
-  const normal = gridDivisionsFor(10, spacing(1));
-  const large = gridDivisionsFor(10, spacing(2), normal);
-  const small = gridDivisionsFor(10, spacing(.5), large);
-  assert.equal(normal, 6);
-  assert.equal(large, 3);
-  assert.ok(small > large);
+  const normal = gridDivisionsForView(1000, 1, spacing(1));
+  const large = gridDivisionsForView(1000, 1, spacing(2));
+  const small = gridDivisionsForView(1000, 1, spacing(.5));
+  assert.equal(normal, 3);
+  assert.equal(large, 1);
+  assert.equal(small, 5);
+  assert.ok(small > normal && normal > large);
 });
 
 test("boundaries belong to one cell, with +100 in the final cell", () => {

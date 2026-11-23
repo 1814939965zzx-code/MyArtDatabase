@@ -86,6 +86,15 @@ test("Page 素材与维度独立，边界校验、轴持久化、移除及级联
     await call("preview-values", "PATCH", data(b.id, { assetId: "asset-01", values: { [dimension.id]: 870 } }));
     assert.deepEqual(await get(initial.id), aBefore, "同一素材在 B 改坐标不能影响 A");
     assert.equal((await get(b.id)).assets.find((a) => a.assetId === "asset-01").dimensionValues[dimension.id], 870);
+    const pinRevision = (await get(b.id)).revision;
+    assert.equal((await call("preview-page-assets", "PATCH", data(b.id, { assetId: "asset-01", pinned: true }))).status, 200);
+    const pinnedPage = await get(b.id);
+    assert.equal(pinnedPage.assets.find((a) => a.assetId === "asset-01").pinned, true);
+    assert.ok(pinnedPage.revision > pinRevision);
+    assert.equal((await call("preview-page-assets", "PATCH", data(b.id, { assetId: "asset-03", pinned: true }))).status, 404);
+    assert.equal((await call("preview-page-assets", "PATCH", data(b.id, { assetId: "asset-01", pinned: "yes" }))).status, 400);
+    assert.equal((await call("preview-page-assets", "PATCH", data(b.id, { assetId: "asset-01", pinned: false }))).status, 200);
+    assert.equal((await get(b.id)).assets.find((a) => a.assetId === "asset-01").pinned, false);
     assert.equal((await call("preview-values", "PATCH", data(initial.id, { assetId: "asset-01", values: { [dimension.id]: 1 } }))).status, 404);
     assert.equal((await call("preview-values", "PATCH", data(b.id, { assetId: "asset-03", values: { [dimension.id]: 1 } }))).status, 404);
     for (const value of [-1, 1001, 0.5, "500"]) assert.equal((await call("preview-values", "PATCH", data(b.id, { assetId: "asset-01", values: { [dimension.id]: value } }))).status, 400);

@@ -505,6 +505,34 @@
     isolation: isolate;
   }
 
+  /* hover 右侧竖排操作：关闭 hover / 固定（不参与聚堆）；每个按钮独立的圆形底 */
+  .hover-actions {
+    position: absolute;
+    z-index: 2100;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    pointer-events: auto;
+  }
+
+  /* 已固定素材的常驻标记；不参与景深/hover 压暗 */
+  .preview-pin-badge {
+    position: absolute;
+    right: -6px;
+    top: -6px;
+    z-index: 7;
+    display: grid;
+    place-items: center;
+    width: 17px;
+    height: 17px;
+    border: 1px solid var(--color-line);
+    border-radius: 999px;
+    background: var(--color-surface);
+    color: var(--color-sage-deep);
+    box-shadow: 0 2px 6px rgb(0 0 0 / 12%);
+    pointer-events: none;
+  }
+
   .hover-preview .preview-asset-face {
     --persp: 1;
     --billboard-rx: 0deg;
@@ -800,8 +828,22 @@
   }
 
   .dimension-scene.mode-3 .stack-plane-card { cursor: default; }
-  .stack-plane-card:hover { z-index: 10; }
+  .stack-plane-card.is-hovered { z-index: 10; }
 
+  /* 展开平面卡片上的固定按钮：只在卡片 hover/聚焦时出现，透明底 */
+  .stack-plane-card .plane-card-pin {
+    position: absolute;
+    z-index: 4;
+    opacity: 0;
+    transition: opacity 0.15s ease;
+    pointer-events: none;
+  }
+
+  .stack-plane-card:focus-within .plane-card-pin,
+  .stack-plane-card .plane-card-pin.is-visible {
+    opacity: 1;
+    pointer-events: auto;
+  }
   .stack-plane-card.dragging {
     z-index: 20;
     cursor: grabbing;
@@ -829,8 +871,8 @@
     font-style: normal;
   }
 
-  .stack-plane-card:hover img,
-  .stack-plane-card:hover > i {
+  .stack-plane-card.is-hovered img,
+  .stack-plane-card.is-hovered > i {
     transform: scale3d(1.86, 1.86, 1.86);
   }
 
@@ -841,7 +883,7 @@
     transition: bottom var(--preview-hover-duration) ease, opacity var(--preview-hover-duration) ease, visibility 0s linear var(--preview-hover-duration);
   }
 
-  .stack-plane-card:hover .preview-value-tags {
+  .stack-plane-card.is-hovered .preview-value-tags {
     visibility: visible;
     opacity: 1;
     bottom: calc(100% + 43% + 5px);
@@ -858,8 +900,8 @@
     cursor: grabbing;
   }
 
-  .dimension-scene.view-panning .stack-plane-card:hover img,
-  .dimension-scene.view-panning .stack-plane-card:hover > i {
+  .dimension-scene.view-panning .stack-plane-card.is-hovered img,
+  .dimension-scene.view-panning .stack-plane-card.is-hovered > i {
     transform: none;
   }
 

@@ -10,7 +10,7 @@ export type PageDimension = { id: string; projectId: string; pageId: string; lef
 export type PreviewPage = {
   id: string; projectId: string; name: string; selectedIds: string[];
   dimensions: PageDimension[];
-  assets: { assetId: string; dimensionValues: Record<string, number>; valueRevs?: Record<string, number> }[];
+  assets: { assetId: string; pinned?: boolean; dimensionValues: Record<string, number>; valueRevs?: Record<string, number> }[];
   revision?: number;
 };
 type Asset = { id: string; name: string; fileName: string; tags: string[]; thumbnailUrl: string | null; width: number; height: number };
@@ -128,9 +128,37 @@ export function DimensionPages({ projectId, assets, page, onPageChange, onReceiv
     void apiFetch(`/api/preview-pages?projectId=${encodeURIComponent(projectId)}&pageId=${encodeURIComponent(pending.page.id)}`, { method: "DELETE" });
   }, [projectId]);
   const pageAssets = useMemo(() => {
-    const map = new Map((current?.assets ?? []).map((a) => [a.assetId, a.dimensionValues]));
-    return assets.filter((a) => map.has(a.id)).map((a) => ({ ...a, dimensionValues: map.get(a.id)! }));
+    const map = new Map((current?.assets ?? []).map((a) => [a.assetId, a]));
+    return assets.filter((a) => map.has(a.id)).map((a) => {
+      const pageAsset = map.get(a.id)!;
+      return { ...a, dimensionValues: pageAsset.dimensionValues, pinned: pageAsset.pinned };
+    });
   }, [assets, current]);
+
+  async function togglePin(assetId: string, pinned: boolean) {
+    if (!current || readOnly) return;
+    const page = current;
+    const next = {
+      ...page,
+      assets: page.assets.map((asset) => asset.assetId === assetId ? { ...asset, pinned } : asset),
+    };
+    onPageChange(next);
+    try {
+      await apiFetch("/api/preview-page-assets", {
+        method: "PATCH",
+        body: JSON.stringify({ projectId, pageId: page.id, assetId, pinned }),
+      });
+    } catch {
+      const latest = pageRef.current;
+      if (latest?.id === page.id) {
+        onPageChange({
+          ...latest,
+          assets: latest.assets.map((asset) => asset.assetId === assetId ? { ...asset, pinned: !pinned } : asset),
+        });
+      }
+      onMessage("固定状态保存失败，请重试");
+    }
+  }
   const existingIds = useMemo(() => new Set(current?.assets.map((a) => a.assetId)), [current]);
   const allTags = useMemo(() => [...new Set(assets.flatMap((a) => a.tags))], [assets]);
   const filtered = assets.filter((a) => (!search.trim() || [a.name, a.fileName, ...a.tags].some((s) => s.toLocaleLowerCase().includes(search.trim().toLocaleLowerCase()))) && (!tags.length || a.tags.some((t) => tags.includes(t))));
@@ -363,6 +391,7 @@ export function DimensionPages({ projectId, assets, page, onPageChange, onReceiv
             onSelectedIdsChange={selectAxes}
             onSelectAsset={onSelectAsset}
             onUpdateAssetDimensions={onUpdateAssetDimensions}
+            onTogglePin={togglePin}
             syncStatus={syncStatus}
             onRetrySync={onRetrySync}
             onAddDimension={onAddDimension}
