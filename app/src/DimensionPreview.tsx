@@ -2478,7 +2478,7 @@ export function DimensionPreview({
                         )}
                       </span>
                       {asset.pinned ? (
-                        <span className="preview-pin-badge" aria-hidden="true"><Pin size={10} aria-hidden /></span>
+                        <span className="preview-pin-badge" aria-hidden="true"><Pin size={10} fill="currentColor" aria-hidden /></span>
                       ) : null}
                       {draggingAssetId === asset.id ? (
                         <span className="preview-value-tag-layer">{valueTagsOf(values)}</span>
@@ -2553,7 +2553,7 @@ export function DimensionPreview({
                         title={hoveredAsset.pinned ? "取消固定" : "固定：不参与自动聚堆"}
                         onClick={() => { void onTogglePin?.(hoveredAsset.id, !hoveredAsset.pinned); }}
                       >
-                        <Pin size={14} aria-hidden />
+                        <Pin size={14} fill={hoveredAsset.pinned ? "currentColor" : "none"} aria-hidden />
                       </IconButton>
                     ) : null}
                   </div>
@@ -2677,7 +2677,7 @@ export function DimensionPreview({
                                   void onTogglePin?.(member.id, !member.pinned);
                                 }}
                               >
-                                <Pin size={13} aria-hidden />
+                                <Pin size={13} fill={member.pinned ? "currentColor" : "none"} aria-hidden />
                               </IconButton>
                             ) : null}
                           </div>
