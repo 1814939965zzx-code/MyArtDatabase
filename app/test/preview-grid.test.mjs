@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { gridCell, gridCellKey, gridClusterCell, gridClusterKey, gridDivisionsForView, gridMinimumSpacing, gridTicksFor, orderByViewDepth, orderStackGrid, orderStackMembers, PREVIEW_DIVISION_LADDER, PREVIEW_STACK_VISIBLE, previewAssetAspectRatio, stackPreviewMembers, zoomPanAtPointer } from "../src/previewGrid.ts";
+import { gridCell, gridCellKey, gridClusterCell, gridClusterKey, gridDivisionsForView, gridMinimumSpacing, gridTicksFor, orderByViewDepth, orderLikedFirst, orderStackGrid, orderStackMembers, PREVIEW_DIVISION_LADDER, PREVIEW_STACK_VISIBLE, previewAssetAspectRatio, stackPreviewMembers, stackScreenOverhang, zoomPanAtPointer } from "../src/previewGrid.ts";
 
 test("zero is always a grid boundary and every half-axis is divided into n equal cells", () => {
   for (const divisions of [1, 2, 3, 4, 5, 7, 8, 11, 16, 32, 64, 128, 256]) {
@@ -208,11 +208,11 @@ test("half divisions always come from the fixed ladder and stay within 1..256", 
 
 test("collapsed stacks keep a stable thumbnail subset while the camera rotates", () => {
   const members = ["a", "b", "c", "d", "e"];
-  assert.equal(PREVIEW_STACK_VISIBLE, 4);
-  assert.deepEqual(stackPreviewMembers(members), ["a", "b", "c", "d"]);
+  assert.equal(PREVIEW_STACK_VISIBLE, 1);
+  assert.deepEqual(stackPreviewMembers(members), ["a"]);
   // The helper never consults view depth, so repeated calls with the same member order stay identical.
   assert.deepEqual(stackPreviewMembers(members), stackPreviewMembers([...members]));
-  assert.deepEqual(stackPreviewMembers(["a", "b"]), ["a", "b"]);
+  assert.deepEqual(stackPreviewMembers(["a", "b"]), ["a"]);
   assert.deepEqual(stackPreviewMembers([]), []);
 });
 
@@ -311,4 +311,49 @@ test("tick boundaries exactly bound every cell and every level keeps an even who
       assert.ok(cell.center >= cell.min && cell.center <= cell.max);
     }
   }
+});
+
+
+test("Like priority chooses the cover and preserves spatial/depth order within each group", () => {
+  const members = [{ id: "a", x: 10, y: 10 }, { id: "b", x: 20, y: 10, liked: true },
+    { id: "c", x: 30, y: 20 }, { id: "d", x: 40, y: 20, liked: true }];
+  const base = orderStackGrid(members, 2, (m) => m.x, (m) => m.y);
+  const liked = orderLikedFirst(base);
+  assert.deepEqual(liked.map((m) => m.id), ["b", "d", "a", "c"]);
+  assert.equal(stackPreviewMembers(liked)[0].id, "b");
+  assert.deepEqual(base.map((m) => m.id), ["a", "b", "c", "d"], "priority must not mutate the spatial order");
+  const unliked = members.map((m) => ({ ...m, liked: false }));
+  assert.deepEqual(orderLikedFirst(unliked).map((m) => m.id), ["a", "b", "c", "d"]);
+  const depth = orderByViewDepth(members, (m) => m.x);
+  assert.deepEqual(orderLikedFirst(depth).map((m) => m.id), ["d", "b", "c", "a"]);
+});
+
+
+test("fan stack spacing reserves its visible edges across image and scene scales", () => {
+  const assets = [{ width: 100, height: 100 }, { width: 100, height: 100 }];
+  for (const scale of [.5, .7, 1, 1.5, 2]) {
+    for (const zoom of [.25, .5, 1, 2, 4]) {
+      assert.ok(gridMinimumSpacing(assets, 2, scale, zoom) >= 90 * scale + 2 * stackScreenOverhang(scale) + 24);
+    }
+  }
+});
+
+
+test("portrait fan stacks reserve height as well as width", () => {
+  const assets = [{ width: 3, height: 4 }, { width: 1, height: 1 }];
+  for (const scale of [.5, .7, 1, 1.5, 2]) {
+    assert.ok(gridMinimumSpacing(assets, 2, scale) >= 120 * scale + 2 * stackScreenOverhang(scale) + 24);
+  }
+});
+
+test("ratings choose a stable cover across regrouping and break ties by explicit scoring order", () => {
+  const members = [{ id: "a", likeRating: 4, likeOrder: 8 }, { id: "b", likeRating: 5, likeOrder: 2 },
+    { id: "c", likeRating: 5, likeOrder: 9 }, { id: "d", likeRating: 0, likeOrder: 99 }];
+  const original = [...members];
+  for (const base of [members, [...members].reverse(), [members[2], members[0], members[3], members[1]]]) {
+    assert.deepEqual(orderLikedFirst(base).map((m) => m.id), ["c", "b", "a", "d"]);
+    assert.equal(stackPreviewMembers(orderLikedFirst(base))[0].id, "c");
+  }
+  assert.deepEqual(members, original);
+  assert.deepEqual(orderLikedFirst(members.filter((m) => m.id !== "c")).map((m) => m.id), ["b", "a", "d"]);
 });

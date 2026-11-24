@@ -30,6 +30,9 @@ export function migratePreviewPages(db) {
       project_id TEXT NOT NULL,
       asset_id TEXT NOT NULL,
       pinned INTEGER NOT NULL DEFAULT 0,
+      liked INTEGER NOT NULL DEFAULT 0,
+      like_rating INTEGER NOT NULL DEFAULT 0,
+      like_order INTEGER NOT NULL DEFAULT 0,
       PRIMARY KEY(page_id, asset_id),
       FOREIGN KEY(page_id, project_id) REFERENCES preview_pages(id, project_id) ON DELETE CASCADE,
       FOREIGN KEY(project_id, asset_id) REFERENCES project_assets(project_id, asset_id) ON DELETE CASCADE
@@ -62,6 +65,14 @@ export function migratePreviewPages(db) {
     if (!valueColumns.includes("last_rev")) db.exec("ALTER TABLE preview_dimension_values ADD COLUMN last_rev INTEGER NOT NULL DEFAULT 0");
     const pageAssetColumns = db.prepare("PRAGMA table_info(preview_page_assets)").all().map((column) => column.name);
     if (!pageAssetColumns.includes("pinned")) db.exec("ALTER TABLE preview_page_assets ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0");
+    if (!pageAssetColumns.includes("liked")) db.exec("ALTER TABLE preview_page_assets ADD COLUMN liked INTEGER NOT NULL DEFAULT 0");
+    if (!pageAssetColumns.includes("like_rating")) {
+      transaction(db, () => {
+        db.exec("ALTER TABLE preview_page_assets ADD COLUMN like_rating INTEGER NOT NULL DEFAULT 0");
+        db.exec("UPDATE preview_page_assets SET like_rating = 1 WHERE liked = 1");
+      });
+    }
+    if (!pageAssetColumns.includes("like_order")) db.exec("ALTER TABLE preview_page_assets ADD COLUMN like_order INTEGER NOT NULL DEFAULT 0");
   }
   if (db.prepare("PRAGMA user_version").get().user_version >= 9) return;
   transaction(db, () => {
@@ -132,7 +143,7 @@ export async function handlePreviewPages(request, { db }) {
   if (path === "/api/preview-page" && method === "GET") {
     const dimensions = db.prepare(`SELECT d.id, p.project_id AS projectId, d.page_id AS pageId, d.left_label AS leftLabel, d.right_label AS rightLabel, d.sort_order AS sortOrder
       FROM preview_dimensions d JOIN preview_pages p ON p.id = d.page_id WHERE d.page_id = ? ORDER BY d.sort_order, d.id`).all(pageId);
-    const rows = db.prepare(`SELECT pa.asset_id AS assetId, pa.pinned FROM preview_page_assets pa JOIN assets a ON a.id = pa.asset_id WHERE pa.page_id = ? AND a.deleted_at IS NULL`).all(pageId);
+    const rows = db.prepare(`SELECT pa.asset_id AS assetId, pa.pinned, pa.liked, pa.like_rating AS likeRating, pa.like_order AS likeOrder FROM preview_page_assets pa JOIN assets a ON a.id = pa.asset_id WHERE pa.page_id = ? AND a.deleted_at IS NULL`).all(pageId);
     const values = db.prepare("SELECT asset_id AS assetId, dimension_id AS dimensionId, value, last_rev AS lastRev FROM preview_dimension_values WHERE page_id = ?").all(pageId);
     const map = new Map(rows.map(({ assetId }) => [assetId, {}]));
     const revMap = new Map(rows.map(({ assetId }) => [assetId, {}]));
@@ -145,19 +156,37 @@ export async function handlePreviewPages(request, { db }) {
       id: page.id, projectId, name: page.name,
       selectedIds: JSON.parse(page.selected_axes).filter((id) => dimensions.some((d) => d.id === id)),
       dimensions,
-      assets: rows.map(({ assetId, pinned }) => ({ assetId, pinned: Boolean(pinned), dimensionValues: map.get(assetId), valueRevs: revMap.get(assetId) })),
+      assets: rows.map(({ assetId, pinned, liked, likeRating, likeOrder }) => ({ assetId, pinned: Boolean(pinned), liked: Boolean(liked), likeRating, likeOrder, dimensionValues: map.get(assetId), valueRevs: revMap.get(assetId) })),
       revision: page.revision,
     } });
   }
   if (path === "/api/preview-page-assets" && method === "PATCH") {
     const assetId = clean(payload.assetId);
-    if (!assetId || typeof payload.pinned !== "boolean") return bad("固定状态格式不正确");
+    const hasPin = payload.pinned !== undefined;
+    const hasLike = payload.liked !== undefined;
+    const hasRating = payload.likeRating !== undefined;
+    if (!assetId || !(hasPin || hasLike || hasRating)
+      || (hasPin && typeof payload.pinned !== "boolean") || (hasLike && typeof payload.liked !== "boolean")
+      || (hasRating && (!Number.isInteger(payload.likeRating) || payload.likeRating < 0 || payload.likeRating > 5))
+      || (hasLike && hasRating && payload.liked !== (payload.likeRating > 0))) return bad("素材标记格式不正确");
     if (!db.prepare("SELECT 1 FROM preview_page_assets WHERE page_id = ? AND asset_id = ?").get(pageId, assetId)) return bad("素材不在当前 Page", 404);
-    transaction(db, () => {
-      db.prepare("UPDATE preview_page_assets SET pinned = ? WHERE page_id = ? AND asset_id = ?").run(payload.pinned ? 1 : 0, pageId, assetId);
+    const result = transaction(db, () => {
+      const updated = {};
+      if (hasPin) {
+        db.prepare("UPDATE preview_page_assets SET pinned = ? WHERE page_id = ? AND asset_id = ?").run(payload.pinned ? 1 : 0, pageId, assetId);
+        updated.pinned = payload.pinned;
+      }
+      if (hasLike || hasRating) {
+        const rating = hasRating ? payload.likeRating : (payload.liked ? 1 : 0);
+        // Page 内单调序号：同分按最后一次主动评分排序，避免时钟精度和客户端时间差。
+        const order = rating ? db.prepare("SELECT COALESCE(MAX(like_order), 0) + 1 AS next FROM preview_page_assets WHERE page_id = ?").get(pageId).next : 0;
+        db.prepare("UPDATE preview_page_assets SET liked = ?, like_rating = ?, like_order = ? WHERE page_id = ? AND asset_id = ?").run(rating > 0 ? 1 : 0, rating, order, pageId, assetId);
+        Object.assign(updated, { liked: rating > 0, likeRating: rating, likeOrder: order });
+      }
       db.prepare("UPDATE preview_pages SET revision = revision + 1 WHERE id = ?").run(pageId);
+      return updated;
     });
-    return Response.json({ ok: true, pinned: payload.pinned });
+    return Response.json({ ok: true, ...result });
   }
   if (path === "/api/preview-page-assets" && method === "POST") {
     const ids = payload.assetIds;

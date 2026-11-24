@@ -10,7 +10,7 @@ export type PageDimension = { id: string; projectId: string; pageId: string; lef
 export type PreviewPage = {
   id: string; projectId: string; name: string; selectedIds: string[];
   dimensions: PageDimension[];
-  assets: { assetId: string; pinned?: boolean; dimensionValues: Record<string, number>; valueRevs?: Record<string, number> }[];
+  assets: { assetId: string; pinned?: boolean; liked?: boolean; likeRating?: number; likeOrder?: number; dimensionValues: Record<string, number>; valueRevs?: Record<string, number> }[];
   revision?: number;
 };
 type Asset = { id: string; name: string; fileName: string; tags: string[]; thumbnailUrl: string | null; width: number; height: number };
@@ -57,6 +57,7 @@ export function DimensionPages({ projectId, assets, page, onPageChange, onReceiv
   statusRef.current = syncStatus;
   const pageRef = useRef(page);
   pageRef.current = page;
+  const flagSaves = useRef(new Map<string, { queue: Promise<void>; confirmed: { pinned?: boolean; liked?: boolean; likeRating?: number; likeOrder?: number }; version: number }>());
   const axesQueue = useRef<Promise<unknown>>(Promise.resolve());
 
   useEffect(() => {
@@ -74,7 +75,7 @@ export function DimensionPages({ projectId, assets, page, onPageChange, onReceiv
       const result = await apiFetch<{ page: PreviewPage }>(`/api/preview-page?projectId=${encodeURIComponent(projectId)}&pageId=${encodeURIComponent(id)}`);
       if (active) {
         // 交给 App 合并：未同步的坐标不会被这次拉取覆盖。
-        receiveRef.current(result.page);
+        if (!flagSaves.current.size) receiveRef.current(result.page);
         setLoading(false);
         try { localStorage.setItem(`artdatabase:preview-page:${projectId}`, id); } catch { /* optional preference */ }
       }
@@ -86,11 +87,11 @@ export function DimensionPages({ projectId, assets, page, onPageChange, onReceiv
   useEffect(() => {
     if (!pageId) return;
     const refresh = async () => {
-      if (statusRef.current !== "synced") return;
+      if (statusRef.current !== "synced" || flagSaves.current.size) return;
       if (document.visibilityState !== "visible") return;
       try {
         const result = await apiFetch<{ page: PreviewPage }>(`/api/preview-page?projectId=${encodeURIComponent(projectId)}&pageId=${encodeURIComponent(pageId)}`);
-        receiveRef.current(result.page);
+        if (!flagSaves.current.size) receiveRef.current(result.page);
       } catch { /* 兜底刷新失败不打断编辑 */ }
     };
     const timer = window.setInterval(() => { void refresh(); }, 30000);
@@ -131,33 +132,46 @@ export function DimensionPages({ projectId, assets, page, onPageChange, onReceiv
     const map = new Map((current?.assets ?? []).map((a) => [a.assetId, a]));
     return assets.filter((a) => map.has(a.id)).map((a) => {
       const pageAsset = map.get(a.id)!;
-      return { ...a, dimensionValues: pageAsset.dimensionValues, pinned: pageAsset.pinned };
+      return { ...a, dimensionValues: pageAsset.dimensionValues, pinned: pageAsset.pinned, liked: pageAsset.liked, likeRating: pageAsset.likeRating, likeOrder: pageAsset.likeOrder };
     });
   }, [assets, current]);
 
-  async function togglePin(assetId: string, pinned: boolean) {
-    if (!current || readOnly) return;
-    const page = current;
-    const next = {
-      ...page,
-      assets: page.assets.map((asset) => asset.assetId === assetId ? { ...asset, pinned } : asset),
-    };
-    onPageChange(next);
-    try {
-      await apiFetch("/api/preview-page-assets", {
-        method: "PATCH",
-        body: JSON.stringify({ projectId, pageId: page.id, assetId, pinned }),
-      });
-    } catch {
+  // 同一素材的同一标记串行保存；旧请求失败不能回滚后续点击。
+  async function toggleAssetFlag(assetId: string, field: "pinned" | "likeRating", value: boolean | number) {
+    const page = pageRef.current;
+    if (!page || readOnly) return;
+    const asset = page.assets.find((entry) => entry.assetId === assetId);
+    if (!asset) return;
+    const key = `${page.id}:${assetId}:${field}`;
+    const save = flagSaves.current.get(key) ?? { queue: Promise.resolve(), confirmed: field === "pinned" ? { pinned: asset.pinned } : { liked: asset.liked, likeRating: asset.likeRating, likeOrder: asset.likeOrder }, version: 0 };
+    flagSaves.current.set(key, save);
+    const version = ++save.version;
+    const apply = (next: { pinned?: boolean; liked?: boolean; likeRating?: number; likeOrder?: number }) => {
       const latest = pageRef.current;
-      if (latest?.id === page.id) {
-        onPageChange({
-          ...latest,
-          assets: latest.assets.map((asset) => asset.assetId === assetId ? { ...asset, pinned: !pinned } : asset),
+      if (latest?.id !== page.id) return;
+      const updated = { ...latest, assets: latest.assets.map((entry) => entry.assetId === assetId ? { ...entry, ...next } : entry) };
+      pageRef.current = updated;
+      onPageChange(updated);
+    };
+    apply(field === "pinned" ? { pinned: Boolean(value) } : { liked: Number(value) > 0, likeRating: Number(value),
+      likeOrder: Number(value) > 0 ? Math.max(0, ...page.assets.map((entry) => entry.likeOrder ?? 0)) + 1 : 0 });
+    save.queue = save.queue.then(async () => {
+      try {
+        const result = await apiFetch<{ pinned?: boolean; liked?: boolean; likeRating?: number; likeOrder?: number }>("/api/preview-page-assets", {
+          method: "PATCH", body: JSON.stringify({ projectId, pageId: page.id, assetId, [field]: value }),
         });
+        save.confirmed = field === "pinned" ? { pinned: result.pinned } : { liked: result.liked, likeRating: result.likeRating, likeOrder: result.likeOrder };
+        if (save.version === version) apply(save.confirmed);
+      } catch {
+        if (save.version === version) {
+          apply(save.confirmed);
+          onMessage(`${field === "likeRating" ? "Like" : "固定"}状态保存失败，请重试`);
+        }
+      } finally {
+        if (save.version === version) flagSaves.current.delete(key);
       }
-      onMessage("固定状态保存失败，请重试");
-    }
+    });
+    await save.queue;
   }
   const existingIds = useMemo(() => new Set(current?.assets.map((a) => a.assetId)), [current]);
   const allTags = useMemo(() => [...new Set(assets.flatMap((a) => a.tags))], [assets]);
@@ -391,7 +405,8 @@ export function DimensionPages({ projectId, assets, page, onPageChange, onReceiv
             onSelectedIdsChange={selectAxes}
             onSelectAsset={onSelectAsset}
             onUpdateAssetDimensions={onUpdateAssetDimensions}
-            onTogglePin={togglePin}
+            onTogglePin={(id, value) => toggleAssetFlag(id, "pinned", value)}
+            onRateLike={(id, value) => toggleAssetFlag(id, "likeRating", value)}
             syncStatus={syncStatus}
             onRetrySync={onRetrySync}
             onAddDimension={onAddDimension}

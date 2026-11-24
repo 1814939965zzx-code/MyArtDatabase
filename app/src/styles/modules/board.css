@@ -5,7 +5,7 @@
 
 @layer components {
   .board-shell {
-    margin: 22px 42px 0;
+    margin: 22px var(--workspace-gutter, 42px) 0;
     min-height: 650px;
     border: 1px solid var(--color-line);
     background: var(--color-surface);
@@ -300,8 +300,8 @@
 
   @media (max-width: 1180px) {
     .board-shell {
-      margin-left: 24px;
-      margin-right: 24px;
+      margin-left: var(--workspace-gutter, 24px);
+      margin-right: var(--workspace-gutter, 24px);
     }
   }
 

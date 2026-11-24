@@ -3,13 +3,14 @@
 import { Aperture, Box, Bug, Images, Layers, Maximize2, Minimize2, Minus, MousePointer2, Pencil, Pin, Plus, RotateCcw, X } from "lucide-react";
 import { CSSProperties, PointerEvent, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Button, EmptyState, IconButton, RangeSlider, SyncStatusDot, TagLabel, cn } from "./ui";
+import { PreviewLikeButton } from "./PreviewLikeButton";
 import { useViewportGestures } from "./useViewportGestures";
 import { displayDimensionValue } from "./dimensionScale";
-import { gridClusterCell, gridClusterKey, gridDivisionsForView, gridMinimumSpacing, gridTicksFor, orderByViewDepth, orderStackGrid, orderStackMembers, PREVIEW_ASSET_WIDTH, previewAssetAspectRatio as aspectRatioFor, stackPreviewMembers, zoomPanAtPointer } from "./previewGrid";
+import { gridClusterCell, gridClusterKey, gridDivisionsForView, gridMinimumSpacing, gridTicksFor, orderLikedFirst, orderByViewDepth, orderStackGrid, orderStackMembers, PREVIEW_ASSET_WIDTH, previewAssetAspectRatio as aspectRatioFor, stackPreviewMembers, stackScreenOverhang, zoomPanAtPointer } from "./previewGrid";
 import { autoAssetScaleForViewport, readPreviewScalePreference, writePreviewScalePreference, type PreviewScalePreference } from "./previewScale";
 
 type Dimension = { id: string; leftLabel: string; rightLabel: string };
-type Asset = { id: string; name: string; thumbnailUrl: string | null; dimensionValues: Record<string, number>; width?: number; height?: number; pinned?: boolean };
+type Asset = { id: string; name: string; thumbnailUrl: string | null; dimensionValues: Record<string, number>; width?: number; height?: number; pinned?: boolean; liked?: boolean; likeRating?: number; likeOrder?: number };
 type CameraDrag = { pointerId: number; startX: number; startY: number; rotateX: number; rotateZ: number; assetId?: string; moved: boolean };
 type ViewPan = { pointerId: number; startX: number; startY: number; panX: number; panY: number };
 type AxisSign = -1 | 1;
@@ -221,6 +222,7 @@ export function DimensionPreview({
   onSelectAsset,
   onUpdateAssetDimensions,
   onTogglePin,
+  onRateLike,
   onAddDimension,
   onEditDimension,
   selectedIds,
@@ -235,6 +237,7 @@ export function DimensionPreview({
   onSelectAsset: (assetId: string, navigation?: string[] | null) => void;
   onUpdateAssetDimensions: (assetId: string, values: Record<string, number>) => Promise<boolean>;
   onTogglePin?: (assetId: string, pinned: boolean) => void | Promise<void>;
+  onRateLike?: (assetId: string, rating: number) => void | Promise<void>;
   onAddDimension: () => void;
   onEditDimension: (dimension: Dimension) => void;
   selectedIds: string[];
@@ -572,6 +575,7 @@ export function DimensionPreview({
     const clusterKey = clusterOf.get(assetId);
     const cluster = clusterKey ? clusters.find((candidate) => candidate.key === clusterKey) : null;
     if (!cluster || cluster.members.length < 2) return null;
+    if (planeClusterRef.current?.key === cluster.key) return planeClusterRef.current.members.map((member) => member.id);
     const members = mode === 2
       ? orderStackGrid(
         cluster.members,
@@ -580,7 +584,7 @@ export function DimensionPreview({
         (member) => effectiveDimensionValue(member, selected[1].id),
       )
       : cluster.members;
-    return members.map((member) => member.id);
+    return orderLikedFirst(members).map((member) => member.id);
   }
   function octantNames(octant: Octant): string[] {
     // 切回 1D/2D 时可能还残留 3D 的选中象限，缺少第三个维度就退回空名，避免读取 undefined
@@ -723,7 +727,7 @@ export function DimensionPreview({
     const isEditableTarget = (target: EventTarget | null) => target instanceof HTMLElement
       && (target.matches("input, textarea, select") || target.isContentEditable);
     const onKeyDown = (event: KeyboardEvent) => {
-      if (!mode || event.code !== "Space" || event.isComposing || isEditableTarget(event.target)) return;
+      if (!mode || event.code !== "Space" || (event.target instanceof HTMLElement && Boolean(event.target.closest(".preview-like-control"))) || event.isComposing || isEditableTarget(event.target)) return;
       spaceHeldRef.current = true;
       setSpaceHeld(true);
       event.preventDefault();
@@ -759,7 +763,7 @@ export function DimensionPreview({
     const isEditableTarget = (target: EventTarget | null) => target instanceof HTMLElement
       && (target.matches("input, textarea, select") || target.isContentEditable);
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.isComposing) return;
+      if (event.isComposing || (event.target instanceof HTMLElement && Boolean(event.target.closest(".preview-like-control")))) return;
       // Esc：即使焦点在工具栏滑杆等控件上也退出专注模式；文本编辑与浮层打开时除外
       if (event.key === "Escape" && focusMode
         && !(event.target instanceof HTMLElement && event.target.isContentEditable)
@@ -789,7 +793,7 @@ export function DimensionPreview({
     const isEditableTarget = (target: EventTarget | null) => target instanceof HTMLElement
       && (target.matches("input, textarea, select") || target.isContentEditable);
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.code !== "Tab" || event.isComposing || isEditableTarget(event.target)) return;
+      if (event.code !== "Tab" || (event.target instanceof HTMLElement && Boolean(event.target.closest(".preview-like-control"))) || event.isComposing || isEditableTarget(event.target)) return;
       // 鼠标位于预览画布内时，一律阻止默认 Tab 焦点切换（避免跳到侧栏/工具栏等元素）
       if (!pointerInSceneRef.current) return;
       event.preventDefault();
@@ -1128,7 +1132,7 @@ export function DimensionPreview({
     setRotateX(Math.max(0, Math.min(180, active.rotateX - dy * .24)));
   }
 
-  /** 图片的实际可见矩形：堆按整块 2×2 缩略图矩阵命中，单张按 hover 放大后的图片矩形命中。 */
+  /** 图片的实际可见矩形：堆按单图封面框命中，单张按 hover 放大后的图片矩形命中。 */
   function assetVisualElement(asset: HTMLElement): HTMLElement | null {
     if (asset.dataset.stackKey) {
       return asset.querySelector<HTMLElement>(".stack-grid") ?? asset.querySelector<HTMLElement>(".preview-asset-face");
@@ -1514,7 +1518,7 @@ export function DimensionPreview({
     applyFocus(nextAnchor.id);
   }
 
-  /** 展开平面卡片的 pin 需要跨越卡片外沿，单独用 hover 状态 + 宽限计时保证可点。 */
+  /** 展开平面的操作菜单跨越卡片外沿，hover 状态与宽限计时保证按钮可点。 */
   function cancelPlaneCardPinHide() {
     if (planeCardPinTimer.current !== null) {
       window.clearTimeout(planeCardPinTimer.current);
@@ -1629,7 +1633,7 @@ export function DimensionPreview({
         (member) => effectiveDimensionValue(member, selected[1].id),
       );
     }
-    const ordered = { ...cluster, members };
+    const ordered = { ...cluster, members: orderLikedFirst(members) };
     planeClusterRef.current = ordered;
     setPlaneCluster(ordered);
     // 堆平面本身就是最前层：只展示平面，不隐藏周围的图片与堆
@@ -1782,7 +1786,7 @@ export function DimensionPreview({
       .find((element) => element.dataset.planeCardId === assetId);
     if (!card) return null;
     const visual = card.firstElementChild instanceof HTMLElement ? card.firstElementChild : card;
-    const pin = card.querySelector<HTMLElement>(".plane-card-pin");
+    const pin = card.querySelector<HTMLElement>(".plane-card-actions");
     const cardRect = card.getBoundingClientRect();
     const visualRect = visual.getBoundingClientRect();
     const pinRect = pin?.getBoundingClientRect();
@@ -2369,14 +2373,13 @@ export function DimensionPreview({
                   const stackFocusFog = hoverFocusActive
                     ? ({ "--dof-fog": HOVER_FOCUS_SCRIM } as CSSProperties)
                     : (isOctantIsolated ? undefined : depthFogStyle(stackWorldZ));
-                  const previewMembers = mode === 2
-                    ? stackPreviewMembers(orderStackGrid(
-                      cluster.members,
-                      2,
+                  const coverMembers = orderLikedFirst(mode === 2
+                    ? orderStackGrid(cluster.members, planeDimensions(cluster.members.length).columns,
                       (member) => effectiveDimensionValue(member, selected[0].id),
-                      (member) => effectiveDimensionValue(member, selected[1].id),
-                    ))
-                    : stackPreviewMembers(cluster.members);
+                      (member) => effectiveDimensionValue(member, selected[1].id))
+                    : cluster.members);
+                  const previewMembers = stackPreviewMembers(coverMembers);
+                  const backMembers = coverMembers.slice(1, 3);
                   const isDropTarget = dropTargetClusterKey === cluster.key;
                   return (
                     <button
@@ -2393,7 +2396,8 @@ export function DimensionPreview({
                         top: `${cluster.y / 10}%`,
                         "--asset-size": `${((isDropTarget ? 132 : PREVIEW_ASSET_WIDTH) * assetScale) / zoom}px`,
                         "--asset-z": `${cluster.z * planeSize / 1000}px`,
-                        "--asset-ratio": "1 / 1",
+                        "--asset-ratio": aspectRatioFor(previewMembers[0]),
+                        "--stack-overhang": `${stackScreenOverhang(assetScale) / zoom}px`,
                         "--persp": stackPersp,
                         "--billboard-rx": `${mode === 3 ? -sceneRotateX : 0}deg`,
                         "--billboard-rz": `${mode === 3 ? -sceneRotateZ : 0}deg`,
@@ -2404,6 +2408,11 @@ export function DimensionPreview({
                       {/* 模糊加在整张脸上：图片与雾化底色一起虚化，避免底色被裁出一个硬边框 */}
                       <span className="preview-asset-face" style={stackBlur}>
                         <span className="stack-grid">
+                          {backMembers.map((member, index) => (
+                            <span className={`stack-backing ${index === 0 ? "stack-backing-near" : "stack-backing-far"}`} key={member.id} aria-hidden="true">
+                              {member.thumbnailUrl ? <img src={member.thumbnailUrl} alt="" draggable={false} /> : <i>{member.name.slice(0, 1)}</i>}
+                            </span>
+                          ))}
                           {previewMembers.map((member) => (
                             <span className="stack-card" key={member.id} data-asset-id={member.id}>
                               {member.thumbnailUrl ? <img src={member.thumbnailUrl} alt="" draggable={false} /> : <i>{member.name.slice(0, 1)}</i>}
@@ -2474,12 +2483,12 @@ export function DimensionPreview({
                         {isHoverSource ? null : (
                           <span className="preview-art-flip">
                             {asset.thumbnailUrl ? <img src={asset.thumbnailUrl} alt="" draggable={false} /> : <i>{asset.name.slice(0, 1)}</i>}
+                            {asset.pinned ? (
+                              <span className="preview-pin-badge" aria-hidden="true"><Pin size={10} fill="currentColor" aria-hidden /></span>
+                            ) : null}
                           </span>
                         )}
                       </span>
-                      {asset.pinned ? (
-                        <span className="preview-pin-badge" aria-hidden="true"><Pin size={10} fill="currentColor" aria-hidden /></span>
-                      ) : null}
                       {draggingAssetId === asset.id ? (
                         <span className="preview-value-tag-layer">{valueTagsOf(values)}</span>
                       ) : null}
@@ -2519,7 +2528,7 @@ export function DimensionPreview({
                 const magnifiedTop = hoverPreview.top - hoverPreview.height * HOVER_PREVIEW_INSET;
                 const magnifiedWidth = hoverPreview.width * HOVER_PREVIEW_SCALE;
                 const barWidth = 26;
-                const barHeight = readOnly ? 26 : 58;
+                const barHeight = readOnly ? 26 : 90;
                 let left = magnifiedLeft + magnifiedWidth;
                 if (left + barWidth > vw - 8) left = magnifiedLeft - barWidth;
                 left = Math.max(8, Math.min(vw - barWidth - 8, left));
@@ -2544,17 +2553,21 @@ export function DimensionPreview({
                       <X size={14} aria-hidden />
                     </IconButton>
                     {!readOnly ? (
-                      <IconButton
-                        size="sm"
-                        variant="solid"
-                        aria-pressed={Boolean(hoveredAsset.pinned)}
-                        className={cn("rounded-full shadow-sm", hoveredAsset.pinned ? "text-sage" : "text-ink")}
-                        label={hoveredAsset.pinned ? "取消固定" : "固定到维度位置"}
-                        title={hoveredAsset.pinned ? "取消固定" : "固定：不参与自动聚堆"}
-                        onClick={() => { void onTogglePin?.(hoveredAsset.id, !hoveredAsset.pinned); }}
-                      >
-                        <Pin size={14} fill={hoveredAsset.pinned ? "currentColor" : "none"} aria-hidden />
-                      </IconButton>
+                      <>
+                        <IconButton
+                          size="sm"
+                          variant="solid"
+                          aria-pressed={Boolean(hoveredAsset.pinned)}
+                          className={cn("rounded-full shadow-sm", hoveredAsset.pinned ? "text-sage" : "text-ink")}
+                          label={hoveredAsset.pinned ? "取消固定" : "固定到维度位置"}
+                          title={hoveredAsset.pinned ? "取消固定" : "固定：不参与自动聚堆"}
+                          onClick={() => { void onTogglePin?.(hoveredAsset.id, !hoveredAsset.pinned); }}
+                        >
+                          <Pin size={14} fill={hoveredAsset.pinned ? "currentColor" : "none"} aria-hidden />
+                        </IconButton>
+                        <PreviewLikeButton key={hoveredAsset.id} rating={hoveredAsset.likeRating ?? (hoveredAsset.liked ? 1 : 0)}
+                          onRate={(rating) => { void onRateLike?.(hoveredAsset.id, rating); }} />
+                      </>
                     ) : null}
                   </div>
                 );
@@ -2563,7 +2576,7 @@ export function DimensionPreview({
                 const cluster = (planeCluster ?? closingCluster)!;
                 const isClosing = !planeCluster && closingCluster !== null;
                 const viewport = sceneViewportRef.current;
-                const members = cluster.members;
+                const members = cluster.members.map((member) => assets.find((asset) => asset.id === member.id) ?? member);
                 const count = members.length;
                 const cardSize = PLANE_CARD_SIZE * assetScale;
                 const { columns, rows, width: planeWidth, height: planeHeight } = planeDimensions(count, cardSize);
@@ -2640,8 +2653,9 @@ export function DimensionPreview({
                                 planeDragJustMoved.current = false;
                                 return;
                               }
+                              const navigation = previewNavigationFor(member.id);
                               clearFan();
-                              onSelectAsset(member.id, previewNavigationFor(member.id));
+                              onSelectAsset(member.id, navigation);
                             }}
                             onKeyDown={(event) => {
                               if (event.target !== event.currentTarget || (event.key !== "Enter" && event.key !== " ")) return;
@@ -2654,31 +2668,37 @@ export function DimensionPreview({
                                 planeDragJustMoved.current = false;
                                 return;
                               }
+                              const navigation = previewNavigationFor(member.id);
                               clearFan();
-                              onSelectAsset(member.id, previewNavigationFor(member.id));
+                              onSelectAsset(member.id, navigation);
                             }}
                           >
                             {member.thumbnailUrl ? <img src={member.thumbnailUrl} alt="" draggable={false} /> : <i>{member.name.slice(0, 1)}</i>}
                             {valueTagsOf({ ...member.dimensionValues, ...overrides[member.id] })}
                             {!readOnly ? (
-                              <IconButton
-                                size="sm"
-                                variant="solid"
-                                aria-pressed={Boolean(member.pinned)}
-                                className={cn("plane-card-pin rounded-full shadow-md", hoveredPlaneCardId === member.id && "is-visible", member.pinned ? "text-sage" : "text-ink")}
-                                style={{ left: pinPosition.left, top: pinPosition.top }}
-                                label={member.pinned ? "取消固定" : "固定并移出堆"}
-                                title={member.pinned ? "取消固定" : "固定：移出堆并保持单张"}
-                                onPointerDown={(event) => event.stopPropagation()}
-                                onPointerEnter={() => showPlaneCardPin(member.id)}
-                                onPointerLeave={() => schedulePlaneCardPinHide()}
-                                onClick={(event) => {
-                                  event.stopPropagation();
-                                  void onTogglePin?.(member.id, !member.pinned);
-                                }}
-                              >
-                                <Pin size={13} fill={member.pinned ? "currentColor" : "none"} aria-hidden />
-                              </IconButton>
+                              <span className={cn("plane-card-actions", hoveredPlaneCardId === member.id && "is-visible")}
+                                style={{ left: pinPosition.left, top: pinPosition.top }}>
+                                <IconButton
+                                  size="sm"
+                                  variant="solid"
+                                  aria-pressed={Boolean(member.pinned)}
+                                  className={cn("plane-card-pin rounded-full shadow-md", member.pinned ? "text-sage" : "text-ink")}
+                                  label={member.pinned ? "取消固定" : "固定并移出堆"}
+                                  title={member.pinned ? "取消固定" : "固定：移出堆并保持单张"}
+                                  onPointerDown={(event) => event.stopPropagation()}
+                                  onPointerEnter={() => showPlaneCardPin(member.id)}
+                                  onPointerLeave={() => schedulePlaneCardPinHide()}
+                                  onClick={(event) => {
+                                    event.stopPropagation();
+                                    void onTogglePin?.(member.id, !member.pinned);
+                                  }}
+                                >
+                                  <Pin size={13} fill={member.pinned ? "currentColor" : "none"} aria-hidden />
+                                </IconButton>
+                                <PreviewLikeButton rating={member.likeRating ?? (member.liked ? 1 : 0)}
+                                  onActivity={() => showPlaneCardPin(member.id)}
+                                  onRate={(rating) => { void onRateLike?.(member.id, rating); }} />
+                              </span>
                             ) : null}
                           </div>
                         );

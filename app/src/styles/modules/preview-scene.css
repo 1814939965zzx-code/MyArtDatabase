@@ -6,7 +6,7 @@
 
 @layer components {
   .preview-layout {
-    margin: 22px 42px 0;
+    margin: 22px var(--workspace-gutter, 42px) 0;
     height: max(640px, calc(100vh - 96px));
     min-height: 640px;
     display: grid;
@@ -20,7 +20,7 @@
     flex-direction: column;
     flex: 1 1 auto;
     min-height: 0;
-    margin: 18px 42px 0;
+    margin: 18px var(--workspace-gutter, 42px) 0;
     border: 1px solid var(--color-line);
     background: var(--color-surface);
   }
@@ -515,7 +515,7 @@
     pointer-events: auto;
   }
 
-  /* 已固定素材的常驻标记；不参与景深/hover 压暗 */
+  /* 固定标记属于图片的 face：共用朝向、模糊与隐藏；外沿单独覆盖相同强度的雾色。 */
   .preview-pin-badge {
     position: absolute;
     right: -6px;
@@ -532,6 +532,18 @@
     box-shadow: 0 2px 6px rgb(0 0 0 / 12%);
     pointer-events: none;
   }
+
+  .preview-pin-badge::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    border-radius: inherit;
+    background: var(--color-preview-bg);
+    opacity: var(--dof-fog, 0);
+    pointer-events: none;
+    transition: opacity 200ms ease;
+  }
+
 
   .hover-preview .preview-asset-face {
     --persp: 1;
@@ -699,31 +711,40 @@
 
   .preview-asset.preview-stack { cursor: default; }
 
+  /* 封面前置，后面露出真实成员的图片边角；外框同时覆盖叠层的命中区域。 */
   .preview-stack .stack-grid {
-    /* 2×2 缩略图矩阵：整块保持单张图片的占位，格内缩略图约为其一半大小，hover 后由平面展开全部成员 */
-    --stack-gap: calc(var(--asset-size, 41px) * 0.05);
-    --stack-thumb-size: calc((var(--asset-size, 41px) - var(--stack-gap)) / 2);
     position: absolute;
-    left: 50%;
-    top: 50%;
-    display: grid;
-    grid-template-columns: repeat(2, var(--stack-thumb-size));
-    grid-auto-rows: var(--stack-thumb-size);
-    gap: var(--stack-gap);
-    transform: translate(-50%, -50%);
+    inset: calc(-1 * var(--stack-overhang));
+    isolation: isolate;
   }
 
-  .preview-stack .stack-card {
-    position: relative;
-    min-width: 0;
-    min-height: 0;
+  .preview-stack .stack-card,
+  .preview-stack .stack-backing {
+    position: absolute;
+    inset: var(--stack-overhang);
     display: grid;
     place-items: center;
-    background: transparent;
+    background: var(--color-surface);
+    box-shadow: 0 0 0 2px var(--color-surface), 0 3px 7px rgb(0 0 0 / 30%), 0 8px 18px rgb(0 0 0 / 18%);
+    pointer-events: none;
+  }
+
+  .preview-stack .stack-card { z-index: 3; }
+
+  .preview-stack .stack-backing-near {
+    z-index: 2;
+    transform: translate(calc(var(--stack-overhang) * -0.4), calc(var(--stack-overhang) * 0.25)) rotate(-7deg);
+  }
+
+  .preview-stack .stack-backing-far {
+    z-index: 1;
+    transform: translate(calc(var(--stack-overhang) * 0.4), calc(var(--stack-overhang) * 0.25)) rotate(7deg);
   }
 
   .preview-stack .stack-card img,
-  .preview-stack .stack-card i {
+  .preview-stack .stack-card i,
+  .preview-stack .stack-backing img,
+  .preview-stack .stack-backing i {
     position: absolute;
     inset: 0;
     width: 100%;
@@ -734,18 +755,20 @@
     pointer-events: none;
   }
 
-  .preview-stack .stack-card i {
+  .preview-stack .stack-card i,
+  .preview-stack .stack-backing i {
     display: grid;
     place-items: center;
     font-style: normal;
   }
 
-  /* 堆的可见区域只是缩略图矩阵本身：景深雾化贴到每张缩略图上，不铺满整个命中框 */
+  /* 封面独立雾化；外层face保留模糊与朝向，不重复叠加雾色 */
   .preview-stack .preview-asset-face::after {
     content: none;
   }
 
-  .preview-stack .stack-card::after {
+  .preview-stack .stack-card::after,
+  .preview-stack .stack-backing::after {
     content: "";
     position: absolute;
     inset: 0;
@@ -757,8 +780,8 @@
 
   .preview-stack .stack-count {
     position: absolute;
-    right: -8px;
-    top: -8px;
+    right: calc(var(--stack-overhang) - 8px);
+    top: calc(var(--stack-overhang) - 8px);
     z-index: 5;
     min-width: 17px;
     height: 17px;
@@ -771,6 +794,8 @@
     line-height: 17px;
     text-align: center;
   }
+
+
 
   .preview-asset.preview-stack.hovered { z-index: 1002; }
   .preview-asset.preview-stack.drop-target { z-index: 1002; }
@@ -830,17 +855,20 @@
   .dimension-scene.mode-3 .stack-plane-card { cursor: default; }
   .stack-plane-card.is-hovered { z-index: 10; }
 
-  /* 展开平面卡片上的固定按钮：只在卡片 hover/聚焦时出现，透明底 */
-  .stack-plane-card .plane-card-pin {
+  /* 展开平面的固定 / Like 菜单：只在卡片 hover 或键盘聚焦时出现。 */
+  .stack-plane-card .plane-card-actions {
     position: absolute;
     z-index: 4;
     opacity: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
     transition: opacity 0.15s ease;
     pointer-events: none;
   }
 
-  .stack-plane-card:focus-within .plane-card-pin,
-  .stack-plane-card .plane-card-pin.is-visible {
+  .stack-plane-card:focus-within .plane-card-actions,
+  .stack-plane-card .plane-card-actions.is-visible {
     opacity: 1;
     pointer-events: auto;
   }
@@ -1075,15 +1103,8 @@
 
   @media (max-width: 1180px) {
     .preview-layout {
-      margin-left: 24px;
-      margin-right: 24px;
-    }
-  }
-
-  @media (max-width: 900px) {
-    .dimension-pages {
-      margin-left: 18px;
-      margin-right: 18px;
+      margin-left: var(--workspace-gutter, 24px);
+      margin-right: var(--workspace-gutter, 24px);
     }
   }
 
@@ -1104,4 +1125,14 @@
       padding: 18px;
     }
   }
+}
+
+@layer components {
+  .preview-like-control { position: relative; display: inline-flex; touch-action: none; user-select: none; }
+  .preview-like-control > button { position: relative; touch-action: none; }
+  .preview-like-value { position: absolute; right: -3px; bottom: -3px; min-width: 12px; border-radius: 999px; background: var(--color-surface); font-size: 9px; line-height: 13px; }
+  .preview-like-strip { position: fixed; z-index: 3000; display: flex; align-items: center; padding: 6px; height: 40px; border: 1px solid var(--color-line); border-radius: 999px; background: var(--color-surface); box-shadow: 0 4px 18px rgb(0 0 0 / 24%); pointer-events: none; }
+  .preview-rating-heart { display: grid; place-items: center; width: 28px; height: 28px; color: var(--color-muted); transition: color 100ms ease, transform 100ms ease; }
+  .preview-rating-heart.is-filled { color: var(--color-danger); transform: scale(1.08); }
+  .preview-like-hint { position: absolute; top: calc(100% + 5px); left: 50%; transform: translateX(-50%); padding: 2px 8px; border-radius: 999px; background: var(--color-surface); color: var(--color-ink); box-shadow: 0 2px 8px rgb(0 0 0 / 14%); white-space: nowrap; font-size: 11px; }
 }

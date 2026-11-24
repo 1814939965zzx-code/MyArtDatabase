@@ -11,9 +11,18 @@
   }
 
   .workspace {
+    --workspace-gutter: 42px;
     flex: 1;
     min-width: 0;
     padding-bottom: 60px;
+  }
+
+  .workspace.project-active {
+    --workspace-gutter: 18px;
+  }
+
+  .workspace.project-active > .topbar {
+    padding-inline: var(--workspace-gutter);
   }
 
   .workspace.preview-active,
@@ -138,6 +147,10 @@
   }
 
   @media (max-width: 620px) {
+    .workspace.project-active {
+      --workspace-gutter: 14px;
+    }
+
     .topbar {
       padding: 8px 14px;
       flex-wrap: wrap;

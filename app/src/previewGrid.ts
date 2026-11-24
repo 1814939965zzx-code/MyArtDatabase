@@ -2,13 +2,13 @@
 const MIN_DIVISIONS = 1;
 const MAX_DIVISIONS = 256;
 export const PREVIEW_ASSET_WIDTH = 90;
-/** 收起堆最多展示的缩略图数量：2×2 矩阵。 */
-export const PREVIEW_STACK_VISIBLE = 4;
+/** 收起堆只展示第一张封面，其他成员通过 hover 展开。 */
+export const PREVIEW_STACK_VISIBLE = 1;
 
 type AssetSize = { width?: number; height?: number };
 
 /**
- * 收起堆的缩略图只取成员队列的前 4 个。
+ * 收起堆的封面只取成员队列的第一张。
  * 顺序必须保持调用方传入的稳定顺序（页面素材列表顺序），不能按当前视角的深度重排：
  * 旋转视角时深度会连续变化，按深度取前几张会让缩略图在堆里来回跳动。
  */
@@ -27,6 +27,12 @@ export function orderByViewDepth<T>(items: readonly T[], depthOf: (item: T) => n
     .map(({ item }) => item);
 }
 
+/** 心数优先，同分按最近主动评分排序；完全同分同序号保持原序，不修改调用方数组。 */
+export function orderLikedFirst<T extends { liked?: boolean; likeRating?: number; likeOrder?: number }>(members: readonly T[]): T[] {
+  return [...members].sort((a, b) => (b.likeRating ?? (b.liked ? 1 : 0)) - (a.likeRating ?? (a.liked ? 1 : 0))
+    || ((b.likeRating ?? (b.liked ? 1 : 0)) > 0 && (a.likeRating ?? (a.liked ? 1 : 0)) > 0 ? (b.likeOrder ?? 0) - (a.likeOrder ?? 0) : 0));
+}
+
 export function previewAssetAspectRatio(asset: AssetSize): string {
   const width = asset.width ?? 0;
   const height = asset.height ?? 0;
@@ -34,15 +40,18 @@ export function previewAssetAspectRatio(asset: AssetSize): string {
   return "1 / 1";
 }
 
+/** 扇形叠层的屏幕外沿；小图也保留足够可见的图片边角。 */
+export function stackScreenOverhang(assetScale: number): number {
+  return Math.max(12, PREVIEW_ASSET_WIDTH * assetScale * 0.16);
+}
+
 export function gridMinimumSpacing(assets: readonly AssetSize[], mode: number, assetScale: number, sceneZoom = 1): number {
-  // A collapsed stack keeps one image's square footprint; its count badge overhangs the top-right by 8px.
-  // Keep the existing 16px allowance so density stays consistent with the previous stack rendering.
-  // Measure the normal footprint only; hover and drop-target enlargement are temporary.
-  // Card width is compensated for scene zoom; CSS offsets and the badge are not.
-  let footprint = PREVIEW_ASSET_WIDTH * assetScale + 16 * sceneZoom;
-  if (mode >= 2 && assets.some((asset) => previewAssetAspectRatio(asset) === "3 / 4")) {
-    footprint = Math.max(footprint, PREVIEW_ASSET_WIDTH * 4 / 3 * assetScale);
-  }
+  // 叠层外沿是正常占用的一部分；hover / 拖入的临时放大不参与聚堆密度。
+  const width = PREVIEW_ASSET_WIDTH * assetScale;
+  const longestSide = mode >= 2 && assets.some((asset) => previewAssetAspectRatio(asset) === "3 / 4")
+    ? width * 4 / 3 : width;
+  let footprint = Math.max(width + 16 * sceneZoom, longestSide);
+  if (assets.length > 1) footprint = Math.max(footprint, longestSide + 2 * stackScreenOverhang(assetScale));
   return footprint + 24;
 }
 

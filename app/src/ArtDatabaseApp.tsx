@@ -1398,7 +1398,7 @@ export function ArtDatabaseApp({ user, onLogout }: { user: SessionUser; onLogout
       ) : null}
 
       <section
-        className={`workspace ${activeArea === "project" && surface === "preview" ? "preview-active" : activeArea === "project" && surface === "board" ? "board-active" : ""}`}
+        className={`workspace ${activeArea === "project" ? "project-active" : ""} ${activeArea === "project" && surface === "preview" ? "preview-active" : activeArea === "project" && surface === "board" ? "board-active" : ""}`}
         onDragOver={(event) => { if (!readOnly && activeArea === "project" && Array.from(event.dataTransfer.types).includes("Files")) { event.preventDefault(); setDragActive(true); } }}
         onDragLeave={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node)) setDragActive(false); }}
         onDrop={(event) => { event.preventDefault(); setDragActive(false); if (!readOnly) acceptUpload(event.dataTransfer.files[0]); }}
@@ -1582,7 +1582,7 @@ export function ArtDatabaseApp({ user, onLogout }: { user: SessionUser; onLogout
           </div>
         ) : workspace ? (
           <>
-            {surface === "assets" ? <><div className="mx-[42px] flex items-end justify-between gap-6 pb-[18px] pt-[34px] max-md:mx-6">
+            {surface === "assets" ? <><div className="mx-[var(--workspace-gutter)] flex items-end justify-between gap-6 pb-[18px] pt-[34px]">
               <div>
                 <h2 className="m-0 text-lg font-semibold text-ink">项目素材</h2>
                 <p className="mt-1 text-sm text-muted">{search || projectTagFilter.length || projectAssetCategory === "favorites" ? `找到 ${filteredAssets.length} 项` : "按维度整理与比较你的视觉参考"}</p>
@@ -1625,7 +1625,7 @@ export function ArtDatabaseApp({ user, onLogout }: { user: SessionUser; onLogout
               </div>
             </div>
 
-            <div className="mx-[42px] mb-[18px] mt-0 border border-line bg-surface max-md:mx-6">
+            <div className="mx-[var(--workspace-gutter)] mb-[18px] mt-0 border border-line bg-surface">
               <Tabs
                 variant="underline"
                 ariaLabel="素材分类"
@@ -1676,7 +1676,7 @@ export function ArtDatabaseApp({ user, onLogout }: { user: SessionUser; onLogout
                   : projectAssetCategory === "favorites"
                     ? "在素材详情点“收藏”，素材会出现在这里。"
                     : readOnly ? "当前项目还没有素材。" : "拖入、粘贴或选择图片/视频开始，也可以从全部素材导入。"}
-                className="mx-[42px] max-md:mx-6"
+                className="mx-[var(--workspace-gutter)]"
                 action={readOnly ? undefined : (
                   <Button variant="primary" icon={<Upload size={15} aria-hidden />} onClick={() => fileInputRef.current?.click()}>
                     上传素材
@@ -1690,7 +1690,7 @@ export function ArtDatabaseApp({ user, onLogout }: { user: SessionUser; onLogout
             icon={<Archive size={28} aria-hidden />}
             title="建立第一个项目"
             description="项目用于保存独立的素材集合与分类维度。"
-            className="mx-[42px] max-md:mx-6"
+            className="mx-[var(--workspace-gutter)]"
             action={
               <Button variant="primary" icon={<Plus size={16} aria-hidden />} onClick={() => setCreateOpen(true)}>
                 新建项目

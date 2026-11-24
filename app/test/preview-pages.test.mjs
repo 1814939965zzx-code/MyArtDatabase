@@ -5,6 +5,7 @@ import path from "node:path";
 import test from "node:test";
 import { openDatabase } from "../server/db.js";
 import { createUser, createSession, sessionCookieHeader } from "../server/auth.js";
+import { migratePreviewPages } from "../server/preview-pages.js";
 import { handleApi } from "../server/routes.js";
 
 function client(db) {
@@ -86,6 +87,45 @@ test("Page 素材与维度独立，边界校验、轴持久化、移除及级联
     await call("preview-values", "PATCH", data(b.id, { assetId: "asset-01", values: { [dimension.id]: 870 } }));
     assert.deepEqual(await get(initial.id), aBefore, "同一素材在 B 改坐标不能影响 A");
     assert.equal((await get(b.id)).assets.find((a) => a.assetId === "asset-01").dimensionValues[dimension.id], 870);
+    const likeRevision = (await get(b.id)).revision;
+    assert.equal((await get(b.id)).assets.find((a) => a.assetId === "asset-01").liked, false);
+    assert.equal((await call("preview-page-assets", "PATCH", data(b.id, { assetId: "asset-01", liked: true }))).status, 200);
+    const likedPage = await get(b.id);
+    assert.equal(likedPage.assets.find((a) => a.assetId === "asset-01").liked, true);
+    assert.ok(likedPage.revision > likeRevision);
+    assert.deepEqual(await get(initial.id), aBefore, "Like must be scoped to its Page");
+    assert.equal((await call("preview-page-assets", "PATCH", data(b.id, { assetId: "asset-01", liked: "yes", pinned: true }))).status, 400);
+    assert.equal((await get(b.id)).assets.find((a) => a.assetId === "asset-01").pinned, false, "invalid Like must not partially pin");
+    assert.equal((await call("preview-page-assets", "PATCH", data(b.id, { assetId: "asset-03", liked: true }))).status, 404);
+    assert.equal((await call("preview-page-assets", "PATCH", data(b.id, { assetId: "asset-01", liked: false }))).status, 200);
+    assert.equal((await get(b.id)).assets.find((a) => a.assetId === "asset-01").liked, false);
+    const rate = async (assetId, likeRating, extra = {}) => call("preview-page-assets", "PATCH", data(b.id, { assetId, likeRating, ...extra }));
+    const firstRating = await rate("asset-01", 4);
+    const secondRating = await rate("asset-02", 4);
+    assert.equal(firstRating.likeRating, 4);
+    assert.equal(firstRating.liked, true);
+    assert.ok(secondRating.likeOrder > firstRating.likeOrder);
+    const rescore = await rate("asset-01", 4);
+    assert.ok(rescore.likeOrder > secondRating.likeOrder, "same score must refresh explicit priority");
+    assert.deepEqual(await get(initial.id), aBefore, "ratings stay local to the Page");
+    for (const invalid of [-1, 6, 1.5, "3", null, true]) {
+      assert.equal((await rate("asset-01", invalid, { pinned: true })).status, 400);
+    }
+    assert.equal((await rate("asset-01", 3, { liked: false })).status, 400);
+    assert.equal((await rate("asset-03", 5)).status, 404);
+    const unchanged = (await get(b.id)).assets.find((a) => a.assetId === "asset-01");
+    assert.equal(unchanged.likeRating, 4);
+    assert.equal(unchanged.pinned, false);
+    assert.equal(unchanged.likeOrder, rescore.likeOrder);
+    const cancelled = await rate("asset-01", 0);
+    assert.equal(cancelled.likeRating, 0);
+    assert.equal(cancelled.likeOrder, 0);
+    assert.equal(cancelled.liked, false);
+    const guest = await handleApi(new Request("http://localhost/api/preview-page-assets", {
+      method: "PATCH", headers: { cookie: "artdb_guest=1", "content-type": "application/json" },
+      body: JSON.stringify(data(b.id, { assetId: "asset-01", likeRating: 5 })),
+    }), { db });
+    assert.equal(guest.status, 403);
     const pinRevision = (await get(b.id)).revision;
     assert.equal((await call("preview-page-assets", "PATCH", data(b.id, { assetId: "asset-01", pinned: true }))).status, 200);
     const pinnedPage = await get(b.id);
@@ -154,5 +194,34 @@ test("新项目默认 Page 为空，上传、项目引用不会自动加入 Page
     await call(`projects?id=${project.id}`, "DELETE");
     assert.ok(db.prepare("SELECT id FROM assets WHERE id = 'new-upload'").get());
     assert.equal(db.prepare("SELECT COUNT(*) AS n FROM preview_pages WHERE project_id = ?").get(project.id).n, 0);
+  } finally { db.close(); }
+});
+
+
+test("Like column migrates existing Page assets safely and remains idempotent", () => {
+  const db = openDatabase(":memory:", { seedDemo: true });
+  try {
+    db.exec("ALTER TABLE preview_page_assets DROP COLUMN liked");
+    const before = db.prepare("SELECT COUNT(*) AS count FROM preview_page_assets").get().count;
+    migratePreviewPages(db);
+    assert.equal(db.prepare("SELECT COUNT(*) AS count FROM preview_page_assets").get().count, before);
+    assert.equal(db.prepare("SELECT COUNT(*) AS count FROM preview_page_assets WHERE liked != 0").get().count, 0);
+    db.prepare("UPDATE preview_page_assets SET liked = 1 WHERE rowid = (SELECT rowid FROM preview_page_assets LIMIT 1)").run();
+    migratePreviewPages(db);
+    assert.equal(db.prepare("SELECT COUNT(*) AS count FROM preview_page_assets WHERE liked = 1").get().count, 1);
+  } finally { db.close(); }
+});
+
+test("rating migration preserves old likes as one heart and is idempotent", () => {
+  const db = openDatabase(":memory:", { seedDemo: true });
+  try {
+    db.exec("ALTER TABLE preview_page_assets DROP COLUMN like_rating; ALTER TABLE preview_page_assets DROP COLUMN like_order");
+    db.exec("UPDATE preview_page_assets SET liked = 1 WHERE rowid = (SELECT rowid FROM preview_page_assets LIMIT 1)");
+    migratePreviewPages(db);
+    assert.equal(db.prepare("SELECT COUNT(*) AS n FROM preview_page_assets WHERE like_rating = 1").get().n, 1);
+    db.exec("UPDATE preview_page_assets SET like_rating = 5, like_order = 7 WHERE liked = 1");
+    migratePreviewPages(db);
+    assert.equal(db.prepare("SELECT like_rating, like_order FROM preview_page_assets WHERE liked = 1").get().like_rating, 5);
+    assert.equal(db.prepare("SELECT like_order FROM preview_page_assets WHERE liked = 1").get().like_order, 7);
   } finally { db.close(); }
 });
